@@ -19,14 +19,18 @@ def workspace_id(repo, workspace):
 SYMBOL, PATH, FILE_NAME = 3, 2, 1      # strength of a match; 0 means the request does not name it
 
 
-def match_strength(text, signal):
+def match_strength(text, signal, path=None):
     """How strongly a request names this symbol or file: a symbol (a whole identifier) beats a
-    file named by its full path, which beats a bare file name; never as a piece of a longer name."""
+    file named by its full path, which beats a bare file name; never as a piece of a longer name.
+    A symbol counts only when the request also names the file it lives in (`path`, by path or by
+    file name): a bare name such as `run` does not say which declaration is meant."""
     if signal in ("", None):
         return 0
     text = text.replace("\\", "/")
     if "/" not in signal and "." not in signal:
-        return SYMBOL if re.search(rf"(?<!\w){re.escape(signal)}(?!\w)", text) else 0
+        if not re.search(rf"(?<!\w){re.escape(signal)}(?!\w)", text):
+            return 0
+        return SYMBOL if not path or match_strength(text, path) else 0
     path = signal.replace("\\", "/")
     for name, strength in ((path, PATH), (path.rsplit("/", 1)[-1], FILE_NAME)):
         if re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-]|\.\w)", text, re.IGNORECASE):
@@ -50,6 +54,13 @@ def _offerable(record):
     proposer's view, while the observation itself stays for admission to refuse precisely.
     """
     return not record.get("partial") or bool(record.get("symbols"))
+
+
+def proofs_of(spec):
+    """The contracts of a Knowledge: one per source, whether stored alone or as a list."""
+    proof = spec.get("proof")
+    proofs = proof if isinstance(proof, list) else [proof]
+    return [p for p in proofs if isinstance(p, dict)]
 
 
 class Knowledge(Distiller):
@@ -89,15 +100,11 @@ class Knowledge(Distiller):
                        "For each fact, add source (a path from observed_sources) and "
                        "source_session (the cited task id that read it). "
                        "Optionally add symbol (an unqualified, unique declaration name) when the fact concerns it. "
+                       "A fact about several files or symbols may list them as sources, at least two "
+                       "{source, symbol?} entries from observed_sources, in place of source and symbol. "
                        "A source with observed_lines was read only in part: it supports a fact "
                        "about a declaration the read crossed, and that declaration's name must "
                        "be the fact's symbol. Only propose facts supported by those observations.\n")
-            atoms = [{"id": fid, "revision": f.spec.get("rev", 1), "claim": f.claim}
-                     for fid, f in self.facts.items() if "dependencies" not in f.spec]
-            prompt += ("\nYou may instead synthesize at least two distinct existing atomic Knowledge "
-                       "by providing dependencies as a list of their IDs; do not provide source "
-                       "or source_session for a synthesis. Existing atomic Knowledge: "
-                       + json.dumps(atoms, ensure_ascii=True))
             return original(prompt, model)
         self.runner = propose
         try:
@@ -106,52 +113,65 @@ class Knowledge(Distiller):
             self.runner = original
 
     def _admit(self, spec):
-        dependencies = spec.get("dependencies")
-        if dependencies is not None:
-            if (not isinstance(dependencies, list) or len(dependencies) < 2
-                    or any(not isinstance(fid, str) or not fid for fid in dependencies)
-                    or len(set(dependencies)) != len(dependencies)
-                    or not isinstance(spec.get("claim"), str)
-                    or ("injection" in spec and not isinstance(spec["injection"], str))):
-                return False, "invalid-dependencies-or-content"
-            children = [self.facts.get(fid) for fid in dependencies]
-            if any(child is None or "dependencies" in child.spec
-                   or not self._contract_valid(child) for child in children):
-                return False, "invalid-dependency"
-            evidence = [{"id": fid, "revision": child.spec.get("rev", 1)}
-                        for fid, child in zip(dependencies, children)]
-            spec = dict(spec, dependencies=evidence)
-            spec.pop("proof", None)
-            spec.pop("provenance", None)
-            return self._admit_knowledge(spec, evidence)
-        source, session = spec.get("source"), spec.get("source_session")
-        if (not isinstance(source, str) or not isinstance(session, str)
-                or ("symbol" in spec and (not isinstance(spec["symbol"], str) or not spec["symbol"]))
+        session, sources = spec.get("source_session"), spec.get("sources")
+        if sources is None:
+            entries = [{"source": spec.get("source"), "symbol": spec["symbol"]} if "symbol" in spec
+                       else {"source": spec.get("source")}]
+        else:
+            entries = sources
+        if (not isinstance(session, str) or not isinstance(entries, list)
+                or (sources is not None and len(entries) < 2)
+                or any(not isinstance(e, dict) or not isinstance(e.get("source"), str)
+                       or ("symbol" in e and (not isinstance(e["symbol"], str) or not e["symbol"]))
+                       for e in entries)
+                or len({(e["source"], e.get("symbol")) for e in entries}) != len(entries)
                 or not isinstance(spec.get("claim"), str)
                 or ("injection" in spec and not isinstance(spec["injection"], str))):
             return False, "invalid-source-or-content"
         if session not in (spec.get("cite") or []):
             return False, "source-not-cited"
+        proofs, observed = [], {}
+        for entry in entries:
+            evidence, reason = self._source_evidence(session, entry["source"], entry.get("symbol"))
+            if evidence is None:
+                return False, reason
+            proofs.append(evidence)
+            if evidence.get("observed"):
+                observed[entry["source"]] = evidence.pop("observed")
+        first = entries[0]["source"]
+        provenance = {"session": session, "path": first}
+        if sources is None:
+            spec = dict(spec, proof=proofs[0])
+            if observed:
+                provenance["observed"] = observed[first]
+        else:
+            spec = dict(spec, source=first, proof=proofs)
+            provenance["paths"] = [e["source"] for e in entries]
+            if observed:
+                provenance["observed"] = observed
+        spec = dict(spec, provenance=provenance)
+        return self._admit_knowledge(spec, spec["proof"])
+
+    def _source_evidence(self, session, source, symbol):
+        """The contract proving what one source says, as the model observed it in `session`:
+        `(proof, None)`, or `(None, reason)` when the observation cannot back it. A partial
+        read's proof carries its `observed` scope, which `_admit` moves into the provenance."""
         observation = next((d.get("_observations", {}).get(source) for d in self.window
                          if d.get("iid") == session), None)
         if not observation:
-            return False, "source-not-observed"
-        symbol = spec.get("symbol")
+            return None, "source-not-observed"
         if observation.get("partial"):
             # The model read an excerpt: only a declaration it crossed can be attested, and
             # only as it was at the instant of the read. Nothing falls back to the file.
             if symbol is None:
-                return False, "partial-needs-symbol"
+                return None, "partial-needs-symbol"
             symbols = observation.get("symbols")
             evidence = symbols.get(symbol) if isinstance(symbols, dict) else None
             if evidence is None:
-                return False, "symbol-not-observed"
+                return None, "symbol-not-observed"
             if not verify_proof(self.workspace, evidence):
-                return False, "stale-proof"
-            spec = dict(spec, proof=evidence,
-                        provenance={"session": session, "path": source,
-                                    "observed": dict(observation["observed"])})
-            return self._admit_knowledge(spec, evidence)
+                return None, "stale-proof"
+            return dict(evidence, observed=dict(observation["observed"])), None
         evidence = observation["proof"]
         if symbol is not None:
             content = observation.get("content")
@@ -161,8 +181,7 @@ class Knowledge(Distiller):
                 evidence = resolved
             else:
                 evidence = dict(evidence, kind="file", fallback={"symbol": symbol, "reason": "symbol-unresolvable"})
-        spec = dict(spec, proof=evidence, provenance={"session": session, "path": source})
-        return self._admit_knowledge(spec, evidence)
+        return dict(evidence), None
 
     def _admit_knowledge(self, spec, evidence):
         original_id = spec["id"]
@@ -174,7 +193,7 @@ class Knowledge(Distiller):
             spec["id"] = uuid.uuid4().hex
             return super()._admit(spec)
         old = self.facts[original_id]
-        old_evidence = old.spec.get("dependencies") if "dependencies" in old.spec else old.spec.get("proof")
+        old_evidence = old.spec.get("proof")
         if (old_evidence == evidence and old.claim == spec.get("claim")
                 and old.injection == spec.get("injection", spec.get("claim"))
                 and old.spec.get("detector") == spec.get("detector")):
@@ -186,48 +205,23 @@ class Knowledge(Distiller):
         return True, "revised"
 
     def _contract_valid(self, fact):
-        dependencies = fact.spec.get("dependencies")
-        if dependencies is None:
-            return verify_proof(self.workspace, fact.spec.get("proof", {}))
-        if not isinstance(dependencies, list) or len(dependencies) < 2:
-            return False
-        ids = set()
-        for dep in dependencies:
-            if not isinstance(dep, dict) or not isinstance(dep.get("id"), str):
-                return False
-            fid = dep["id"]
-            child = self.facts.get(fid)
-            if (fid in ids or child is None or "dependencies" in child.spec
-                    or child.spec.get("rev", 1) != dep.get("revision")
-                    or not child.injectable()
-                    or not verify_proof(self.workspace, child.spec.get("proof", {}))):
-                return False
-            ids.add(fid)
-        return True
-
-    def _pinned(self, fact, leaf):
-        """What `leaf` gives for an atomic Knowledge; for a composed one, what it gives for the
-        atomic Knowledge it is pinned to, without repeats."""
-        deps = fact.spec.get("dependencies")
-        if deps is None:
-            return leaf(fact)
-        found = []
-        for dep in deps if isinstance(deps, list) else []:
-            child = self.facts.get(dep.get("id")) if isinstance(dep, dict) else None
-            if child is not None and "dependencies" not in child.spec:
-                found.extend(x for x in self._pinned(child, leaf) if x not in found)
-        return found
+        proofs = proofs_of(fact.spec)
+        return bool(proofs) and all(verify_proof(self.workspace, proof) for proof in proofs)
 
     def signals(self, fact):
-        """A Knowledge's signals: the symbol its contract names, else its file. Composed
-        Knowledge has none of its own: it takes those of the Knowledge it is pinned to."""
-        def leaf(fact):
-            proof = fact.spec.get("proof")
-            proof = proof if isinstance(proof, dict) else {}
-            signal = proof.get("symbol") if proof.get("kind") == "symbol" else None
-            signal = signal or proof.get("path") or fact.spec.get("source")
-            return [signal] if isinstance(signal, str) and signal else []
-        return self._pinned(fact, leaf)
+        """A Knowledge's signals as `(signal, file)` pairs, one per source: the symbol its
+        contract names, with the file it lives in, else its file alone."""
+        out = []
+        for proof in proofs_of(fact.spec) or [{}]:
+            path = proof.get("path") or fact.spec.get("source")
+            symbol = proof.get("symbol") if proof.get("kind") == "symbol" else None
+            signal = symbol or path
+            if not isinstance(signal, str) or not signal:
+                continue
+            pair = (signal, path if symbol and isinstance(path, str) else None)
+            if pair not in out:
+                out.append(pair)
+        return out
 
     def relevant(self, task):
         """The eligible Knowledge a request shares a signal with, as `(fact, signal)` pairs,
@@ -240,7 +234,8 @@ class Knowledge(Distiller):
             if task is None:
                 signal, strength = "", 0
             else:
-                signal, strength = max(((s, match_strength(task, s)) for s in self.signals(fact)),
+                signal, strength = max(((s, match_strength(task, s, path))
+                                        for s, path in self.signals(fact)),
                                        key=lambda m: m[1], default=(None, 0))
                 if not strength:
                     continue
@@ -249,12 +244,15 @@ class Knowledge(Distiller):
         return [(fact, signal) for _key, fact, signal in sorted(out, key=lambda o: o[0])]
 
     def files(self, fact):
-        """The files a Knowledge covers: its own, or those of the Knowledge it is pinned to."""
-        def leaf(fact):
-            proof = fact.spec.get("proof")
-            path = (proof.get("path") if isinstance(proof, dict) else None) or fact.spec.get("source")
-            return [os.path.normpath(path).replace("\\", "/")] if isinstance(path, str) and path else []
-        return self._pinned(fact, leaf)
+        """The files a Knowledge covers: one per source."""
+        out = []
+        for proof in proofs_of(fact.spec) or [{}]:
+            path = proof.get("path") or fact.spec.get("source")
+            if isinstance(path, str) and path:
+                path = os.path.normpath(path).replace("\\", "/")
+                if path not in out:
+                    out.append(path)
+        return out
 
     def covering(self, path):
         """The eligible Knowledge covering a file the agent read (a workspace-relative path), as

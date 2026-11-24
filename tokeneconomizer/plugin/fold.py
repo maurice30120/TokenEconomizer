@@ -162,8 +162,10 @@ class _SharedProposer:
             raw, tokens = runner(prompt + "\n\nKnowledge context (share the same four-fact budget):\n" + captured[0], model)
             exts, facts = distiller.parse_payload(raw)
             facts = facts[:distiller.MAX_CANDS]
-            knowledge = [f for f in facts if "source" in f or "dependencies" in f]
-            native = [f for f in facts if "source" not in f and "dependencies" not in f]
+            # `dependencies` is the retired synthesis form: the Knowledge stage refuses it.
+            kinds = ("source", "sources", "dependencies")
+            knowledge = [f for f in facts if any(k in f for k in kinds)]
+            native = [f for f in facts if not any(k in f for k in kinds)]
             try:
                 stage.runner = lambda p, m: (json.dumps({"extractors": exts, "facts": knowledge}), None)
                 stage._maybe_propose()

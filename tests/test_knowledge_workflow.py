@@ -162,22 +162,18 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     assert len(logged()) == before
     assert "Source is observed" not in json.dumps(call(dict(enabled, TE_KNOWLEDGE="off"), dict(payload, session_id="off")))
 
-    # A writer holds the same lock while a new hook tries to resolve dependencies.
-    # Its removal must be visible before the hook can inject the synthesis.
+    # A writer holds the same lock while a new hook tries to read the Knowledge.
+    # Its removal must be visible before the hook can inject it.
     import copy
     import threading
     source.write_text("observed\n")
     stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
     first = next(iter(stage.facts))
     stage.facts["second"] = copy.deepcopy(stage.facts[first])
-    stage.facts["second"].spec["id"] = "second"
-    composite = copy.deepcopy(stage.facts[first])
-    composite.spec.update(id="synthesis", claim="combined", injection="combined",
-                          dependencies=[{"id": first, "revision": 1}, {"id": "second", "revision": 1}])
-    composite.spec.pop("proof", None)
-    stage.facts["synthesis"] = composite
+    stage.facts["second"].spec.update(id="second", claim="second claim", injection="second note")
+    stage.facts["second"].injection = "second note"
     stage.save(ctx.mech_dir)
-    assert "combined" in json.dumps(call(enabled, dict(payload, session_id="before-race")))
+    assert "second note" in json.dumps(call(enabled, dict(payload, session_id="before-race")))
     started = threading.Event()
     output = []
     def start_hook():
@@ -194,7 +190,7 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
         stage.save(ctx.mech_dir)
     thread.join(5)
     assert not thread.is_alive()
-    assert "combined" not in output[0]
+    assert "second note" not in output[0]
     assert "Source is observed" in output[0]
 
 
@@ -311,54 +307,52 @@ def test_symbol_requested_in_session_survives_unrelated_edits_and_fails_closed(t
     assert not stage.render()
 
 
-def test_composed_knowledge_follows_atomic_dependencies(tmp_path, monkeypatch):
+def test_a_knowledge_about_several_files_holds_while_all_of_them_do(tmp_path, monkeypatch):
     from tokeneconomizer.microskills import distiller
     monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
-    source = tmp_path / "source.txt"
-    source.write_text("observed\n")
-    candidates = [
-        {"id": name, "claim": name, "source": "source.txt", "source_session": "s1",
-         "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
-        for name in ("first", "second")
-    ]
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text(f"{name} observed\n")
+    candidates = [{"id": "both", "claim": "a and b agree", "sources": [{"source": "a.txt"}, {"source": "b.txt"}],
+                   "source_session": "s1", "cite": ["s0", "s1"],
+                   "detector": {"scope": "pytest", "confirm": "passed"}}]
     stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": candidates}), 0))
     stage.workspace = tmp_path
     def session(i):
-        path = tmp_path / f"composed{i}.jsonl"
-        events = [
-            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "observed\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
-        ]
+        path = tmp_path / f"several{i}.jsonl"
+        reads = [(f"r{n}", tmp_path / name) for n, name in enumerate(("a.txt", "b.txt"))]
+        events = [{"type": "assistant", "message": {"content": [
+            *({"type": "tool_use", "id": rid, "name": "Read", "input": {"file_path": str(file)}} for rid, file in reads),
+            {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}}]
+        for rid, file in reads:
+            text = file.read_text()
+            events.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": rid, "content": text}]},
+                           "toolUseResult": {"type": "text", "file": {"filePath": str(file), "content": text, "startLine": 1, "numLines": 1, "totalLines": 1}}})
+        events.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}})
         path.write_text("\n".join(map(json.dumps, events)))
         stage.update(path, iid=f"s{i}")
     for i in range(5):
         session(i)
-    ids = list(stage.facts)
-    assert len(ids) == 2
-    candidates[:] = [{"id": "synthesis", "claim": "combined", "dependencies": ids,
-                      "cite": ["s3", "s4"], "detector": {"scope": "pytest", "confirm": "passed"}}]
-    for i in range(5, 11):
-        session(i)
-    assert "combined" in stage.render()
+    assert "a and b agree" in stage.render()
     stage.save(tmp_path)
     stage = Knowledge.load("repo", tmp_path)
     stage.workspace = tmp_path
-    assert "combined" in stage.render()
-    source.write_text("changed\n")
-    assert "combined" not in stage.render()
-    source.write_text("observed\n")
-    assert "combined" in stage.render()
-    composite_id = next(fid for fid in stage.facts if fid not in ids)
-    stage.runner = lambda *args: (json.dumps({"facts": [{"id": "nested", "claim": "nested", "dependencies": [ids[0], composite_id], "cite": ["s8", "s9"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0)
-    for i in range(11, 14):
-        session(i)
-    assert all(f.claim != "nested" for f in stage.facts.values())
-    stage.facts[ids[0]].spec["rev"] += 1
-    assert "combined" not in stage.render()
-    assert "second" in stage.render()
-    del stage.facts[ids[0]]
-    assert "combined" not in stage.render()
+    fact = next(iter(stage.facts.values()))
+    assert {s for s, _ in stage.signals(fact)} == {"a.txt", "b.txt"}
+    assert "a and b agree" in stage.render("look at b.txt")
+    assert [f.id for f, _ in stage.covering("a.txt")] == [fact.id] == [f.id for f, _ in stage.covering("b.txt")]
+    (tmp_path / "b.txt").write_text("changed\n")
+    assert "a and b agree" not in stage.render()
+
+
+def test_a_knowledge_that_synthesizes_other_knowledge_is_refused(tmp_path, monkeypatch):
+    from tokeneconomizer.microskills import distiller
+    monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
+    (tmp_path / "source.txt").write_text("observed\n")
+    stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": [
+        {"id": "synthesis", "claim": "combined", "dependencies": ["x", "y"],
+         "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0))
+    stage.workspace = tmp_path
+    assert stage._admit({"id": "synthesis", "claim": "combined", "dependencies": ["x", "y"]}) == (False, "invalid-source-or-content")
 
 
 def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo, monkeypatch):
@@ -696,5 +690,19 @@ def test_a_symbol_named_in_the_prompt_outranks_a_file_match(tmp_path, env, repo,
         tmp_path, env, repo, monkeypatch, {"first.txt": "observed\n", "second.py": code},
         [{"id": "file", "claim": "first.txt is observed", "source": "first.txt"},
          {"id": "sym", "claim": "target returns one", "source": "second.py", "symbol": "target"}])
-    text = prompt(enabled, repo, "a", "in first.txt look at target", TE_MICROSKILLS_MAX_FACTS="1")
+    text = prompt(enabled, repo, "a", "in first.txt look at target in second.py", TE_MICROSKILLS_MAX_FACTS="1")
     assert "target returns one" in text and "first.txt is observed" not in text
+
+
+def test_a_symbol_alone_in_the_prompt_does_not_bring_its_knowledge_without_its_file(tmp_path, env, repo, monkeypatch):
+    pytest.importorskip("tree_sitter_language_pack")
+    enabled = learn_knowledge(
+        tmp_path, env, repo, monkeypatch, {"second.py": "def run():\n    return 1\n"},
+        [{"id": "sym", "claim": "run returns one", "source": "second.py", "symbol": "run"}])
+    # A common name says nothing about which `run` the request means.
+    assert "run returns one" not in prompt(enabled, repo, "a", "please run the tests")
+    # The file the symbol lives in is the hint that it is this one, by path or by file name.
+    assert "run returns one" in prompt(enabled, repo, "b", "run in second.py")
+    assert "run returns one" in prompt(enabled, repo, "c", "second.py: please run it")
+    # The file alone is not the symbol: that Knowledge reaches the agent when it reads the file.
+    assert "run returns one" not in prompt(enabled, repo, "d", "look at second.py")

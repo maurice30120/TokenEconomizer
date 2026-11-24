@@ -311,7 +311,7 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
     assert next(iter(stage.facts.values())).spec["proof"]["kind"] == "symbol"
     assert "Alpha returns one" in stage.render()
     start = {"hook_event_name": "UserPromptSubmit", "source": "startup", "cwd": str(repo),
-             "prompt": "what does alpha return?"}
+             "prompt": "what does alpha in source.py return?"}
     assert "Alpha returns one" in json.dumps(call(env, dict(start, session_id="next"), host="pi"))
     assert call(env, dict(start, session_id="beta", prompt="what does beta return?"), host="pi") == {}
     # the symbol's unread line, a comment inside it, and the rest of the file

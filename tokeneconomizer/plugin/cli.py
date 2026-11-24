@@ -335,6 +335,7 @@ def cmd_microskills(args):
         print("\nknowledge symbol grammars: " + (", ".join(f"{ext}={lang}" for ext, lang in sorted(available_languages().items())) or "none"))
     if stage and (stage.facts or stage.forgotten):
         from tokeneconomizer.microskills.distiller import Fact
+        from tokeneconomizer.knowledge.stage import proofs_of
         print("\nknowledge tracked:")
         entries = [(fid, fact, False) for fid, fact in stage.facts.items()]
         for fid, record in stage.forgotten.items():
@@ -343,17 +344,15 @@ def cmd_microskills(args):
             except (KeyError, TypeError, ValueError):
                 continue
         for fid, fact, forgotten in sorted(entries, key=lambda item: item[0]):
-            proof = fact.spec.get("proof", {})
             valid = stage._contract_valid(fact)
-            if isinstance(proof, dict) and proof.get("fallback"):
-                print(f"  fallback {fid}: {proof['fallback']}")
-            if "dependencies" in fact.spec:
-                print(f"  dependencies {fid}: {fact.spec['dependencies']}")
+            for proof in proofs_of(fact.spec):
+                if proof.get("fallback"):
+                    print(f"  fallback {fid}: {proof['fallback']}")
             provenance = fact.spec.get("provenance") or {}
             print(f"  {fact.state:9s} rev={fact.spec.get('rev', 1)} "
                   f"proof={'valid' if valid else 'invalid'} "
                   f"{'forgotten ' if forgotten else ''}{fid}  {_short(fact.claim)}")
-            print(f"    source={provenance.get('path', '?')} "
+            print(f"    source={', '.join(provenance.get('paths') or [provenance.get('path', '?')])} "
                   f"session={provenance.get('session', '?')}")
             # A partial read's real scope: which lines it returned, out of how many.
             if isinstance(provenance.get("observed"), dict):

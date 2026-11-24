@@ -49,11 +49,15 @@ saved lifecycle; injection still requires a valid proof and the usual lifecycle 
 Knowledge is injected only when it is Relevant Knowledge, and never at session start. A
 Knowledge Signal is the symbol the Knowledge's contract names or, failing that, its file. The
 user prompt hook injects a Knowledge when the request names its symbol (as a whole identifier)
-or its file (by path or file name, in any case; `source.txt` is not matched inside
-`resource.txt` or `source.txt.bak`). Matching is local and deterministic, with no model call.
+together with the file the symbol lives in, or its file when the contract has no symbol (by path
+or file name, in any case; `source.txt` is not matched inside `resource.txt` or
+`source.txt.bak`). A symbol alone is not enough: a name such as `run` does not say which
+declaration is meant, and the file is the hint. A request that names only the file of a
+symbol Knowledge does not match either; that Knowledge reaches the agent when it reads the file.
+Matching is local and deterministic, with no model call.
 A request that shares no signal injects nothing. Stored Knowledge needs no migration: its
-signal comes from its current contract. A composed Knowledge has no signal of its own and is
-relevant when a signal of any Knowledge it is pinned to matches.
+signal comes from its current contract. A Knowledge about several files or symbols has one
+signal per source and is relevant when any one of them matches.
 
 Native facts still arrive at session start. A host whose hook output does not reach the model
 (`prompt_context` false: Codex, Cursor, Antigravity, Grok) gets no Knowledge, and neither does
@@ -74,15 +78,16 @@ The shared budget (the native facts' share of `microskills_max_facts` and
 `microskills_max_tokens`) applies to each injection, a prompt's or a read's, not cumulatively
 over the session: Knowledge already given does not use it up.
 When more Knowledge matches than the shared budget holds, the strongest match is kept first.
-Strength of match is: a symbol named as a whole identifier (3), then a file named by its full
-path (2), then a file named by its bare file name (1); a composed Knowledge counts its strongest
+Strength of match is: a symbol named as a whole identifier together with its file (3), then a
+file named by its full
+path (2), then a file named by its bare file name (1); a Knowledge with several sources counts its strongest
 matching signal. Equal matches are ordered by firing rate, highest first, and what still ties
 keeps registration order, so the choice is deterministic and makes no model call.
 
 ### The read trigger
 
-The second trigger is the agent reading a file a Knowledge covers (its own file, or the
-files of the Knowledge a composed one is pinned to), even when the request never named it. It
+The second trigger is the agent reading a file a Knowledge covers (any of the
+files it is about), even when the request never named it. It
 runs on `PostToolUse` after a file-reading tool (`Read`, `read`, `view`) succeeds, with
 `knowledge=on`, also when the loop guard is off, and only on a host verified to put that
 context after the tool's result at the end of the conversation (`tool_context`: Claude Code,
@@ -159,13 +164,12 @@ can currently load; supported declaration forms are limited to those recognized 
 Install the package dependencies to enable symbol parsing.
 
 
-The proposer can synthesize two or more distinct existing atomic Knowledge entries.
-TE resolves their IDs to current revisions while holding the mechanisms lock, and
-the synthesis follows the same lifecycle and selection budget. Before every new
-injection, each dependency must still exist at its pinned revision, be eligible,
-and have a valid proof. Forgetting, revising, or invalidating a dependency excludes
-the synthesis without deleting it; atomics remain independently usable. Nested
-syntheses are not supported. Inspection displays the pinned dependencies.
+A fact about several files or symbols is proposed as `sources`, at least two `{source,
+symbol?}` entries, in place of `source` and `symbol`. Each source is proven as a single one is
+(from the same session's observation, a partial read only for a declaration it crossed), and the
+contract is the list of those proofs: the Knowledge is valid only while every one of them is.
+Inspection lists all its sources. Knowledge that synthesizes other Knowledge is not supported;
+a stored one of that kind has no proof, so it is never injected.
 
 ## Recorded-session evaluation
 
@@ -177,7 +181,7 @@ proposal cadence is overridden. The following counts are `(stored, eligible for
 rendering)` after each fold: `(0, 0), (1, 0), (1, 0), (1, 1), (1, 1)`.
 The test also checks the hook output, forget/unforget, deletion and restoration.
 The separate Copilot recording test exercises a second host. Workflow tests cover
-file and symbol contracts, compositions, revision, warm-cache revalidation,
+file and symbol contracts, several sources, revision, warm-cache revalidation,
 workspace isolation, budget, native coexistence and user controls.
 
 This is a deterministic integration scenario, not a representative yield estimate:
