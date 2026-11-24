@@ -266,3 +266,40 @@ def test_composed_knowledge_follows_atomic_dependencies(tmp_path, monkeypatch):
     assert "second" in stage.render()
     del stage.facts[ids[0]]
     assert "combined" not in stage.render()
+
+
+def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.plugin import sidecall
+    calls = []
+    source = __import__("pathlib").Path(repo) / "source.txt"
+    source.write_text("observed\n")
+    detector = {"scope": "pytest", "confirm": "passed"}
+    facts = [{"id": "native", "claim": "native claim", "cite": ["s0", "s1"], "detector": detector}]
+    facts += [{"id": f"k{i}", "claim": f"knowledge {i}", "source": "source.txt",
+               "source_session": "s1", "cite": ["s0", "s1"], "detector": detector}
+              for i in range(4)]
+    def runner(prompt, model):
+        calls.append(prompt)
+        return json.dumps({"facts": facts}), 5
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: runner)
+    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller",
+                   TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
+    for i in range(3):
+        path = tmp_path / f"shared{i}.jsonl"
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "observed\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
+        ]
+        path.write_text("\n".join(map(json.dumps, events)))
+        run_session(enabled, repo, f"s{i}", str(path))
+    assert len(calls) == 1
+    assert "observed_sources" in calls[0]
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    from tokeneconomizer.microskills.distiller import Distiller
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    native = Distiller.load(ctx.repo.label, ctx.mech_dir)
+    knowledge = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+    assert len(native.facts) == 1
+    assert len(knowledge.facts) == 3

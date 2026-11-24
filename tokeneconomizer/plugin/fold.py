@@ -19,6 +19,7 @@ Each session is folded once, at its first end, keyed by session id; a resumed se
 re-folded, because counting the same trajectory twice would hand the fact lifecycle confirmations
 it did not earn.
 """
+import json
 import os
 import shutil
 import tempfile
@@ -72,7 +73,7 @@ def _microskills_config(ctx, profile):
                            max_tokens=ctx.config.microskills_max_tokens)
 
 
-def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported=False):
+def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported=False, shared=None):
     profile = ctx.config.microskills
     if profile == "off":
         return None
@@ -86,6 +87,8 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
         runner = (sidecall.runner_for(ctx.host.name, ctx.config, role="proposer")
                   if not sidecall.paused(ctx.host.name, ctx.root)
                   else sidecall.local_runner("proposer", ctx.config))
+    if runner is not None and shared is not None:
+        runner = shared.wrap(runner)
     stage = PrefixStage(icfg, ctx.repo.label, ctx.mech_dir, False, runner=runner,
                         optimizer_model="agent", adapter=adapter, agent=ctx.host.name)
     srow = {"resolved": None}
@@ -104,14 +107,14 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
     return {"optimizer_tokens": float(opt_tokens or 0), "rendered_chars": len(rendered)}
 
 
-def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_path=None):
+def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_path=None, shared=None):
     if not ctx.config.knowledge or not transcript or ctx.host.name not in ("claude", "pi", "copilot"):
         return None
     from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
     from tokeneconomizer.microskills import distiller
     distiller.PROPOSE_EVERY = ctx.config.microskills_propose_every
     runner = None
-    if not imported:
+    if not imported and shared is None:
         runner = (sidecall.runner_for(ctx.host.name, ctx.config, role="proposer")
                   if not sidecall.paused(ctx.host.name, ctx.root)
                   else sidecall.local_runner("proposer", ctx.config))
@@ -122,7 +125,38 @@ def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_
     before = stage.opt_tokens
     stage.update(trace_path or transcript, iid=session_id, observed_transcript=transcript)
     stage.save(ctx.mech_dir)
+    if shared is not None:
+        shared.stage, shared.root = stage, ctx.mech_dir
     return {"optimizer_tokens": stage.opt_tokens - before}
+
+
+class _SharedProposer:
+    """Share the native tick and its candidate budget with Knowledge."""
+    stage = None
+    root = None
+
+    def wrap(self, runner):
+        def propose(prompt, model):
+            if self.stage is None:
+                return runner(prompt, model)
+            from tokeneconomizer.microskills import distiller
+            stage = self.stage
+            captured = []
+            previous = stage.last_propose
+            stage.runner = lambda p, m: (captured.append(p) or "{}", None)
+            stage._maybe_propose()
+            stage.last_propose = previous
+            raw, tokens = runner(prompt + "\n\nKnowledge context (share the same four-fact budget):\n" + captured[0], model)
+            exts, facts = distiller.parse_payload(raw)
+            facts = facts[:distiller.MAX_CANDS]
+            knowledge = [f for f in facts if "source" in f or "dependencies" in f]
+            native = [f for f in facts if "source" not in f and "dependencies" not in f]
+            stage.runner = lambda p, m: (json.dumps({"extractors": exts, "facts": knowledge}), None)
+            stage._maybe_propose()
+            stage.runner = None
+            stage.save(self.root)
+            return json.dumps({"extractors": exts, "facts": native}), tokens
+        return propose
 
 
 class Busy(RuntimeError):
@@ -565,15 +599,20 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
             adapter = LiveAdapter(ctx.host, ctx.repo.root, vocabulary=ctx.config.vocabulary,
                                   catalog=catalog, protect=ctx.config.toolprune_protect)
             with ctx.store.locked("mechanisms"):
-                inj = _fold_microskills(ctx, adapter, run_dir, session_id,
-                                        injected=sess.get("injected_ids"), imported=imported)
+                shared = (_SharedProposer() if ctx.config.knowledge and not imported
+                          and ctx.host.name in ("claude", "pi", "copilot")
+                          and "distiller" in ctx.config.microskills else None)
                 try:
                     knowledge = _fold_knowledge(ctx, adapter, transcript, session_id, imported,
-                                                trace_path=trace_path)
+                                                trace_path=trace_path, shared=shared)
                 except Exception:
                     # One malformed knowledge record must not prevent the other mechanisms
                     # from folding this session.
                     knowledge = {"error": "knowledge fold failed"}
+                    shared = None
+                inj = _fold_microskills(ctx, adapter, run_dir, session_id,
+                                        injected=sess.get("injected_ids"), imported=imported,
+                                        shared=shared)
                 # A session that ran no prompt is no evidence about the tools.
                 unt = None if prompts == 0 else _fold_toolprune(
                     ctx, adapter, run_dir, session_id, transcript=transcript,
