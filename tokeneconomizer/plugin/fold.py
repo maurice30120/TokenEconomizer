@@ -143,18 +143,31 @@ class _SharedProposer:
             stage = self.stage
             captured = []
             previous = stage.last_propose
-            stage.runner = lambda p, m: (captured.append(p) or "{}", None)
-            stage._maybe_propose()
-            stage.last_propose = previous
+            try:
+                stage.runner = lambda p, m: (captured.append(p) or "{}", None)
+                stage._maybe_propose()
+            except Exception:
+                # Knowledge context is optional; preserve the native proposer tick.
+                pass
+            finally:
+                stage.runner = None
+                stage.last_propose = previous
+            if not captured:
+                return runner(prompt, model)
             raw, tokens = runner(prompt + "\n\nKnowledge context (share the same four-fact budget):\n" + captured[0], model)
             exts, facts = distiller.parse_payload(raw)
             facts = facts[:distiller.MAX_CANDS]
             knowledge = [f for f in facts if "source" in f or "dependencies" in f]
             native = [f for f in facts if "source" not in f and "dependencies" not in f]
-            stage.runner = lambda p, m: (json.dumps({"extractors": exts, "facts": knowledge}), None)
-            stage._maybe_propose()
-            stage.runner = None
-            stage.save(self.root)
+            try:
+                stage.runner = lambda p, m: (json.dumps({"extractors": exts, "facts": knowledge}), None)
+                stage._maybe_propose()
+                stage.save(self.root)
+            except Exception:
+                # A malformed Knowledge record must not discard the native response.
+                pass
+            finally:
+                stage.runner = None
             return json.dumps({"extractors": exts, "facts": native}), tokens
         return propose
 

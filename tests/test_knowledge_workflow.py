@@ -303,3 +303,45 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
     knowledge = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
     assert len(native.facts) == 1
     assert len(knowledge.facts) == 3
+
+
+@pytest.mark.parametrize("failure", ["empty_window", "capture_error", "admission_error"])
+def test_native_proposal_survives_unavailable_knowledge_context(tmp_path, env, repo, monkeypatch, failure):
+    from tokeneconomizer.plugin import sidecall
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    from tokeneconomizer.microskills.distiller import Distiller
+
+    calls = []
+    candidate = {"id": "native", "claim": "native claim", "cite": ["s0", "s1"],
+                 "detector": {"scope": "pytest", "confirm": "passed"}}
+    def runner(prompt, model):
+        calls.append(prompt)
+        return json.dumps({"facts": [candidate]}), 5
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: runner)
+    if failure == "empty_window":
+        monkeypatch.setattr(Knowledge, "update", lambda *a, **kw: None)
+    else:
+        original_propose = Knowledge._maybe_propose
+        attempts = []
+        def fail_capture(self):
+            if self.runner is not None:
+                attempts.append(1)
+                if failure == "capture_error" or len(attempts) == 2:
+                    raise ValueError("invalid Knowledge context")
+            return original_propose(self)
+        monkeypatch.setattr(Knowledge, "_maybe_propose", fail_capture)
+    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller",
+                   TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
+    for i in range(3):
+        path = tmp_path / f"native{i}.jsonl"
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
+        ]
+        path.write_text("\n".join(map(json.dumps, events)))
+        run_session(enabled, repo, f"s{i}", str(path))
+    assert len(calls) == 1
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    native = Distiller.load(ctx.repo.label, ctx.mech_dir)
+    assert "native" in native.facts
