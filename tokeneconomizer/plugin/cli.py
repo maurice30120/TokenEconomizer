@@ -332,15 +332,26 @@ def cmd_microskills(args):
     if stage:
         from tokeneconomizer.knowledge.proof import verify_proof, available_languages
         print("\nknowledge symbol grammars: " + (", ".join(f"{ext}={lang}" for ext, lang in sorted(available_languages().items())) or "none"))
-    if stage and stage.facts:
+    if stage and (stage.facts or stage.forgotten):
+        from tokeneconomizer.microskills.distiller import Fact
         print("\nknowledge tracked:")
-        for fid, fact in sorted(stage.facts.items()):
+        entries = [(fid, fact, False) for fid, fact in stage.facts.items()]
+        for fid, record in stage.forgotten.items():
+            try:
+                entries.append((fid, Fact.from_dict(record["record"]), True))
+            except (KeyError, TypeError, ValueError):
+                continue
+        for fid, fact, forgotten in sorted(entries, key=lambda item: item[0]):
             proof = fact.spec.get("proof", {})
             valid = verify_proof(ctx.repo.root, proof)
             if isinstance(proof, dict) and proof.get("fallback"):
                 print(f"  fallback {fid}: {proof['fallback']}")
+            provenance = fact.spec.get("provenance") or {}
             print(f"  {fact.state:9s} rev={fact.spec.get('rev', 1)} "
-                  f"proof={'valid' if valid else 'invalid'} {fid}  {_short(fact.claim)}")
+                  f"proof={'valid' if valid else 'invalid'} "
+                  f"{'forgotten ' if forgotten else ''}{fid}  {_short(fact.claim)}")
+            print(f"    source={provenance.get('path', '?')} "
+                  f"session={provenance.get('session', '?')}")
     from tokeneconomizer.microskills import forgotten_facts
     gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"),
                            workspace=ctx.repo.root)

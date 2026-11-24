@@ -46,22 +46,38 @@ def test_pi_rejects_partial_failed_and_truncated_results(tmp_path):
 
 def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     from tests.test_live_hooks import call, run_session
+    fixtures = Path(__file__).parent / "fixtures" / "knowledge"
     from tokeneconomizer.plugin import sidecall
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    (repo / "source.txt").write_text("observed\n")
+    (repo / "source.txt").write_text("observed\nsecond\n")
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1", "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off", "TE_LOOPGUARD": "off"}
     candidate = {"id": "k", "claim": "Pi observation", "source": "source.txt", "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
     for i in range(5):
         transcript = tmp_path / f"s{i}.jsonl"
-        session(transcript, repo, {"path": "source.txt"}, "observed\n")
+        transcript.write_text((fixtures / "pi-complete.jsonl").read_text().replace("__WORKSPACE__", str(repo)))
         with transcript.open("a") as f:
-            f.write("\n" + json.dumps({"type": "message", "id": "c", "parentId": "b", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "t", "name": "bash", "arguments": {"command": "pytest"}}]}}))
+            f.write("\n" + json.dumps({"type": "message", "id": "c", "parentId": "474c3ba4", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "t", "name": "bash", "arguments": {"command": "pytest"}}]}}))
             f.write("\n" + json.dumps({"type": "message", "id": "d", "parentId": "c", "message": {"role": "toolResult", "toolCallId": "t", "toolName": "bash", "isError": False, "content": [{"type": "text", "text": "passed"}]}}))
         run_session(env, str(repo), f"s{i}", str(transcript), host="pi")
     payload = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "next", "cwd": str(repo)}
     assert "Pi observation" in json.dumps(call(env, payload, host="pi"))
+    from tokeneconomizer.plugin import cli
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import Pi
+    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    ctx = LiveContext.build(Pi(), str(repo), env)
+    fid = next(iter(Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir).facts))
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    def command(action):
+        return cli.main(["--host", "pi", "--cwd", str(repo), "microskills", action, fid])
+    assert command("forget") == 0
+    assert "Pi observation" not in json.dumps(call(env, dict(payload, session_id="forgotten"), host="pi"))
     (repo / "source.txt").unlink()
+    assert command("unforget") == 0
     assert "Pi observation" not in json.dumps(call(env, dict(payload, session_id="later"), host="pi"))
+    (repo / "source.txt").write_text("observed\nsecond\n")
+    assert "Pi observation" in json.dumps(call(env, dict(payload, session_id="restored"), host="pi"))

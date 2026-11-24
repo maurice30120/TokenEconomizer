@@ -21,7 +21,10 @@ session. It runs on the existing micro-skills proposal cadence and uses TE's gro
 confirmation, contradiction and firing thresholds. The proposal is a separate model call;
 verification is local and makes no model call. Knowledge shares the configured micro-skills
 injection limits with native facts. State is isolated by workspace path. `te microskills`
-lists Knowledge and its proof status; its `forget` and `unforget` operations also apply.
+lists Knowledge identity, revision, lifecycle, proof status, and source session and path,
+including forgotten records. Use `te microskills forget ID` to suppress one and
+`te microskills unforget ID` to restore its saved lifecycle; injection still requires
+a valid proof and the usual lifecycle gates.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
