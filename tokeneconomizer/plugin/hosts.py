@@ -126,9 +126,22 @@ class Host:
     # context goes without changing the cached prefix of later requests. A host whose plugin
     # adds prompt context to its system prompt cannot: it says False and gets no Knowledge.
     prompt_knowledge = True
+    # Whether context returned from PostToolUse reaches the model after the tool's result, at
+    # the end of the conversation (verified per host, 2026-11-24: Claude Code, Copilot, Pi).
+    # No host accepts it before the call: see "PreToolUse" in docs/PLUGIN.md.
+    tool_context = False
 
     def session_id(self, p):
         return str(p.get("session_id") or "")
+
+    def read_path(self, p):
+        """The file a PostToolUse payload's file-reading tool (`Read`, `read`, `view`) read, as
+        the tool was given it; "" for any other call."""
+        name, args, _text, _code = self.tool_call(p)
+        if name not in ("Read", "read", "view"):
+            return ""
+        path = args.get("file_path") or args.get("path")
+        return path if isinstance(path, str) else ""
 
     def transcript(self, p):
         return p.get("transcript_path") or ""
@@ -320,6 +333,7 @@ class ClaudeCode(Host):
     # `claude -p` prints it not at all; Claude's own reply is in the main view and in the output.
     relays_notices = True
     prompt_context = True
+    tool_context = True                # verified: PostToolUse additionalContext follows the call
 
     def turn_key(self, p):
         return str(p.get("prompt_id") or "")
@@ -445,6 +459,7 @@ class Pi(Host):
     """
     name = "pi"
     prompt_context = True              # the extension appends it to the session's section
+    tool_context = True                # verified 1.6.0: its steering message follows the result
 
     def prompt_message(self, event, text):
         # `promptMessage`, not `additionalContext`: the extension adds the latter to the system
@@ -1151,6 +1166,7 @@ class Copilot(Host):
     name = "copilot"
     interrupt = "Press Esc twice to interrupt it."  # 1.0.101: "esc esc interrupt"
     prompt_context = True              # verified: top-level additionalContext
+    tool_context = True                # verified 1.0.114: appended to the tool's result
     # 1.0.102 rebuilds a resumed conversation's first message without it, dropping the facts
     # and missing the prompt cache; the same text given again rebuilds it as it was.
     keeps_start_context = False

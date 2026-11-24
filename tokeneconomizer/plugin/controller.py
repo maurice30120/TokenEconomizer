@@ -9,7 +9,9 @@
     UserPromptSubmit  open a prompt-turn for the loop guard; on a session's first prompt, add
                       the repository map (`repomap=on`); with `knowledge=on`, add the
                       Knowledge whose symbol or file the prompt names (never at session start)
-    PostToolUse       fold the call into the turn's guard; keep the bytes a Pi `read`
+    PostToolUse       with `knowledge=on`, after a read, add the Knowledge covering the file
+                      (once per session, after the result: no host accepts context before);
+                      fold the call into the turn's guard; keep the bytes a Pi `read`
                       returned, for the fold; a redirect when it first says the turn is stuck,
                       then a notice to the person saying how to stop it
     Stop              close the turn; an ended-green turn feeds the repository's envelope
@@ -36,6 +38,7 @@ from .hosts import merge_outputs
 from .paths import ensure_launcher
 
 TURN_HISTORY = 200
+KNOWLEDGE_READS = 500          # files a session remembers having read
 
 # Droid versions whose PostToolUse drops failed tool calls (#231), as [first,
 # past-last): 1.12.0 and 1.12.1 are the versions verified to drop them. 0.233.0
@@ -131,6 +134,7 @@ class LiveController:
             # What a cleared, compacted or new conversation was given is gone, and so is what a
             # host that rebuilds a resumed one without its start context had added.
             s.pop("knowledge_given", None)
+            s.pop("files_read", None)
         s.setdefault("cwd", self.host.cwd(self.p, self.ctx.env))
         outputs = []
         seen = self.store.read("notices.json") or {}
@@ -347,6 +351,28 @@ class LiveController:
             self._record_error()
             return ""
 
+    def _read_knowledge_block(self, s, rel, read_before):
+        from ..knowledge.stage import Knowledge, workspace_id
+        native = s.get("injected_text") or ""
+        with self.ctx.store.locked("mechanisms") as got:
+            if not got:
+                raise RuntimeError("knowledge state busy")
+            stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
+                                   self.ctx.mech_dir)
+            stage.workspace = self.ctx.repo.root
+            facts = max(0, self.cfg.microskills_max_facts
+                        - sum(ln.startswith("- ") for ln in native.splitlines()))
+            tokens = max(0, self.cfg.microskills_max_tokens - (len(native) + 3) // 4)
+            given = list(s.get("knowledge_given") or [])
+            head, lines, chosen = stage.selection(max_facts=facts, max_tokens=tokens,
+                                                  given=given, read=rel)
+            for fact, signal in chosen:
+                self._log("knowledge", knowledge_id=fact.id, signal=signal, trigger="read",
+                          when="after_read", read_before=read_before)
+            if lines:
+                s["knowledge_given"] = given
+            return "\n".join([head, *lines]) + "\n" if lines else ""
+
     def user_prompt(self):
         if self.cfg.loopguard == "off" and not self.knowledge_on_prompt() and not (
                 self.cfg.repomap == "on" and self.host.prompt_context):
@@ -469,8 +495,50 @@ class LiveController:
             return NoVerdict()
         return AsyncJudge(self.ctx, self.sid, thr.get("judge_confidence"))
 
+    def knowledge_on_read(self):
+        """Does this tool hook bring Knowledge? Only after a read, on a host verified to put
+        its context after the result without rewriting the cached prefix."""
+        return bool(self.cfg.knowledge and not self.cfg.shadow and self.host.tool_context
+                    and self.p.get("hook_event_name") == "PostToolUse"
+                    and self.host.read_path(self.p))
+
+    def _workspace_path(self, path):
+        """A read's path relative to the workspace, "" when it lies outside."""
+        cwd = self.host.cwd(self.p, self.ctx.env)
+        full = os.path.realpath(os.path.join(cwd, path))
+        root = os.path.realpath(self.ctx.repo.root)
+        rel = os.path.relpath(full, root)
+        return "" if rel == os.pardir or rel.startswith(os.pardir + os.sep) \
+            or os.path.isabs(rel) else rel.replace(os.sep, "/")
+
+    def _knowledge_on_read(self):
+        """The context that gives the Knowledge covering the file just read, logged with the file
+        as its signal, `after_read` and whether the file had been read earlier in the session.
+        {} when none is given; a failure leaves the output as it would be without Knowledge."""
+        try:
+            rel = self._workspace_path(self.host.read_path(self.p))
+            if not rel:
+                return {}
+            s = self._session()
+            read = list(s.get("files_read") or [])
+            read_before = rel in read
+            if not read_before:
+                s["files_read"] = (read + [rel])[-KNOWLEDGE_READS:]
+            block = "" if self.replaying else self._read_knowledge_block(s, rel, read_before)
+            self._save(s)
+            return self.host.context("PostToolUse", block) if block else {}
+        except Exception:
+            self._record_error()
+            return {}
+
     def post_tool(self):
-        if self.cfg.loopguard == "off" or self.host.is_subagent(self.p):
+        if self.host.is_subagent(self.p):
+            return {}
+        out = self._knowledge_on_read() if self.knowledge_on_read() else {}
+        return merge_outputs(out, self._guard_tool()) if out else self._guard_tool()
+
+    def _guard_tool(self):
+        if self.cfg.loopguard == "off":
             return {}
         # The answer names the event it answers: Claude Code rejects a PostToolUseFailure answer
         # labelled PostToolUse ("Hook returned incorrect event name", 2.1.306) and drops it whole,

@@ -80,6 +80,11 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     assert "Pi observation" in out["hookSpecificOutput"]["promptMessage"]
     assert "additionalContext" not in out["hookSpecificOutput"]
     assert call(env, dict(payload, session_id="other", prompt="rename widget"), host="pi") == {}
+    # A read of the covered file: the extension sends it as a steering message after the result.
+    read = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": str(repo), "tool_name": "read",
+            "tool_input": {"path": "source.txt"}, "tool_response": {"content": "observed\nsecond\n", "isError": False}}
+    assert "Pi observation" in call(env, read, host="pi")["hookSpecificOutput"]["additionalContext"]
+    assert call(env, read, host="pi") == {}
     from tokeneconomizer.plugin import cli
     fid = next(iter(Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir).facts))
     for key, value in env.items():

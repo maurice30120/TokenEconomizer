@@ -15,7 +15,7 @@ the hooks run) and `plugin/` (the packaging for each agent). To install and use 
 |---|---|---|
 | `SessionStart` | Injects the repository's micro-skills (a cached render) as `additionalContext`, at a new start, and on a Copilot resume the text that session started with (§3); announces changed facts, tools the deny list newly left out, or, under `toolprune=propose` (or when `auto` could not write the file), a proposal still waiting, each in one `systemMessage` line; folds any earlier session whose end was never seen; on Claude Code with `history_import` on, the first time in a repository with nothing folded, starts a detached `te history import` of its sessions from before the plugin, and says once when that is done | microskills |
 | `UserPromptSubmit` | Opens a prompt-turn for the loop guard; with `knowledge=on`, on a host whose prompt context reaches the model, injects the Knowledge whose symbol or file the prompt names (Relevant Knowledge; none at session start; none on Codex, Cursor, Antigravity, Grok or opencode; on Pi as a message, not in the system-prompt section) — see the [Knowledge README](../tokeneconomizer/knowledge/README.md) | loopguard, Knowledge |
-| `PostToolUse` | Folds the call into the turn's guard; delivers a redirect as `additionalContext`, then, if the turn is still stuck, a one-line notice to the person (on Claude Code, also as context asking the model to repeat it); never stops the turn | loopguard |
+| `PostToolUse` | With `knowledge=on`, after a file read on Claude Code, Copilot or Pi, injects the Knowledge covering the file, once per session and also with the loop guard off (never before the read: see the 2026-11-24 probe below); folds the call into the turn's guard; delivers a redirect as `additionalContext`, then, if the turn is still stuck, a one-line notice to the person (on Claude Code, also as context asking the model to repeat it); never stops the turn | loopguard |
 | `PostToolUseFailure` | The same, for a call that failed (Claude Code and Copilot report a failed call only here); the answer names this event, as Claude Code requires | loopguard |
 | `Stop` | Closes the turn; a turn that *ended green* feeds the per-repository envelope | loopguard |
 | `SessionEnd` | Hands the session to a detached `te fold` and returns at once | microskills, toolprune, ledger |
@@ -293,6 +293,22 @@ itself, with no model and no quota:
   (`refresh-catalog`, captured the same way, with no model call), five sessions that never used
   the GitHub tools produced that proposal, and the next session's request no longer carried the
   server's tools.
+
+**A hook before the tool call, probed 2026-11-24 (Copilot CLI 1.0.114, Pi 1.6.0)** for the
+Knowledge read trigger, against a scripted OpenAI-compatible endpoint on localhost (no model, no
+quota; isolated `COPILOT_HOME` / `PI_CODING_AGENT_DIR`; the requests were recorded):
+
+* Copilot's `PreToolUse` takes context (top-level `additionalContext` and
+  `hookSpecificOutput.additionalContext` alike), does not deny the tool, and the payload names the
+  tool `Read` with `tool_input.path`; but the model gets it as a user message *after* the tool
+  result ("Additional context from preToolUse hook:"), in the same request as the result, so it
+  cannot save the read. Prefix unchanged (earlier messages, system prompt and tools identical).
+  `PostToolUse` context is appended to the result itself, prefix unchanged.
+* Pi's `tool_call` returns only `{block}`; there is no context. A steering message sent from it
+  (or from `tool_result`) is delivered after the result, prefix unchanged.
+* Result: no host injects before a read; Knowledge on a read is given after it on Claude Code,
+  Copilot and Pi (`Host.tool_context`), nothing elsewhere. Details in the
+  [Knowledge README](../tokeneconomizer/knowledge/README.md).
 
 **Pi 0.99.2 — verified live with `pi --print`** (`@earendil-works/pi-coding-agent`, the
 extension loaded with `--extension`, gpt-5.6-sol through an `openai-responses` provider in an

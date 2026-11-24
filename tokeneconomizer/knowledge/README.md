@@ -77,12 +77,57 @@ path (2), then a file named by its bare file name (1); a composed Knowledge coun
 matching signal. Equal matches are ordered by firing rate, highest first, and what still ties
 keeps registration order, so the choice is deterministic and makes no model call.
 
+### The read trigger
+
+The second trigger is the agent reading a file a Knowledge covers (its own file, or the
+files of the Knowledge a composed one is pinned to), even when the request never named it. It
+runs on `PostToolUse` after a file-reading tool (`Read`, `read`, `view`) succeeds, with
+`knowledge=on`, also when the loop guard is off, and only on a host verified to put that
+context after the tool's result at the end of the conversation (`tool_context`: Claude Code,
+Copilot, Pi). A host not verified gets nothing from this trigger. The same once-per-session
+memory (`knowledge_given`) and the same budget, proof, lifecycle and forgotten gates apply, so a
+Knowledge given by the prompt is not given again by the read, nor the reverse. The file must lie
+inside the workspace. Covering Knowledge is ordered by firing rate. A subagent's read, a failed
+read, a shadow run and a replayed (queued) hook inject nothing.
+
+**It cannot save the read.** Probed on 2026-11-24, no host accepts context for the model before
+the tool runs, so the Knowledge is always injected after the read (`when: "after_read"`); there
+is no pre-read path. The session state remembers the files read (`files_read`, emptied with
+`knowledge_given`), so the log says when the file had been read earlier in the session
+(`read_before`): then the Knowledge came too late for that read as well.
+
+#### Verified hosts: hook before the tool call (probe, 2026-11-24)
+
+Each host ran a scripted OpenAI-compatible endpoint on localhost that read two files, in an
+isolated config directory (`COPILOT_HOME`, `PI_CODING_AGENT_DIR`), with a throwaway hook or
+extension that emitted a canary string; the requests the model would have received were
+recorded, so no real model was involved.
+
+| Host | Accepts context before the call | Tool denied | Seen before the result | Prefix of the next request |
+|---|---|---|---|---|
+| Copilot CLI 1.0.114 (`PreToolUse`, top-level or `hookSpecificOutput` `additionalContext`) | yes | no | **no**: a user message *after* the tool result ("Additional context from preToolUse hook") | unchanged |
+| Pi 1.6.0 (`tool_call`) | **no**: it can only block or edit the input; a message sent from it (`sendMessage`, steer) lands after the result | no | **no** | unchanged |
+
+Result: neither host can inject before the read, so no pre-read injection exists; both use the
+fallback below.
+
+#### Verified hosts: context after the tool call (`PostToolUse`)
+
+| Host | Delivery | Placement | Prefix of the next request |
+|---|---|---|---|
+| Copilot CLI 1.0.114 | top-level `additionalContext` | appended to the tool result ("Additional guidance from postToolUse hooks") | unchanged, system prompt and tools identical |
+| Pi 1.6.0 | the extension's steering message (`additionalContext` of the answer) | a user message after the result | unchanged |
+| Claude Code | `hookSpecificOutput.additionalContext`, followed in the same turn (`docs/PLUGIN.md`, earlier verification) | after the result | not re-probed here; context goes to the end of the conversation |
+
+Not verified for this trigger, so nothing is injected: Codex (it reads through the shell, with no
+file-reading tool), Cursor, Antigravity, Grok, Droid, opencode, Hermes.
+
 Each Knowledge actually injected is logged, one line per Knowledge, in the repository's
 `events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
-`knowledge_id`, `signal` (the symbol or file the prompt named), `trigger` (`"prompt"`), plus
-the usual `at`, `session_id` and `shadow`. Nothing is logged when nothing is injected, and
-forgotten, stale-proof or budget-dropped Knowledge never appears. Other triggers add fields to
-this event rather than a new kind.
+`knowledge_id`, `signal` (the symbol or file the prompt named, or the file that was read),
+`trigger` (`"prompt"` or `"read"`), plus the usual `at`, `session_id` and `shadow`. A read
+adds `when` (`"after_read"`) and `read_before` (the file had been read earlier in the session). Nothing is logged when nothing is injected, and
+forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores

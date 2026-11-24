@@ -87,5 +87,10 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
     assert "Copilot observation" not in json.dumps(call(env, start, host="copilot"))
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
     assert "Copilot observation" in call(env, payload, host="copilot")["additionalContext"]
+    # A read of the covered file: top-level additionalContext, after the tool's result.
+    read = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": str(repo), "tool_name": "Read",
+            "tool_input": {"path": str(repo / "source.txt")}, "tool_result": {"text_result_for_llm": "observed\n"}}
+    assert "Copilot observation" in call(env, read, host="copilot")["additionalContext"]
+    assert call(env, read, host="copilot") == {}
     (repo / "source.txt").write_text("changed\n")
     assert "Copilot observation" not in json.dumps(call(env, dict(payload, session_id="after"), host="copilot"))

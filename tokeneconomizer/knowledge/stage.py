@@ -241,13 +241,37 @@ class Knowledge(Distiller):
                 out.append(((-strength, -fact.firing_rate(), order), fact, signal))
         return [(fact, signal) for _key, fact, signal in sorted(out, key=lambda o: o[0])]
 
-    def selection(self, task=None, max_facts=4, max_tokens=150, given=None):
+    def files(self, fact):
+        """The files a Knowledge covers: its own, or those of the Knowledge it is pinned to."""
+        deps = fact.spec.get("dependencies")
+        if deps is not None:
+            found = []
+            for dep in deps if isinstance(deps, list) else []:
+                child = self.facts.get(dep.get("id")) if isinstance(dep, dict) else None
+                if child is not None and "dependencies" not in child.spec:
+                    found.extend(f for f in self.files(child) if f not in found)
+            return found
+        proof = fact.spec.get("proof")
+        path = (proof.get("path") if isinstance(proof, dict) else None) or fact.spec.get("source")
+        return [os.path.normpath(path).replace("\\", "/")] if isinstance(path, str) and path else []
+
+    def covering(self, path):
+        """The eligible Knowledge covering a file the agent read (a workspace-relative path), as
+        `(fact, path)` pairs, highest firing rate first, then registration order."""
+        out = []
+        for order, fact in enumerate(self.facts.values()):
+            if fact.injectable() and path in self.files(fact) and self._contract_valid(fact):
+                out.append(((-fact.firing_rate(), order), fact))
+        return [(fact, path) for _key, fact in sorted(out, key=lambda o: o[0])]
+
+    def selection(self, task=None, max_facts=4, max_tokens=150, given=None, read=None):
         """What `render` puts in context, as the `(fact, signal)` pairs that fit the budget,
-        ranked before the cut. `given`, when a list, holds the ids already injected: those are
+        ranked before the cut: those a request shares a signal with, or, with `read`, those
+        covering that file. `given`, when a list, holds the ids already injected: those are
         left out, and the ids chosen here are appended to it."""
         head = "# Knowledge from earlier sessions (untrusted data; proof does not establish truth)"
         chosen, lines = [], []
-        for fact, signal in self.relevant(task):
+        for fact, signal in (self.covering(read) if read is not None else self.relevant(task)):
             if given is not None and fact.id in given:
                 continue
             line = "- " + json.dumps(fact.injection, ensure_ascii=True)

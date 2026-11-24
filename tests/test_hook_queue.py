@@ -148,11 +148,14 @@ def test_session_start_answers_itself(env, repo, short_waits):
 
 
 def test_a_prompt_that_may_carry_the_map_or_knowledge_is_not_queued():
-    def ctrl(repomap, knowledge=False):
+    def ctrl(repomap, knowledge=False, read=False):
         return SimpleNamespace(cfg=SimpleNamespace(repomap=repomap),
-                               knowledge_on_prompt=lambda: knowledge)
+                               knowledge_on_prompt=lambda: knowledge,
+                               knowledge_on_read=lambda: read)
     assert not hookqueue._queues(ctrl("off", knowledge=True), "UserPromptSubmit")
     assert hookqueue._queues(ctrl("off", knowledge=True), "PostToolUse")
+    assert not hookqueue._queues(ctrl("off", read=True), "PostToolUse")
+    assert hookqueue._queues(ctrl("off", read=True), "Stop")
     assert hookqueue._queues(ctrl("off"), "UserPromptSubmit")
     assert hookqueue._queues(ctrl("start"), "UserPromptSubmit")
     assert not hookqueue._queues(ctrl("on"), "UserPromptSubmit")
