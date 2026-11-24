@@ -529,7 +529,7 @@ def test_the_bundle_runs_without_a_checkout(tmp_path):
 
 
 # ---- the layering the README promises ------------------------------------------------------
-MECHANISMS = ("microskills", "toolprune", "loopguard", "trace")
+MECHANISMS = ("microskills", "toolprune", "loopguard", "trace", "knowledge")
 CORE_MODULES = ("config.py", "domain.py", "ledger.py", "pricing.py", "stage.py")
 
 

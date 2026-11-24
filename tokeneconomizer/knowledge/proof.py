@@ -7,11 +7,11 @@ def file_proof(root, path, observed, *, complete):
     """Build a proof only from a complete observation; never hash a later file read."""
     if not complete or not isinstance(observed, bytes):
         return None
-    root = Path(root).resolve()
-    target = (root / path).resolve()
     try:
+        root = Path(root).resolve()
+        target = (root / path).resolve()
         relative = target.relative_to(root)
-    except ValueError:
+    except (OSError, RuntimeError, TypeError, ValueError):
         return None
     return {"path": str(relative), "sha256": hashlib.sha256(observed).hexdigest()}
 
@@ -23,5 +23,5 @@ def verify_file(root, proof):
         target = (root / proof["path"]).resolve()
         target.relative_to(root)
         return hashlib.sha256(target.read_bytes()).hexdigest() == proof["sha256"]
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
         return False

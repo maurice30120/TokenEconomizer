@@ -4,13 +4,15 @@ import json
 from .proof import file_proof
 
 
-def _visible_complete(raw, visible):
+def _visible_complete(raw, visible, total):
     if raw == visible:
         return True
     if not isinstance(visible, str):
         return False
-    numbered = [f"{i:6d}→{line}" for i, line in enumerate(raw.splitlines(), 1)]
-    return bool(numbered) and visible.splitlines() == numbered
+    variants = [raw.splitlines(), raw.split("\n")]
+    return any(lines and len(lines) == total and visible.splitlines() == [f"{i:6d}→{line}"
+                                                   for i, line in enumerate(lines, 1)]
+               for lines in variants)
 
 
 def observations(transcript, root):
@@ -51,12 +53,14 @@ def observations(transcript, root):
                             or file.get("filePath") != path
                             or args.get("offset") is not None or args.get("limit") is not None
                             or not isinstance(content, str)
-                            or not _visible_complete(content, block.get("content"))
+                            or not _visible_complete(content, block.get("content"),
+                                                     file.get("totalLines"))
                             or file.get("truncatedByTokenCap") or file.get("originalSize")
                             or file.get("startLine") != 1
                             or type(file.get("totalLines")) is not int
                             or file.get("numLines") != file.get("totalLines")
-                            or len(content.splitlines()) != file.get("totalLines")):
+                            or file.get("totalLines") not in
+                               (len(content.splitlines()), len(content.split("\n")))):
                         continue
                     proof = file_proof(root, path, content.encode("utf-8"), complete=True)
                     if proof:

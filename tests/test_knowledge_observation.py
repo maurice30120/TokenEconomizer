@@ -42,3 +42,12 @@ def test_numbered_model_visible_read_matches_complete_raw_result(tmp_path):
     result["toolUseResult"]["file"]["truncatedByTokenCap"] = True
     transcript.write_text("\n".join(map(json.dumps, [use, result])))
     assert observations(transcript, tmp_path) == {}
+
+
+def test_complete_read_with_numbered_terminal_empty_line(tmp_path):
+    path = str(tmp_path / "source.txt")
+    transcript = tmp_path / "session.jsonl"
+    use = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": path}}]}}
+    result = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "     1→hello\n     2→"}]}, "toolUseResult": {"type": "text", "file": {"filePath": path, "content": "hello\n", "startLine": 1, "numLines": 2, "totalLines": 2}}}
+    transcript.write_text("\n".join(map(json.dumps, [use, result])))
+    assert "source.txt" in observations(transcript, tmp_path)
