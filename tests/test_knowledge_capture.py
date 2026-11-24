@@ -210,3 +210,15 @@ def test_discard_removes_the_session_directory(tmp_path):
     discard(session_dir(store, "s1"))
     assert load(session_dir(store, "s1")) == {}
     discard(session_dir(store, "s1"))     # already gone: still no error
+
+
+def test_a_replayed_hook_never_replaces_the_capture_of_the_read(tmp_path):
+    root, store = workspace(tmp_path), Store(str(tmp_path / "state"))
+    ctx = SimpleNamespace(repo=SimpleNamespace(root=str(root)))
+    payload = partial_read_payload(root)
+    record(store, "s1", ctx, payload)
+    # the same call delivered again once the file has changed under it
+    (root / "source.py").write_text("def target():\n    return 2\n")
+    record(store, "s1", ctx, payload)
+    captured = load(session_dir(store, "s1"))["call_1"]
+    assert captured["bytes"] == b"def target():\n    return 1\n"

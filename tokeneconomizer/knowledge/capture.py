@@ -135,7 +135,11 @@ def _store_capture(store, session_id, entry, data):
     directory = session_dir(store, session_id)
     _expire(store)
     index = _read_index(directory)
-    captures = [c for c in index if c.get("tool_use_id") != entry["tool_use_id"]]
+    # The same call may be delivered again (a hook replay): the first capture is the closest
+    # to the read, so a later one never replaces it.
+    if any(c.get("tool_use_id") == entry["tool_use_id"] for c in index):
+        return
+    captures = list(index)
     known = {c.get("sha256") for c in captures}
     if entry["sha256"] not in known:
         if len(known) >= MAX_CAPTURES or _bytes_on_disk(directory) + len(data) > MAX_SESSION_BYTES:
