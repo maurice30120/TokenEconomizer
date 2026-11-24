@@ -104,8 +104,8 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
     return {"optimizer_tokens": float(opt_tokens or 0), "rendered_chars": len(rendered)}
 
 
-def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False):
-    if not ctx.config.knowledge or not transcript or ctx.host.name != "claude":
+def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_path=None):
+    if not ctx.config.knowledge or not transcript or ctx.host.name not in ("claude", "pi", "copilot"):
         return None
     from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
     from tokeneconomizer.microskills import distiller
@@ -118,8 +118,9 @@ def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False):
     stage = Knowledge.load(workspace_id(ctx.repo.label, ctx.repo.root), ctx.mech_dir, runner=runner,
                            vocab=adapter.env_vocabulary())
     stage.workspace = ctx.repo.root
+    stage.host = ctx.host.name
     before = stage.opt_tokens
-    stage.update(transcript, iid=session_id)
+    stage.update(trace_path or transcript, iid=session_id, observed_transcript=transcript)
     stage.save(ctx.mech_dir)
     return {"optimizer_tokens": stage.opt_tokens - before}
 
@@ -567,7 +568,8 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
                 inj = _fold_microskills(ctx, adapter, run_dir, session_id,
                                         injected=sess.get("injected_ids"), imported=imported)
                 try:
-                    knowledge = _fold_knowledge(ctx, adapter, transcript, session_id, imported)
+                    knowledge = _fold_knowledge(ctx, adapter, transcript, session_id, imported,
+                                                trace_path=trace_path)
                 except Exception:
                     # One malformed knowledge record must not prevent the other mechanisms
                     # from folding this session.

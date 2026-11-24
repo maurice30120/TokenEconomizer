@@ -2,9 +2,19 @@
 
 Knowledge is experimental and off by default. Set `knowledge=on` with `te config set`
 or `TE_KNOWLEDGE=on` to enable it independently of the native mechanisms. It currently
-accepts Claude Code `Read` results only when their transcript retains both complete-file
-metadata and matching model-visible content. Partial, truncated, failed, transformed or
-unverifiable reads are ignored. Other hosts and read formats do not yet supply evidence.
+accepts:
+
+- Claude Code `Read` results with complete-file metadata and matching model-visible content;
+- Pi `read` results on the active session branch, without offsets, limits, truncation details
+  or truncation notices. This adapter was checked against the locally installed Pi 1.2.0;
+- Copilot `view` file results from session format version 1.0.105, without a range or avoided
+  large output, with telemetry confirming that the whole result reached the model. Files at or
+  above 20 KiB and sessions without the required telemetry are rejected conservatively.
+
+Partial, truncated, failed, transformed or unverifiable reads are ignored. Other hosts,
+Copilot versions and read formats do not yet supply evidence. The Pi and Copilot test fixtures
+are sanitized local sessions recorded with a simulated model provider; their file paths and Pi
+system prompt were replaced, while the tool calls and results were retained.
 
 The proposer sees bounded excerpts of complete observed reads and identifies a source and
 session. It runs on the existing micro-skills proposal cadence and uses TE's grounding,

@@ -17,6 +17,7 @@ def workspace_id(repo, workspace):
 
 class Knowledge(Distiller):
     workspace = None
+    host = "claude"
 
     @staticmethod
     def _path(root, repo):
@@ -24,8 +25,9 @@ class Knowledge(Distiller):
         os.makedirs(directory, exist_ok=True)
         return os.path.join(directory, repo_filename(repo) + ".json")
 
-    def update(self, transcript_path, iid="", resolved=None, edited=None):
-        self._current_observations = observations(transcript_path, self.workspace)
+    def update(self, transcript_path, iid="", resolved=None, edited=None, observed_transcript=None):
+        self._current_observations = observations(observed_transcript or transcript_path,
+                                                  self.workspace, host=self.host)
         return super().update(transcript_path, iid=iid, resolved=resolved, edited=edited)
 
     def _featurize(self, dg, cmds):
