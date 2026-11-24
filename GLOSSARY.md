@@ -19,5 +19,11 @@ What a session actually read of a source: the whole file for a complete read, th
 **Read Capture**:
 The bytes of a file kept by the hook as a Pi `read` returned them, so a partial read can be proved against the version it observed. Bounded per session, discarded once the session is folded, and never shown to the model as reading.
 
+**Knowledge Signal**:
+The symbol a Knowledge is about or, failing that, the file it is about, which a user request can share. A Knowledge with no signal in common with a request is not relevant to it.
+
+**Relevant Knowledge**:
+Knowledge that shares at least one Knowledge Signal with the user's current request. Only Relevant Knowledge is ever given to the agent; when none is relevant, none is given.
+
 **Knowledge Revision**:
 A marker identifying a particular revision of a Knowledge entry, separate from its stable identity.
