@@ -81,6 +81,19 @@ def test_a_late_offset_keeps_its_numbering():
         "offset": 1990, "lines": 20, "total_lines": 3001, "complete": False}
 
 
+def test_a_partial_read_of_a_large_file_is_matched_in_one_pass():
+    """Rebuilding every candidate prefix took ~20 s on this file, in a hook: the walk must
+    stop as soon as the body's end is passed, and still find the exact same window."""
+    data = lines_file(60000)
+    lines = data.decode().split("\n")
+    body = "\n".join(lines[:2000])
+    assert match_read(body + "\n\n[Showing lines 1-2000 of 60001. Use offset=2001 to continue.]",
+                      data) == {"offset": 1, "lines": 2000, "total_lines": 60001,
+                                "complete": False}
+    # one line off the file's own body: no window, and no walk to the end of the file either
+    assert match_read("\n".join(lines[:1999] + ["line 2000, edited"]), data) is None
+
+
 @pytest.mark.parametrize("text, offset, limit", [
     # the first line is too large: the result carries no content at all
     ("[Line 3 is 60.0KB, exceeds 50.0KB limit. Use bash: sed -n '3p']", None, None),

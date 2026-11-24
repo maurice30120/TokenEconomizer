@@ -59,11 +59,27 @@ def match_read(text, data, offset=None, limit=None):
 
 
 def _window(lines, body, footer, start, total, limit):
-    ends = [end for end in range(start, total + 1)
-            if "\n".join(lines[start - 1:end]) == body]
-    if len(ends) != 1:
+    # Walk the candidate ends once, tracking how far into `body` the joined lines reach: adding
+    # a line only ever lengthens the join, so the walk can stop as soon as the body's end is
+    # passed. Comparing in place keeps the whole search over the file's bytes, where rebuilding
+    # each prefix made a partial read of a large file quadratic (and stalled the hook).
+    end, pos, found = start, 0, None
+    while end <= total:
+        if end > start:
+            if pos >= len(body) or body[pos] != "\n":
+                break
+            pos += 1
+        line = lines[end - 1]
+        if not body.startswith(line, pos):
+            break
+        pos += len(line)
+        if pos >= len(body):
+            found = end if pos == len(body) else None
+            break
+        end += 1
+    if found is None:
         return None
-    end = ends[0]
+    end = found
     if footer is None:
         if end != total or (limit is not None and limit < end - start + 1):
             return None

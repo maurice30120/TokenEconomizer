@@ -1,5 +1,6 @@
 """File contracts over bytes captured by a complete, trustworthy observation."""
 import hashlib
+from collections import Counter
 from pathlib import Path
 
 
@@ -153,10 +154,10 @@ def symbol_proofs_in(root, path, data, first_line, last_line):
         if root_node is None:
             return {}
         declared = _declarations(root_node, data)
-        names = [name for _, name in declared]
+        occurrences = Counter(name for _, name in declared)
         out = {}
         for node, name in declared:
-            if names.count(name) != 1 or node.start_byte >= end or node.end_byte <= start:
+            if occurrences[name] != 1 or node.start_byte >= end or node.end_byte <= start:
                 continue
             try:
                 out[name] = _proof(file, language, name, _node_hash(data, node))
