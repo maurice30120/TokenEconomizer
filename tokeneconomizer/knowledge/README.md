@@ -5,13 +5,19 @@ or `TE_KNOWLEDGE=on` to enable it independently of the native mechanisms. It cur
 accepts:
 
 - Claude Code `Read` results with complete-file metadata and matching model-visible content;
-- Pi `read` results on the active session branch, without offsets, limits, truncation details
-  or truncation notices. This adapter was checked against the locally installed Pi 1.2.0;
+- Pi `read` results on the active session branch. A complete file read must carry no
+  truncation details or notices; a read of part of a file (`offset` and/or `limit`) counts only
+  when the PostToolUse hook kept the file's bytes at the instant of the read and the logged
+  result still matches them, footer included. This adapter was checked against the locally
+  installed Pi 1.2.0, and the result formats against Pi 1.6.0;
 - Copilot `view` file results from session format version 1.0.105, without a range or avoided
   large output, with telemetry confirming that the whole result reached the model. Files at or
   above 20 KiB and sessions without the required telemetry are rejected conservatively.
 
-Partial, truncated, failed, transformed or unverifiable reads are ignored. Other hosts,
+Failed, lossy, transformed and unverifiable reads are ignored, as is a partial read whose
+capture is missing or no longer describes the file. Captures are kept per Pi session (at most
+12 files and 8 MiB, expiring after 7 days), removed after the session is folded, and never
+store the file for a partial observation: only the excerpt the model received. Other hosts,
 Copilot versions and read formats do not yet supply evidence. The Pi and Copilot test fixtures
 are sanitized local sessions recorded with a simulated model provider; their file paths and Pi
 system prompt were replaced, while the tool calls and results were retained.
@@ -35,12 +41,17 @@ the explanation is correct.
 
 ## Symbol contracts
 
-The optional `symbol` proposal field names one unqualified declaration in a complete
-observed source. Tree-sitter must parse the file without errors and resolve the name
-uniquely. The contract hashes the declaration's non-comment tokens, including decorators;
-changes elsewhere and comment-only changes do not invalidate it. Ambiguous names, missing
-grammars and parse errors produce a file proof with a recorded fallback reason and requested
-symbol. Existing symbol proofs fail closed if the grammar, parser, or recorded version is
+The optional `symbol` proposal field names one unqualified declaration the observation
+supports. Tree-sitter must parse the file without errors and resolve the name uniquely. The
+contract hashes the declaration's non-comment tokens, including decorators; changes elsewhere
+and comment-only changes do not invalidate it.
+
+For a complete observed source, a symbol that cannot be resolved produces a file proof with a
+recorded fallback reason and requested symbol. A partial read has no such fallback: it proves
+the whole declaration its lines crossed, in the version captured at read time, so Knowledge
+from it must name one of those declarations; a missing symbol, a name the read did not cross,
+or a declaration that has changed since the read is refused instead of falling back to the
+file. Existing symbol proofs fail closed if the grammar, parser, or recorded version is
 unavailable or changes. The CLI's `te microskills` output lists the extensions whose parsers
 can currently load; supported declaration forms are limited to those recognized by Knowledge.
 Install the package dependencies to enable symbol parsing.

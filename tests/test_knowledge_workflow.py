@@ -4,6 +4,7 @@ import pytest
 
 from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
 from tokeneconomizer.plugin.config import load_config
+from tests.test_knowledge_pi import SOURCE, capture_read, pi_read, reads_session
 from tests.test_live_hooks import call, env, repo, run_session  # noqa: F401
 
 
@@ -359,12 +360,8 @@ def claude_trace(path, command="pytest", output="passed"):
     path.write_text("\n".join(map(json.dumps, events)))
 
 
-SOURCE = b"def alpha():\n    return 1\n\ndef beta():\n    # beta marker\n    return 2\n"
-
-
 def partial_stage(tmp_path, sessions=2):
     """A `Knowledge` fed Pi sessions that each read line 2 of `source.py` and passed pytest."""
-    from tests.test_knowledge_pi import capture_read, pi_read, reads_session
     source = tmp_path / "source.py"
     source.write_bytes(SOURCE)
     args = {"path": "source.py", "offset": 2, "limit": 1}
