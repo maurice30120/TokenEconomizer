@@ -46,54 +46,32 @@ saved lifecycle; injection still requires a valid proof and the usual lifecycle 
 
 ## When Knowledge is injected
 
-Knowledge is injected only when it is Relevant Knowledge, and never at session start. A
-Knowledge Signal is the symbol the Knowledge's contract names or, failing that, its file. The
-user prompt hook injects a Knowledge when the request names its symbol (as a whole identifier)
-together with the file the symbol lives in, or its file when the contract has no symbol (by path
-or file name, in any case; `source.txt` is not matched inside `resource.txt` or
-`source.txt.bak`). A symbol alone is not enough: a name such as `run` does not say which
-declaration is meant, and the file is the hint. A request that names only the file of a
-symbol Knowledge does not match either; that Knowledge reaches the agent when it reads the file.
-Matching is local and deterministic, with no model call.
-A request that shares no signal injects nothing. Stored Knowledge needs no migration: its
-signal comes from its current contract. A Knowledge about several files or symbols has one
-signal per source and is relevant when any one of them matches.
-
-Native facts still arrive at session start. A host whose hook output does not reach the model
-(`prompt_context` false: Codex, Cursor, Antigravity, Grok) gets no Knowledge, and neither does
-one whose plugin can only put prompt context in its system prompt (`prompt_knowledge` false:
-opencode), because a text that varies by prompt would rewrite the cached prefix of every later
-request. The Knowledge goes where the host puts a prompt's context, after the cached prefix;
-on Pi, whose extension re-sends a system-prompt section on every prompt, it is a message after
-the prompt (`promptMessage` in the dispatcher's answer), not part of that section. A selection
-error leaves the hook's output empty.
+Knowledge arrives after a covered file is read, never at session start or on the prompt alone.
+An eligible structured Knowledge is a short map: a claim, a flow, and the role of each source
+file, optionally including its symbol. The source proofs are not included in the injected map.
+Native facts still arrive at session start. A selection error leaves the hook's output empty.
 
 A Knowledge is injected once per session: its id is kept in the session state
-(`knowledge_given`, separate from the native `injected_ids`), and later prompts naming the same
-signal inject nothing new. A clear, a compact or a new session drops the context and empties
+(`knowledge_given`, separate from the native `injected_ids`), and later reads inject nothing new.
+A clear, a compact or a new session drops the context and empties
 that memory, so the Knowledge can be injected again. A resumed session keeps it, on every host:
-the Knowledge arrives as prompt or tool context, which stays in the resumed history (unlike the
+the Knowledge arrives as tool context, which stays in the resumed history (unlike the
 start context, which Copilot rebuilds), so it is not injected twice.
 The shared budget (the native facts' share of `microskills_max_facts` and
-`microskills_max_tokens`) applies to each injection, a prompt's or a read's, not cumulatively
+`microskills_max_tokens`) applies to each injection, not cumulatively
 over the session: Knowledge already given does not use it up.
-When more Knowledge matches than the shared budget holds, the strongest match is kept first.
-Strength of match is: a symbol named as a whole identifier together with its file (3), then a
-file named by its full
-path (2), then a file named by its bare file name (1); a Knowledge with several sources counts its strongest
-matching signal. Equal matches are ordered by firing rate, highest first, and what still ties
-keeps registration order, so the choice is deterministic and makes no model call.
+If a complete map does not fit, it is skipped rather than truncated. Matches are ordered by
+firing rate, then registration order, and selection makes no model call.
 
 ### The read trigger
 
-The second trigger is the agent reading a file a Knowledge covers (any of the
+The trigger is the agent reading a file a Knowledge covers (any of the
 files it is about), even when the request never named it. It
 runs on `PostToolUse` after a file-reading tool (`Read`, `read`, `view`) succeeds, with
 `knowledge=on`, also when the loop guard is off, and only on a host verified to put that
 context after the tool's result at the end of the conversation (`tool_context`: Claude Code,
 Copilot, Pi). A host not verified gets nothing from this trigger. The same once-per-session
-memory (`knowledge_given`) and the same budget, proof, lifecycle and forgotten gates apply, so a
-Knowledge given by the prompt is not given again by the read, nor the reverse. The file must lie
+memory (`knowledge_given`) and the same budget, proof, lifecycle and forgotten gates apply. The file must lie
 inside the workspace. Every match is an exact path, so covering Knowledge is ordered by firing rate, then
 registration order. A subagent's read, a failed
 read, a shadow run and a replayed (queued) hook inject nothing.
@@ -134,11 +112,10 @@ file-reading tool), Cursor, Antigravity, Grok, Droid, opencode, Hermes.
 
 Each Knowledge actually injected is logged, one line per Knowledge, in the repository's
 `events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
-`knowledge_id`, `signal` (the symbol or file the prompt named, or the file that was read),
-`trigger` (`"prompt"` or `"read"`), plus the usual `at`, `session_id` and `shadow`. A read
-adds `when` (`"after_read"`). Both triggers add `read_before`: on a read, the file had been read
-earlier in the session; on a prompt, one of the Knowledge's own files had been. Nothing is logged when nothing is injected, and
-forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind.
+`knowledge_id`, `signal` (the file read), `trigger` (`"read"`), `when` (`"after_read"`),
+`read_before` (the file was read earlier in the session), and the usual `at`, `session_id`
+and `shadow`. Nothing is logged when nothing is injected; forgotten, stale-proof or
+budget-dropped Knowledge never appears.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
@@ -164,12 +141,20 @@ can currently load; supported declaration forms are limited to those recognized 
 Install the package dependencies to enable symbol parsing.
 
 
-A fact about several files or symbols is proposed as `sources`, at least two `{source,
-symbol?}` entries, in place of `source` and `symbol`. Each source is proven as a single one is
-(from the same session's observation, a partial read only for a declaration it crossed), and the
+A new or revised fact must describe a useful relationship, with a `flow` and `sources`: at
+least two `{source, role, symbol?, source_session}` entries for distinct files. Each source
+session must be cited and may differ from the others. A top-level `source_session` is accepted
+as a common fallback for entries without their own session.
+Two symbols in the same file do not meet this requirement. Each source is proven as a single one is
+(from the cited session's observation, a partial read only for a declaration it crossed), and the
 contract is the list of those proofs: the Knowledge is valid only while every one of them is.
 Inspection lists all its sources. Knowledge that synthesizes other Knowledge is not supported;
 a stored one of that kind has no proof, so it is never injected.
+Admission also rejects explicit workspace-relative file references in the map that resolve to
+existing files outside its sources. This check does not resolve every shorthand or implied
+reference and does not prove the explanation is correct.
+Existing single-source entries remain readable and eligible under their existing gates, but
+cannot be revised without supplying the required distinct sources.
 
 ## Recorded-session evaluation
 

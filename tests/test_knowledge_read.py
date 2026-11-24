@@ -1,10 +1,32 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from tests.test_knowledge_workflow import _learn_source_knowledge
 from tests.test_live_hooks import call, env, repo, store_for  # noqa: F401
 
 CLAIM = "Source is observed"
+
+
+@pytest.mark.parametrize("host,name,key", [("pi", "read", "path"), ("copilot", "view", "path")])
+def test_a_card_reaches_each_host_after_read_and_stops_when_a_proof_changes(
+        tmp_path, env, repo, monkeypatch, host, name, key):
+    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode, Copilot, Pi
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    source_ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    stage = Knowledge.load(workspace_id(source_ctx.repo.label, repo), source_ctx.mech_dir)
+    dest_ctx = LiveContext.build(Pi() if host == "pi" else Copilot(), repo, enabled)
+    stage.save(dest_ctx.mech_dir)
+    path = str(Path(repo) / "source.txt")
+    out = _read(enabled, repo, "host1", path, host=host, name=name, key=key)
+    card = json.dumps(out)
+    assert CLAIM in card and "source and support are related" in card
+    assert "source.txt: source" in card and "support.txt: support" in card
+    (Path(repo) / "support.txt").write_text("changed\n")
+    assert CLAIM not in json.dumps(_read(enabled, repo, "host2", path, host=host, name=name, key=key))
 
 
 def _read(enabled, repo, sid, path, host=None, event="PostToolUse", name="Read", key="file_path"):
@@ -44,18 +66,23 @@ def test_a_file_read_earlier_in_the_session_is_flagged(tmp_path, env, repo, monk
     assert _logged(enabled, repo)[-1]["read_before"] is True
 
 
-def test_a_knowledge_given_by_the_prompt_is_not_given_again_by_the_read(
+def test_a_prompt_does_not_inject_a_knowledge_before_a_covered_read(
         tmp_path, env, repo, monkeypatch):
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
-    call(enabled, {"hook_event_name": "UserPromptSubmit", "session_id": "r3", "cwd": repo,
-                   "prompt": "check source.txt"})
-    assert CLAIM not in json.dumps(_read(enabled, repo, "r3", str(Path(repo) / "source.txt")))
-    assert [e["trigger"] for e in _logged(enabled, repo)] == ["prompt"]
-    # and the other way round
-    _read(enabled, repo, "r4", str(Path(repo) / "source.txt"))
-    out = call(enabled, {"hook_event_name": "UserPromptSubmit", "session_id": "r4", "cwd": repo,
+    out = call(enabled, {"hook_event_name": "UserPromptSubmit", "session_id": "r3", "cwd": repo,
                          "prompt": "check source.txt"})
     assert CLAIM not in json.dumps(out)
+    assert CLAIM in json.dumps(_read(enabled, repo, "r3", str(Path(repo) / "source.txt")))
+    assert [e["trigger"] for e in _logged(enabled, repo)] == ["read"]
+
+
+def test_card_respects_budget_left_by_native_facts(tmp_path, env, repo, monkeypatch):
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    store = store_for(enabled, repo)
+    store.write("injection.json", {"rendered": "# native\n- A\n- B\n- C\n- D\n"})
+    both = dict(enabled, TE_MICROSKILLS="envfacts")
+    call(both, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "budget", "cwd": repo})
+    assert CLAIM not in json.dumps(_read(both, repo, "budget", str(Path(repo) / "source.txt")))
 
 
 def test_a_host_not_verified_and_every_other_case_inject_nothing(tmp_path, env, repo, monkeypatch):
@@ -86,18 +113,17 @@ def test_a_read_after_a_clear_gives_the_knowledge_again(tmp_path, env, repo, mon
     assert _logged(enabled, repo)[-1]["read_before"] is False
 
 
-def test_a_prompt_flags_the_knowledge_files_read_earlier_in_the_session(
+def test_a_later_read_flags_the_file_read_earlier_on_an_unverified_host(
         tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin.hosts import ClaudeCode
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
     source = str(Path(repo) / "source.txt")
 
     def prompt(sid):
-        out = call(enabled, {"hook_event_name": "UserPromptSubmit", "session_id": sid, "cwd": repo,
-                             "prompt": "check source.txt"})
+        out = _read(enabled, repo, sid, source)
         assert CLAIM in json.dumps(out)
         entry = _logged(enabled, repo)[-1]
-        assert entry["trigger"] == "prompt"
+        assert entry["trigger"] == "read"
         return entry["read_before"]
     assert prompt("p1") is False
     # A host whose read cannot inject still reports the read, and the flag follows it.

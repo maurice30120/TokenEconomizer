@@ -69,12 +69,15 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
     (repo / ".git").mkdir(parents=True)
     (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     (repo / "source.txt").write_text("observed\n")
+    (repo / "support.txt").write_text("observed\n")
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1", "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off", "TE_LOOPGUARD": "off"}
-    candidate = {"id": "k", "claim": "Copilot observation", "source": "source.txt", "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
+    candidate = {"id": "k", "claim": "Copilot observation", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
     for i in range(5):
         transcript = tmp_path / f"s{i}.jsonl"
         text = (FIXTURES / "copilot-complete.jsonl").read_text().replace("__WORKSPACE__", str(repo))
+        lines = text.splitlines()
+        text += "\n" + "\n".join(line.replace("source.txt", "support.txt").replace("call_1", "call_2") for line in lines[1:]) + "\n"
         extra = [
             {"type": "user.message", "data": {"content": "check"}},
             {"type": "tool.execution_start", "data": {"toolCallId": "sh", "toolName": "bash", "arguments": {"command": "pytest"}}},
@@ -86,7 +89,7 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
     start = {"hook_event_name": "SessionStart", "source": "new", "session_id": "next", "cwd": str(repo)}
     assert "Copilot observation" not in json.dumps(call(env, start, host="copilot"))
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
-    assert "Copilot observation" in call(env, payload, host="copilot")["additionalContext"]
+    assert "Copilot observation" not in json.dumps(call(env, payload, host="copilot"))
     # A read of the covered file: top-level additionalContext, after the tool's result.
     read = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": str(repo), "tool_name": "Read",
             "tool_input": {"path": str(repo / "source.txt")}, "tool_result": {"text_result_for_llm": "observed\n"}}

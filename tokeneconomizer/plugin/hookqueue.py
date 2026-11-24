@@ -14,8 +14,7 @@ it is applied at most once.
 A queued hook has already answered, so what matters is what its answer would have been:
 
 - `SessionStart` carries the injected facts, and `UserPromptSubmit` the repository map under
-  `repomap=on` and the Relevant Knowledge a prompt names (`knowledge=on`, on a host whose prompt
-  hook reaches the model). A `PostToolUse` that reads a file, on a host whose tool hook reaches
+  `repomap=on`. A `PostToolUse` that reads a file, on a host whose tool hook reaches
   the model (`knowledge=on`), brings the Knowledge covering it. These are not queued: they wait,
   and then run without the lock.
 - A loop-guard decision reached on a replayed `PostToolUse` is held on the turn, and the turn's next
@@ -52,7 +51,7 @@ def _safe(text):
 
 def _queues(ctrl, event):
     """Is this event's answer always `{}`, so that the hook can leave it for another to apply?"""
-    if event == "UserPromptSubmit" and (ctrl.cfg.repomap == "on" or ctrl.knowledge_on_prompt()):
+    if event == "UserPromptSubmit" and ctrl.cfg.repomap == "on":
         return False
     if event == "PostToolUse" and ctrl.knowledge_on_read():
         return False

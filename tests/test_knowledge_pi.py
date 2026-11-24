@@ -52,8 +52,9 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     (repo / ".git").mkdir(parents=True)
     (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     (repo / "source.txt").write_text("observed\nsecond\n")
+    (repo / "support.txt").write_text("support\n")
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1", "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off", "TE_LOOPGUARD": "off"}
-    candidate = {"id": "k", "claim": "Pi observation", "source": "source.txt", "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
+    candidate = {"id": "k", "claim": "Pi observation", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
     counts = []
     from tokeneconomizer.plugin.context import LiveContext
@@ -64,7 +65,9 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
         transcript = tmp_path / f"s{i}.jsonl"
         transcript.write_text((fixtures / "pi-complete.jsonl").read_text().replace("__WORKSPACE__", str(repo)))
         with transcript.open("a") as f:
-            f.write("\n" + json.dumps({"type": "message", "id": "c", "parentId": "474c3ba4", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "t", "name": "bash", "arguments": {"command": "pytest"}}]}}))
+            f.write("\n" + json.dumps({"type": "message", "id": "x", "parentId": "474c3ba4", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "other", "name": "read", "arguments": {"path": "support.txt"}}]}}))
+            f.write("\n" + json.dumps({"type": "message", "id": "y", "parentId": "x", "message": {"role": "toolResult", "toolCallId": "other", "toolName": "read", "isError": False, "content": [{"type": "text", "text": "support\n"}]}}))
+            f.write("\n" + json.dumps({"type": "message", "id": "c", "parentId": "y", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "t", "name": "bash", "arguments": {"command": "pytest"}}]}}))
             f.write("\n" + json.dumps({"type": "message", "id": "d", "parentId": "c", "message": {"role": "toolResult", "toolCallId": "t", "toolName": "bash", "isError": False, "content": [{"type": "text", "text": "passed"}]}}))
         run_session(env, str(repo), f"s{i}", str(transcript), host="pi")
         stage = Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir)
@@ -75,10 +78,7 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     assert "Pi observation" not in json.dumps(call(env, start, host="pi"))
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
     out = call(env, payload, host="pi")
-    # A message after the prompt, never the system prompt section the extension re-sends and
-    # whose rewrite would change the cached prefix.
-    assert "Pi observation" in out["hookSpecificOutput"]["promptMessage"]
-    assert "additionalContext" not in out["hookSpecificOutput"]
+    assert "Pi observation" not in json.dumps(out)
     assert call(env, dict(payload, session_id="other", prompt="rename widget"), host="pi") == {}
     # A read of the covered file: the extension sends it as a steering message after the result.
     read = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": str(repo), "tool_name": "read",
@@ -92,12 +92,12 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     def command(action):
         return cli.main(["--host", "pi", "--cwd", str(repo), "microskills", action, fid])
     assert command("forget") == 0
-    assert "Pi observation" not in json.dumps(call(env, dict(payload, session_id="forgotten"), host="pi"))
+    assert "Pi observation" not in json.dumps(call(env, dict(read, session_id="forgotten"), host="pi"))
     (repo / "source.txt").unlink()
     assert command("unforget") == 0
-    assert "Pi observation" not in json.dumps(call(env, dict(payload, session_id="later"), host="pi"))
+    assert "Pi observation" not in json.dumps(call(env, dict(read, session_id="later"), host="pi"))
     (repo / "source.txt").write_text("observed\nsecond\n")
-    assert "Pi observation" in json.dumps(call(env, dict(payload, session_id="restored"), host="pi"))
+    assert "Pi observation" in json.dumps(call(env, dict(read, session_id="restored"), host="pi"))
 
 
 # ---- partial reads, captured at the instant they returned --------------------------------
@@ -283,11 +283,12 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
     (repo / ".git").mkdir(parents=True)
     (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     (repo / "source.py").write_bytes(SOURCE)
+    (repo / "support.txt").write_text("support\n")
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1",
            "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off",
            "TE_LOOPGUARD": "off"}
-    candidate = {"id": "k", "claim": "Alpha returns one", "source": "source.py",
-                 "symbol": "alpha", "source_session": "s1", "cite": ["s0", "s1"],
+    candidate = {"id": "k", "claim": "Alpha returns one", "flow": "source and support",
+                 "sources": [{"source": "source.py", "symbol": "alpha", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"],
                  "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for",
                         lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
@@ -295,7 +296,7 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
     args, text = {"path": "source.py", "offset": 2, "limit": 1}, pi_read(SOURCE, 2, 1)
     for i in range(5):
         transcript = tmp_path / f"s{i}.jsonl"
-        reads_session(transcript, repo, [("r", args, text, False)],
+        reads_session(transcript, repo, [("r", args, text, False), ("support", {"path": "support.txt"}, "support\n", False)],
                       bash=("pytest", "1 passed"))
         call(env, {"hook_event_name": "PostToolUse", "session_id": f"s{i}",
                    "transcript_path": str(transcript), "cwd": str(repo),
@@ -308,12 +309,11 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
     stage = Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir)
     stage.workspace, stage.host = repo, "pi"
     assert len(stage.facts) == 1
-    assert next(iter(stage.facts.values())).spec["proof"]["kind"] == "symbol"
+    assert next(iter(stage.facts.values())).spec["proof"][0]["kind"] == "symbol"
     assert "Alpha returns one" in stage.render()
-    start = {"hook_event_name": "UserPromptSubmit", "source": "startup", "cwd": str(repo),
-             "prompt": "what does alpha in source.py return?"}
+    start = {"hook_event_name": "PostToolUse", "cwd": str(repo), "tool_name": "read",
+             "tool_input": {"path": "source.py"}, "tool_response": {"content": "observed"}}
     assert "Alpha returns one" in json.dumps(call(env, dict(start, session_id="next"), host="pi"))
-    assert call(env, dict(start, session_id="beta", prompt="what does beta return?"), host="pi") == {}
     # the symbol's unread line, a comment inside it, and the rest of the file
     (repo / "source.py").write_bytes(SOURCE.replace(b"    return 1", b"    return 9"))
     assert "Alpha returns one" not in json.dumps(call(env, dict(start, session_id="edited"), host="pi"))

@@ -354,6 +354,9 @@ def cmd_microskills(args):
                   f"{'forgotten ' if forgotten else ''}{fid}  {_short(fact.claim)}")
             print(f"    source={', '.join(provenance.get('paths') or [provenance.get('path', '?')])} "
                   f"session={provenance.get('session', '?')}")
+            for source in provenance.get("sources", []):
+                if isinstance(source, dict):
+                    print(f"    evidence={source.get('path', '?')} session={source.get('session', '?')}")
             # A partial read's real scope: which lines it returned, out of how many.
             if isinstance(provenance.get("observed"), dict):
                 print("    observed=" + json.dumps(provenance["observed"], sort_keys=True))
