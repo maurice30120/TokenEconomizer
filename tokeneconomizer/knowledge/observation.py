@@ -119,7 +119,6 @@ def _pi_observations(transcript, root, captures=None):
                 args = calls.pop(message.get("toolCallId"), None)
                 blocks = message.get("content")
                 if (message.get("toolName") != "read" or message.get("isError") is not False
-                        or message.get("details") not in (None, {})
                         or not isinstance(args, dict) or not isinstance(args.get("path"), str)
                         or not isinstance(blocks, list) or len(blocks) != 1
                         or not isinstance(blocks[0], dict) or blocks[0].get("type") != "text"):
@@ -132,7 +131,7 @@ def _pi_observations(transcript, root, captures=None):
                     if partial and (partial["path"] in found or len(found) < 10):
                         found[partial["path"]] = _merge_read(found.get(partial["path"]), partial)
                     continue
-                if ("\ufffd" in text
+                if (message.get("details") not in (None, {}) or "\ufffd" in text
                         or len(text.encode("utf-8")) >= 50 * 1024
                         or len(text.splitlines()) >= 2000
                         or re.search(r"\[(?:Showing lines |\d+ more lines in file\.|Line \d+ is )", text)):

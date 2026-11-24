@@ -96,7 +96,8 @@ def pi_read(data, offset=None, limit=None, max_lines=2000):
     """The exact text Pi 1.6.0's `read` returns for these arguments over `data`."""
     lines = data.decode("utf-8").split("\n")
     start = 1 if offset is None else offset
-    end = min(len(lines), start - 1 + (max_lines if limit is None else limit))
+    wanted = max_lines if limit is None else min(limit, max_lines)
+    end = min(len(lines), start - 1 + wanted)
     body = "\n".join(lines[start - 1:end])
     rest = len(lines) - end
     if rest <= 0:
@@ -120,7 +121,7 @@ def capture_read(root, args, text, tool_use_id="r", session_id="s"):
     return session_dir(store, session_id)
 
 
-def reads_session(path, root, reads, bash=None):
+def reads_session(path, root, reads, bash=None, details=None):
     """A Pi session log: one assistant turn per (id, args) and its tool result."""
     entries = [{"type": "session", "version": 3, "id": "s", "cwd": str(root)}]
     parent = None
@@ -130,7 +131,7 @@ def reads_session(path, root, reads, bash=None):
                     {"type": "toolCall", "id": call_id, "name": "read", "arguments": args}]}}
         result = {"type": "message", "id": f"b{i}", "parentId": f"a{i}",
                   "message": {"role": "toolResult", "toolCallId": call_id, "toolName": "read",
-                              "isError": failed, "details": None,
+                              "isError": failed, "details": details,
                               "content": [{"type": "text", "text": text}]}}
         entries += [call, result]
         parent = f"b{i}"
@@ -306,3 +307,18 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
     assert "Alpha returns one" in json.dumps(call(env, dict(start, session_id="comment"), host="pi"))
     (repo / "source.py").write_bytes(SOURCE)
     assert "Alpha returns one" in json.dumps(call(env, dict(start, session_id="restored"), host="pi"))
+
+
+def test_a_read_pi_truncated_is_observable_through_its_capture(tmp_path):
+    data = "".join(f"line {i}\n" for i in range(1, 3001)).encode("utf-8")
+    source = tmp_path / "big.py"
+    source.write_bytes(data)
+    args, text = {"path": "big.py", "offset": 1, "limit": 5000}, pi_read(data, 1, 5000)
+    assert text.endswith("[Showing lines 1-2000 of 3001. Use offset=2001 to continue.]")
+    path = tmp_path / "session.jsonl"
+    reads_session(path, tmp_path, [("r", args, text, False)],
+                  details={"truncation": {"truncated": True}})
+    captures = capture_read(tmp_path, args, text)
+    record = observations(path, tmp_path, host="pi", captures=captures)["big.py"]
+    assert record["partial"] is True
+    assert record["observed"] == {"reads": [{"offset": 1, "lines": 2000}], "total_lines": 3001}
