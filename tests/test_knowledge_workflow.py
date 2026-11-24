@@ -97,7 +97,17 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     payload = {"hook_event_name": "UserPromptSubmit", "session_id": "new", "cwd": repo,
                "prompt": "please check source.txt"}
     assert "Source is observed" not in json.dumps(call(enabled, start))
+    from tests.test_live_hooks import store_for
+    def logged():
+        return [e for e in store_for(enabled, repo).read_lines("events.jsonl") if e["kind"] == "knowledge"]
+    assert logged() == []
     assert "Source is observed" in json.dumps(call(enabled, payload))
+    (entry,) = logged()
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    (stored,) = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir).facts
+    assert (entry["knowledge_id"], entry["signal"], entry["trigger"], entry["session_id"]) == (stored, "source.txt", "prompt", "new")
     assert call(enabled, dict(payload, session_id="unrelated", prompt="rename the widget")) == {}
     assert "Source is observed" in json.dumps(call(enabled, dict(payload, session_id="path", prompt="open ./src/../source.txt now")))
     assert call(enabled, dict(payload, session_id="near", prompt="open resource.txt and source.txt.bak")) == {}
@@ -107,9 +117,6 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     (other / ".git" / "config").write_text('[remote "origin"]\n url = https://github.com/acme/widget.git\n')
     (other / "source.txt").write_text("observed\n")
     assert "Source is observed" not in json.dumps(call(enabled, dict(payload, cwd=str(other), session_id="other")))
-    from tokeneconomizer.plugin.context import LiveContext
-    from tokeneconomizer.plugin.hosts import ClaudeCode
-    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
     ctx.store.write("injection.json", {"rendered": "# native\n- Native fact\n"})
     together = dict(enabled, TE_MICROSKILLS="envfacts")
     text = json.dumps(call(together, dict(start, session_id="both")))
@@ -143,11 +150,15 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     assert command() == 0
     output = capsys.readouterr().out
     assert fid in output and "source.txt" in output and "s1" in output and "forgotten" in output
+    before = len(logged())
     assert "Source is observed" not in json.dumps(call(enabled, dict(payload, session_id="forgotten")))
+    assert len(logged()) == before
     assert command("unforget", fid) == 0
     assert "Source is observed" in json.dumps(call(enabled, dict(payload, session_id="restored")))
     source.write_text("changed\n")
+    before = len(logged())
     assert "Source is observed" not in json.dumps(call(enabled, dict(payload, session_id="next")))
+    assert len(logged()) == before
     assert "Source is observed" not in json.dumps(call(dict(enabled, TE_KNOWLEDGE="off"), dict(payload, session_id="off")))
 
     # A writer holds the same lock while a new hook tries to resolve dependencies.

@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Every injection records the Knowledge identity and the triggering signal
-- [ ] Nothing is recorded when nothing is injected
-- [ ] Forgotten or ineligible Knowledge never appears as injected
-- [ ] Tested through the live hooks
+- [x] Every injection records the Knowledge identity and the triggering signal
+- [x] Nothing is recorded when nothing is injected
+- [x] Forgotten or ineligible Knowledge never appears as injected
+- [x] Tested through the live hooks

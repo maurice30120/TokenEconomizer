@@ -336,10 +336,13 @@ class LiveController:
                             - sum(ln.startswith("- ") for ln in native.splitlines()))
                 tokens = max(0, self.cfg.microskills_max_tokens - (len(native) + 3) // 4)
                 given = list(s.get("knowledge_given") or [])
-                block = stage.render(prompt, max_facts=facts, max_tokens=tokens, given=given)
-                if block:
+                head, lines, chosen = stage.selection(prompt, max_facts=facts, max_tokens=tokens,
+                                                      given=given)
+                for fact, signal in chosen:
+                    self._log("knowledge", knowledge_id=fact.id, signal=signal, trigger="prompt")
+                if lines:
                     s["knowledge_given"] = given
-                return block
+                return "\n".join([head, *lines]) + "\n" if lines else ""
         except Exception:
             self._record_error()
             return ""
