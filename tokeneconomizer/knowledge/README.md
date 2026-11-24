@@ -65,6 +65,13 @@ the prompt (`promptMessage` in the dispatcher's answer), not part of that sectio
 error leaves the hook's output empty. Candidates keep registration order, and each prompt that
 names a signal injects again (once per session and ranking are not yet applied).
 
+Each Knowledge actually injected is logged, one line per Knowledge, in the repository's
+`events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
+`knowledge_id`, `signal` (the symbol or file the prompt named), `trigger` (`"prompt"`), plus
+the usual `at`, `session_id` and `shadow`. Nothing is logged when nothing is injected, and
+forgotten, stale-proof or budget-dropped Knowledge never appears. Other triggers add fields to
+this event rather than a new kind.
+
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
 eligibility subject to the lifecycle. A revised Knowledge retains its identity but must earn
