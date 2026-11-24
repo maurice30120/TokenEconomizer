@@ -447,3 +447,31 @@ def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
     stage._maybe_propose()
     assert "read only in part" in prompts[0]
     assert "observed_lines" in prompts[0]
+
+
+def symbol_less_partial_stage(tmp_path, sessions=2):
+    """A `Knowledge` fed Pi sessions that each read line 3 of `source.py`: a blank line."""
+    source = tmp_path / "source.py"
+    source.write_bytes(SOURCE)
+    args = {"path": "source.py", "offset": 3, "limit": 1}
+    text = pi_read(SOURCE, 3, 1)
+    captures = capture_read(tmp_path, args, text)
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    for i in range(sessions):
+        pi, trace = tmp_path / f"blank{i}.jsonl", tmp_path / f"blanktrace{i}.jsonl"
+        reads_session(pi, tmp_path, [("r", args, text, False)])
+        claude_trace(trace)
+        stage.update(trace, iid=f"s{i}", observed_transcript=pi, captures=captures)
+    return stage, source
+
+
+def test_a_partial_source_no_symbol_proves_is_not_offered_to_the_proposer(tmp_path):
+    stage, _ = symbol_less_partial_stage(tmp_path)
+    dg = stage._featurize({}, [])
+    # the read crossed no declaration: nothing the proposer could propose survives admission
+    assert dg["observed_sources"] == []
+    # the observation is kept, so the refusal names the real reason and nothing else
+    assert dg["_observations"]["source.py"]["symbols"] == {}
+    assert stage._admit(partial_candidate(symbol="alpha")) == (False, "symbol-not-observed")
+    assert not stage.facts

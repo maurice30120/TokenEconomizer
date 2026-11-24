@@ -23,6 +23,16 @@ def _observed_lines(record):
     return f"{spans} of {record['observed']['total_lines']}"
 
 
+def _offerable(record):
+    """Whether the proposer may propose from this observation.
+
+    A partial read that crossed no declaration (an unparsed file, no supported extension, no
+    declaration in the lines) can only be refused as `symbol-not-observed`: keep it out of the
+    proposer's view, while the observation itself stays for admission to refuse precisely.
+    """
+    return not record.get("partial") or bool(record.get("symbols"))
+
+
 class Knowledge(Distiller):
     workspace = None
     host = "claude"
@@ -47,7 +57,8 @@ class Knowledge(Distiller):
             dict({"path": path, "excerpt": record["excerpt"]},
                  **({"observed_lines": _observed_lines(record)}
                     if record.get("partial") else {}))
-            for path, record in sorted(self._current_observations.items())]
+            for path, record in sorted(self._current_observations.items())
+            if _offerable(record)]
         return dg
 
     def _maybe_propose(self):
