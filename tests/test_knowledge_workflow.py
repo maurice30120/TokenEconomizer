@@ -69,6 +69,42 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     assert "Source is observed" not in json.dumps(call(enabled, dict(payload, session_id="next")))
     assert "Source is observed" not in json.dumps(call(dict(enabled, TE_KNOWLEDGE="off"), dict(payload, session_id="off")))
 
+    # A writer holds the same lock while a new hook tries to resolve dependencies.
+    # Its removal must be visible before the hook can inject the synthesis.
+    import copy
+    import threading
+    source.write_text("observed\n")
+    stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+    first = next(iter(stage.facts))
+    stage.facts["second"] = copy.deepcopy(stage.facts[first])
+    stage.facts["second"].spec["id"] = "second"
+    composite = copy.deepcopy(stage.facts[first])
+    composite.spec.update(id="synthesis", claim="combined", injection="combined",
+                          dependencies=[{"id": first, "revision": 1}, {"id": "second", "revision": 1}])
+    composite.spec.pop("proof", None)
+    stage.facts["synthesis"] = composite
+    stage.save(ctx.mech_dir)
+    assert "combined" in json.dumps(call(enabled, dict(payload, session_id="before-race")))
+    started = threading.Event()
+    output = []
+    def start_hook():
+        started.set()
+        output.append(json.dumps(call(enabled, dict(payload, session_id="during-race"))))
+    with ctx.store.locked("mechanisms") as acquired:
+        assert acquired
+        thread = threading.Thread(target=start_hook)
+        thread.start()
+        assert started.wait(2)
+        thread.join(0.2)
+        assert thread.is_alive()
+        del stage.facts["second"]
+        stage.save(ctx.mech_dir)
+    thread.join(5)
+    assert not thread.is_alive()
+    assert "combined" not in output[0]
+    assert "Source is observed" in output[0]
+
+
 
 def test_sessions_learn_then_revalidate_before_each_injection(tmp_path, monkeypatch):
     from tokeneconomizer.microskills import distiller
