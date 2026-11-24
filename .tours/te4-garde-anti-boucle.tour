@@ -1,0 +1,213 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "Quand un tour est jugé bloqué : la garde de boucle de TokenEconomizer",
+  "description": "Ce tour suit la garde de boucle du plugin TokenEconomizer : les étages qui décident qu'un tour de prompt est bloqué dans une boucle d'échecs, puis le texte exact que le plugin ajoute alors au contexte de l'agent — et, quand la redirection ne suffit pas, la notice destinée à la personne.",
+  "steps": [
+    {
+      "title": "Vue d'ensemble",
+      "description": "TokenEconomizer est un plugin qui s'installe dans les sessions des agents de code (Claude Code, Copilot CLI, Pi, opencode, Cursor, Codex) et y applique trois mécanismes appris hors ligne : des micro-skills, un élagage d'outils et une garde de boucle. Ce tour suit un seul d'entre eux, la garde de boucle : appel d'outil après appel d'outil, elle juge si le tour de prompt en cours s'enlise, puis ajoute un texte au contexte de l'agent au lieu d'arrêter le tour.\n\nLa question posée est donc double, et le parcours la suit dans cet ordre : quelles règles font qu'un tour est jugé bloqué, et que contient exactement ce que le plugin écrit alors dans le contexte.\n\n**Diagram — Context view**\n\n```mermaid\nflowchart LR\n  Personne[\"Personne développeuse\"] -->|\"travaille dans une session (CLI d'agent)\"| Agent[\"Agent de code (modèle et outils)\"]\n  Agent -->|\"déclenche le hook d'un outil terminé (processus, JSON sur stdin)\"| Garde[\"Garde de boucle TokenEconomizer\"]\n  Garde -->|\"renvoie une redirection ou une notice (JSON sur stdout)\"| Agent\n  Garde -->|\"fait juger un digest (sous-processus du CLI)\"| Juge[\"Runner de modèle (CLI de l'agent ou modèle local)\"]\n  Agent -->|\"lance éditions et tests (outils, shell)\"| Depot[\"Dépôt et ses tests\"]\n  Garde -->|\"affiche la notice dans l'interface du CLI (systemMessage)\"| Personne\n```\n\n**Diagram — Containers**\n\n```mermaid\nflowchart TB\n  subgraph Hote[\"Hôte de l'agent\"]\n    Agent[\"Agent de code\"]\n  end\n  subgraph Plugin[\"Plugin TokenEconomizer\"]\n    Adapter[\"Adaptateur de l'agent (hooks ou extension)\"]\n    Hook[\"Dispatcher tokeneconomizer.plugin.hook\"]\n    Guard[\"Bibliothèque loopguard\"]\n  end\n  Store[(\"Magasin d'état du dépôt\")]\n  Job[\"Job de juge détaché (te judge)\"]\n  Agent -->|\"signale l'outil terminé (événement du hook)\"| Adapter\n  Adapter -->|\"invoque le dispatcher (Python, JSON sur stdin)\"| Hook\n  Hook -->|\"appelle le contrôleur puis le garde (appel Python)\"| Guard\n  Guard -->|\"lit et écrit session, tour, enveloppe (fichiers JSON sous flock)\"| Store\n  Guard -->|\"démarre une requête de juge (fichier et processus détaché)\"| Job\n  Job -->|\"dépose verdict et redirection (fichiers du magasin)\"| Store\n  Adapter -->|\"applique la réponse au contexte de l'agent (steering, additionalContext)\"| Agent\n```\n\nLe code de la garde vit dans [tokeneconomizer/loopguard/](tokeneconomizer/loopguard/) (règles, état, enveloppe, tour, juge) ; son pilote en session dans [tokeneconomizer/plugin/](tokeneconomizer/plugin/) (dispatcher des hooks, contrôleur, adaptateurs par agent) ; le conditionnement par agent dans [plugin/](plugin/) (hooks des CLI, extension Pi et opencode).",
+      "questions": [
+        "Quelle différence y a-t-il entre un « tour » au sens de la garde et une session ?",
+        "Pourquoi la garde ajoute-t-elle du contexte au lieu d'arrêter le tour ?",
+        "Quel processus décide, et lequel ne fait que traduire ?"
+      ]
+    },
+    {
+      "title": "Où vit la garde",
+      "description": "Le paquet `loopguard` est délibérément autonome : son `__init__` énumère ses cinq pièces et précise « Stdlib only; never imports the plugin runtime », ce qui permet de rejouer les mêmes classes sur des trajectoires enregistrées comme en session live. `rules` porte les seuils et la cascade de décision, `state` le pli par appel, `envelope` la longueur apprise des tours qui finissent bien, `turn` le garde d'un tour, `judge` les deux appels payants (verdict et rédaction de la redirection).\n\nLe pilote qui les branche sur une vraie session n'est pas ici : c'est `tokeneconomizer/plugin/controller.py`. La suite du tour suit ce chemin, des règles vers le texte livré.",
+      "questions": [
+        "Pourquoi la garde n'importe-t-elle jamais le runtime du plugin ?",
+        "Que contient un `SpiralState` et que ne contient-il pas ?",
+        "Où sont écrits les seuils par défaut ?"
+      ],
+      "directory": "tokeneconomizer/loopguard"
+    },
+    {
+      "title": "L'entrée : chaque appel d'outil terminé",
+      "description": "La garde ne voit jamais le tour entier : elle est réveillée une fois par appel d'outil terminé, par `PostToolUse` — ou par `PostToolUseFailure` quand l'agent ne rapporte l'échec que là. `post_tool` sort immédiatement quand la garde est sur `off` ou quand l'appel vient d'un sous-agent, et la réponse est étiquetée avec l'événement réellement reçu, parce que Claude Code rejette entièrement une réponse `PostToolUseFailure` nommée `PostToolUse`.\n\nÀ chaque appel, le contrôleur relit les seuils (preset `loopguard_aggr`, valeurs épinglées `loopguard.<nom>`, enveloppe apprise), câble le juge via `_judge` — qui renvoie `None` tant que le dépôt n'a pas d'enveloppe — puis appelle `TurnGuard.fold`.\n\nUne décision calculée sur un hook mis en file d'attente n'est pas perdue : elle est gardée dans `g.held` et livrée à l'appel suivant, ou journalisée `undelivered` si le tour se termine avant.",
+      "questions": [
+        "Pourquoi la garde est-elle muette pour un sous-agent ?",
+        "Pourquoi l'étiquette de l'événement compte-t-elle pour l'hôte ?",
+        "Que se passe-t-il si le hook n'a pas pu répondre ?"
+      ],
+      "file": "tokeneconomizer/plugin/controller.py",
+      "pattern": "def post_tool\\(self\\):"
+    },
+    {
+      "title": "Le pli d'un appel : deux états, un compteur",
+      "description": "`fold` replie l'appel terminé dans deux `SpiralState` : `self.st`, le segment courant (remis à zéro après une redirection), et `self.whole`, le tour entier (jamais remis à zéro). Il incrémente ensuite `cum_turns`. Les éditions faites par le shell (`sed -i`, redirection, `patch`) comptent comme des éditions, les lancements de tests comme des vérifications, et le statut de sortie est corrigé quand un tube ou un `||` a remplacé celui du runner.\n\nL'unité de décision est le tour de prompt — un prompt jusqu'à l'arrêt de l'agent — et l'état doit survivre entre deux appels parce que chaque hook est un processus séparé : d'où la sérialisation `to_dict` sur disque.",
+      "questions": [
+        "Pourquoi deux états plutôt qu'un seul ?",
+        "Comment une édition faite par le shell est-elle vue ?",
+        "Pourquoi l'état est-il écrit sur disque entre deux appels ?"
+      ],
+      "file": "tokeneconomizer/loopguard/turn.py",
+      "pattern": "def fold\\(self, name, args, result, exit_code=None"
+    },
+    {
+      "title": "Le backstop dur, avant tout juge",
+      "description": "Avant d'interroger quoi que ce soit, `fold` compare `cum_turns` au backstop (`backstop_turns`, ou `backstop_mult` × enveloppe) et exige **en plus** `is_stuck` : c'est le seul verrou qu'un juge ne peut pas annuler, parce qu'un modèle peut lire du thrashing très au-delà de l'enveloppe comme de l'exploration.\n\nLe commentaire du code explique l'ordre suivi : l'échelle est « redirection, puis arrêt ». Sur un dépôt interactif l'enveloppe est si courte que le backstop tombe sous le plancher de l'heuristique ; une redirection non dépensée passe donc en premier, et un nouveau segment doit être jugé bloqué à son tour avant l'arrêt.",
+      "questions": [
+        "Pourquoi ce contrôle passe-t-il avant le juge ?",
+        "Pourquoi une redirection est-elle servie en premier ?",
+        "Que signifie « backstop atteignable sous un plafond de tours » ?"
+      ],
+      "file": "tokeneconomizer/loopguard/turn.py",
+      "pattern": "cum-backstop"
+    },
+    {
+      "title": "La cascade de décision : trois étages",
+      "description": "`assess_abort` est la fonction qui répond à la question du tour : elle rend `(bloqué, raison)`. Elle essaie trois étages, du moins cher au plus cher — une porte gratuite (`gate_for_judge`), un juge LLM payant seulement si la porte s'ouvre, et à défaut l'heuristique stricte `is_stuck` tempérée par l'enveloppe du dépôt.\n\nLes raisons renvoyées forment le journal de la décision : `gate-closed`, `judge-throttled`, `judge-productive`, `judge-ambiguous-spared`, `judge-stuck@0.85:...`, `not-stuck`, `stuck-but-within-envelope`, `envelope:...` ou `backstop:...`. C'est cette chaîne courte que la notice affichera plus tard à la personne.",
+      "questions": [
+        "Pourquoi séparer détection gratuite et décision payante ?",
+        "Que fait le fallback quand aucun juge n'est câblé ?",
+        "Que signifie un tour bloqué mais encore dans l'enveloppe ?"
+      ],
+      "file": "tokeneconomizer/loopguard/rules.py",
+      "pattern": "def assess_abort\\(state, envelope=None, judge=None, thr=None\\)"
+    },
+    {
+      "title": "Étage 0 : la porte gratuite",
+      "description": "La porte ne décide pas : elle dit seulement si la trace récente vaut un appel payant. Elle reste fermée avant `gate_min_turns` appels (18 par défaut) puis s'ouvre sur un signe de trouble — au moins une signature d'échec déjà vue, ou une densité d'erreurs au moins égale à `gate_error_outputs` (8). Un tour productif, dont les échecs changent, garde la porte fermée et ne paie donc rien.\n\nLe plugin resserre ce contrat dans son contrôleur : `gate_min_turns` est relevé à `max(gate_min_turns, min_turns)` et `gate_over_envelope` est désactivé, pour qu'un tour simplement plus long que d'habitude ne réveille jamais le juge.",
+      "questions": [
+        "Pourquoi la porte est-elle permissive ?",
+        "Quel signe bon marché suffit à l'ouvrir ?",
+        "Pourquoi le plugin refuse-t-il l'ouverture liée à l'enveloppe ?"
+      ],
+      "file": "tokeneconomizer/loopguard/rules.py",
+      "pattern": "def gate_for_judge\\(state, thr=None\\)"
+    },
+    {
+      "title": "L'heuristique stricte : churn ET bruit ET répétition",
+      "description": "`is_stuck` est la décision de repli, quand aucun juge n'est câblé. Elle exige une conjonction de trois signes : au moins `min_turns` appels (20 par défaut), du churn ou de l'éparpillement (`edit_churn` ≥ 4 sur un même fichier, ou ≥ 3 fichiers édités), du bruit (≥ 6 sorties d'erreur) et une répétition (au moins 20 % d'échecs identiques déjà rencontrés).\n\nLa conjonction est le cœur du calibrage : un travail difficile mais productif garde une activité élevée et des échecs qui changent, donc il est épargné. Les presets `conservative` et `aggressive` ne changent que ces nombres, jamais l'ordre des étages.",
+      "questions": [
+        "Pourquoi la répétition est-elle nécessaire ?",
+        "Quelle différence entre `min_turns` et `gate_min_turns` ?",
+        "Que change le preset `aggressive` ?"
+      ],
+      "file": "tokeneconomizer/loopguard/rules.py",
+      "pattern": "def is_stuck\\(state, thr=None\\)"
+    },
+    {
+      "title": "Étage 1 : un juge qui ne fait jamais attendre l'agent",
+      "description": "Avec un juge câblé, `_background` démarre un job détaché (`te judge`) et ne répond rien tant que le verdict n'est pas revenu : `assess_abort` lit ce silence comme `judge-throttled` et épargne le tour. Le rythme est borné — un écart minimal entre deux verdicts, qui double quand le juge répond « productif » — et un job sans réponse au bout de 300 s ne bloque plus le suivant.\n\nLe digest envoyé au juge est sans fuite : commandes, recherches, noms de fichiers édités, signatures d'erreur, jamais le contenu des fichiers ni l'énoncé de la tâche. La phrase « Tests are still NOT green. » du banc d'essai y est remplacée par l'état réel de la dernière vérification du tour.\n\nQuand les appels de modèle de l'hôte sont en pause, `NoVerdict` ne répond jamais : le tour est épargné plutôt que condamné sur la seule règle.",
+      "questions": [
+        "Pourquoi le juge tourne-t-il en dehors du hook ?",
+        "Que contient exactement le digest ?",
+        "Que se passe-t-il si le job ne répond jamais ?"
+      ],
+      "file": "tokeneconomizer/loopguard/turn.py",
+      "pattern": "def _background\\(self, judge\\)"
+    },
+    {
+      "title": "Verdict, confiance, ambiguïté",
+      "description": "Trois issues seulement. `stuck: true` avec une confiance au-dessus du seuil (`judge_confidence`, 0.7 par défaut) condamne le tour, même à l'intérieur de l'enveloppe. `stuck: false` épargne le tour, même au-delà de l'enveloppe. Un verdict ambigu n'arrête jamais rien : seul le backstop, plus loin, peut encore condamner.\n\nPour un modèle local, dont les confiances sont grossières, un plancher séparé s'applique côté job (`local_judge_confidence`, 0.9 par défaut) : un verdict bloqué sous ce plancher est requalifié en « productif ».\n\nLe preset `aggressive` ajoute une seule nuance : un verdict ambigu au-delà de l'enveloppe reçoit la redirection (`nudge_on_ambiguous`), sans jamais être arrêté.",
+      "questions": [
+        "Pourquoi la confiance ne suffit-elle pas seule ?",
+        "Pourquoi un verdict ambigu est-il épargné ?",
+        "Que change le plancher des modèles locaux ?"
+      ],
+      "file": "tokeneconomizer/loopguard/rules.py",
+      "pattern": "conf >= thr\\[\"judge_confidence\"\\]"
+    },
+    {
+      "title": "L'enveloppe : la longueur des tours qui finissent bien",
+      "description": "`record_turn` alimente l'enveloppe du dépôt avec les seuls tours terminés normalement et restés verts (`resolved_proxy` : aucune vérification n'a échoué après la dernière édition), sous le verrou partagé par les sessions du dépôt. La valeur retenue est un p90, pas un maximum, et il faut au moins `envelope_min_samples` tours pour qu'elle remplace le preset.\n\nC'est ce qui rend la décision relative au dépôt, et cela explique deux comportements observables : sans enveloppe le juge n'est même pas câblé, et un tour jugé bloqué mais encore à l'intérieur de l'enveloppe est épargné.\n\nLe tour complet, et non le segment d'après redirection, est ce qui est enregistré : la distribution mesure des tours entiers qui ont abouti.",
+      "questions": [
+        "Pourquoi seuls les tours verts apprennent-ils ?",
+        "Pourquoi un p90 et pas un maximum ?",
+        "Comment un dépôt neuf se comporte-t-il ?"
+      ],
+      "file": "tokeneconomizer/loopguard/envelope.py",
+      "pattern": "def record_turn\\(store, guard, level=\"default\""
+    },
+    {
+      "title": "De la décision au cran : redirection, puis notice",
+      "description": "`_stop` transforme la décision en événement daté (segment, appels cumulés, enveloppe, raison, instantané de l'état) et ne marque `aborted` que pour un arrêt. Le cran, lui, se choisit dans `fold` : tant que `nudges_done` reste sous le budget — `loopguard_nudges`, une seule redirection par tour par défaut — la décision devient une redirection ; ensuite seulement une notice.\n\nAutrement dit, un même verdict « bloqué » produit d'abord un texte ajouté au contexte de l'agent, puis, si le tour s'enlise encore, un message destiné à la personne. Le plugin ne stoppe jamais le tour lui-même : tous les hôtes ne le permettent pas, et c'est à la personne de décider.",
+      "questions": [
+        "Pourquoi le budget de redirections existe-t-il ?",
+        "Qu'est-ce qui distingue un événement `nudge` d'un événement `abort` ?",
+        "Qui arrête réellement le tour ?"
+      ],
+      "file": "tokeneconomizer/loopguard/turn.py",
+      "pattern": "def _stop\\(self, action, reason, envelope\\)"
+    },
+    {
+      "title": "Le texte de la redirection",
+      "description": "`nudge_body` sert d'abord la redirection qu'un juge a déjà écrite avec son verdict, puis celle d'un rédacteur dédié, et à défaut le gabarit `nudge_text`. Ce gabarit ne connaît que les compteurs de l'agent : nombre d'éditions, nombre de fichiers, fichier le plus édité, vérifications lancées, nombre de répétitions de la même panne.\n\nIl est donc sans fuite par construction, et il est écrit pour rediriger, jamais pour arrêter : « Do NOT stop — instead step back and try a MATERIALLY DIFFERENT hypothesis », avec l'invitation à relire l'attente du test, à changer de fichier ou de cause racine, et à vérifier l'hypothèse avant d'éditer encore.",
+      "questions": [
+        "Pourquoi le gabarit ne cite-t-il que les actions de l'agent ?",
+        "Quand un juge écrit-il la redirection lui-même ?",
+        "Comment le texte évite-t-il de révéler la solution ?"
+      ],
+      "file": "tokeneconomizer/loopguard/turn.py",
+      "pattern": "def nudge_body\\(self, envelope=None, writer=None\\)"
+    },
+    {
+      "title": "Ce que le plugin écrit alors dans le contexte",
+      "description": "Pour une redirection, le contrôleur compose deux sorties distinctes : le contexte (`host.context(event, body)`, le texte de redirection) et une notice d'une ligne (`host.notice(...)`) qui dit à la personne que le tour vient d'être redirigé et pourquoi, sous forme courte (`judge-stuck@0.85`, `cum-backstop:35>=30t`, `ambiguous-past-envelope`). `merge_outputs` les concatène sans écraser l'une par l'autre — les contextes avec une ligne vide, les notices avec un retour à la ligne.\n\nLe tour redirigé est aussi journalisé et compté dans l'état de session (`nudges`). En mode `shadow`, tout est calculé et journalisé mais rien n'est livré, ni contexte ni notice : c'est la façon de mesurer le mécanisme avant de lui faire confiance.",
+      "questions": [
+        "Pourquoi deux sorties plutôt qu'une ?",
+        "Que voit la personne, et que voit le modèle ?",
+        "Que fait le mode `shadow` ?"
+      ],
+      "file": "tokeneconomizer/plugin/controller.py",
+      "pattern": "if action == \"nudge\":"
+    },
+    {
+      "title": "La forme de la réponse dépend de l'agent",
+      "description": "Le texte n'est pas posé au même endroit selon l'hôte : Claude Code reçoit `{\"hookSpecificOutput\": {\"hookEventName\": ..., \"additionalContext\": ...}}`, Copilot un simple `additionalContext`, Cursor un `additional_context`, et une notice devient un `systemMessage` chez les uns, une ligne de progrès chez Copilot.\n\nCertains hôtes n'affichent pas les messages de hook là où la personne regarde — Claude Code ne les montre que dans le transcript détaillé, et `claude -p` ne les imprime pas. La notice y est alors aussi relayée au modèle, mot pour mot, avec la consigne de la répéter dans sa réponse et dans son dernier message : le modèle devient le canal, la notice ne change pas sa tâche.",
+      "questions": [
+        "Pourquoi `hookEventName` est-il nécessaire pour Claude Code ?",
+        "Quel hôte reçoit `additional_context` ?",
+        "Pourquoi relayer une notice par le modèle ?"
+      ],
+      "file": "tokeneconomizer/plugin/hosts.py",
+      "pattern": "\"hookEventName\": event, \"additionalContext\": text"
+    },
+    {
+      "title": "Sur Pi : un message de steering",
+      "description": "Pi n'a pas de protocole de hook : l'extension traduit `tool_result` en `PostToolUse`, appelle le même dispatcher, puis applique la réponse avec les leviers de Pi. La redirection devient un `pi.sendMessage(..., { deliverAs: \"steer\" })` : un message ajouté au contexte de l'agent au milieu du tour, marqué `display: true` pour rester visible dans la conversation.\n\nLes notices, elles, passent par `notify` sur le `systemMessage` : elles s'affichent dans l'interface et sortent du contexte du modèle. L'extension n'invente aucune décision : elle ne fait que traduire l'entrée et appliquer la sortie.",
+      "questions": [
+        "Que signifie `deliverAs: \"steer\"` pour l'agent ?",
+        "Où va la notice sur Pi ?",
+        "Pourquoi l'extension n'a-t-elle aucune logique de décision ?"
+      ],
+      "file": "plugin/pi/tokeneconomizer.ts",
+      "pattern": "deliverAs: \"steer\""
+    },
+    {
+      "title": "Le cran final : une notice, jamais un arrêt",
+      "description": "Quand une redirection a déjà été dépensée et que le tour reste jugé bloqué, le plugin ne l'arrête pas : il écrit pour la personne le nombre d'appels et la raison, puis la façon d'arrêter le tour selon le mode de l'hôte (`stop_hint`) — par exemple « Press Esc to abort it. » sur Pi ou Claude Code en interactif, et la consigne de fin de run en mode headless.\n\nLa notice n'est délivrée qu'une fois par tour (`abort_delivered`), puis journalisée `delivered: \"notice\"`. Chez les hôtes qui n'affichent pas les messages de hook, elle est aussi relayée au modèle pour qu'il la répète à l'identique — c'est le seul cas où un texte destiné à la personne entre dans le contexte de l'agent.",
+      "questions": [
+        "Pourquoi le plugin ne peut-il pas arrêter le tour ?",
+        "Pourquoi la notice est-elle unique par tour ?",
+        "Quand une notice entre-t-elle dans le contexte du modèle ?"
+      ],
+      "file": "tokeneconomizer/plugin/controller.py",
+      "pattern": "elif action == \"abort\" and not g.abort_delivered:"
+    },
+    {
+      "title": "La fenêtre offerte après la redirection",
+      "description": "`after_nudge` ouvre un nouveau segment : compteur de redirections incrémenté, `SpiralState` du segment remis à zéro, écart de juge et redirection en attente oubliés. C'est la fenêtre fair-play de l'agent : l'accumulation d'avant la redirection ne peut plus le condamner, il faut que le nouveau segment accumule à nouveau churn, bruit et répétition.\n\nLe tour entier reste compté, lui, dans `whole` : c'est ce total qui décide du backstop et qui nourrit l'enveloppe à la fermeture du tour.",
+      "questions": [
+        "Pourquoi remettre l'état à zéro plutôt que le tour entier ?",
+        "Que devient un verdict de juge en attente au moment de la redirection ?",
+        "Quel total décide du backstop ?"
+      ],
+      "file": "tokeneconomizer/loopguard/turn.py",
+      "pattern": "def after_nudge\\(self\\):"
+    },
+    {
+      "title": "Quand la réponse n'arrive pas",
+      "description": "Le dispatcher ne casse jamais la session : toute erreur — entrée illisible, disque plein, bug — produit `{}` et une trace dans `errors.log`, donc aucune modification du contexte. Il ne fait rien non plus sous `TE_DISABLE=1`, ni pour ses propres appels de modèle (`TE_SIDECALL=1`), afin de ne pas se rappeler lui-même.\n\nDeux cas voisins laissent aussi le contexte intact : une décision calculée sur un hook mis en file d'attente attend l'appel suivant (`g.held`), et un tour qui se termine avant cet appel la voit journalisée comme `undelivered`. Dans tous ces cas, l'absence de contexte est le comportement voulu, jamais un silence ambigu.",
+      "questions": [
+        "Pourquoi un hook ne doit-il jamais échouer la session ?",
+        "Que se passe-t-il si le hook n'a pas obtenu le verrou ?",
+        "Pourquoi le plugin s'interdit-il de se rappeler lui-même ?"
+      ],
+      "file": "tokeneconomizer/plugin/hook.py",
+      "pattern": "It never fails the agent\\."
+    }
+  ]
+}

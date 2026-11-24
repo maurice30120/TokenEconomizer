@@ -1,0 +1,189 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "Calculer, enregistrer et vérifier une empreinte avant d'injecter du Knowledge",
+  "description": "Ce tour suit l'empreinte (« proof ») du mécanisme Knowledge de TokenEconomizer, de son calcul à son usage : les octets conservés au moment du read, l'observation reconstruite au pli de session, les deux calculs d'empreinte (fichier complet, symbole d'une lecture partielle), la forme enregistrée dans l'état, puis le contrôle qui, juste avant l'injection au SessionStart, recalcule chaque empreinte et écarte ce qui ne correspond plus.\n\nL'ordre suivi est celui du code : `tokeneconomizer/knowledge` pour le contrat, `tokeneconomizer/plugin` pour le branchement sur les hooks et la livraison du bloc au contexte de l'agent.",
+  "steps": [
+    {
+      "title": "Vue d'ensemble",
+      "description": "TokenEconomizer est un plugin qui s'installe dans les sessions des agents de code (Claude Code, Copilot CLI, Pi) et y applique des mécanismes appris hors ligne. Ce tour suit un seul d'entre eux, le mécanisme expérimental *Knowledge* : il transforme des fichiers que l'agent a réellement lus en explications réutilisables, puis les réinjecte dans les sessions suivantes — à une condition, que l'empreinte enregistrée corresponde encore au code.\n\nLa question posée est donc double, et le parcours la suit dans cet ordre : sur quels octets une empreinte est calculée et sous quelle forme elle est enregistrée, puis ce que le plugin revérifie exactement avant de laisser une explication entrer dans le contexte.\n\n**Diagram — Context view**\n\n```mermaid\nflowchart LR\n  Personne[\"Personne développeuse\"] -->|\"travaille dans une session (CLI d'agent)\"| Agent[\"Agent de code hôte\"]\n  Agent -->|\"déclenche les hooks du plugin (processus, JSON sur stdin)\"| Knowledge[\"Mécanisme Knowledge de TokenEconomizer\"]\n  Knowledge -->|\"lit les fichiers et calcule les empreintes (E/S disque)\"| Depot[\"Fichiers du dépôt\"]\n  Knowledge -->|\"demande des candidats Knowledge (appel de modèle secondaire)\"| Proposeur[\"Modèle proposeur\"]\n  Knowledge -->|\"ajoute le bloc vérifié au contexte de session (JSON sur stdout)\"| Agent\n```\n\n**Diagram — Containers**\n\n```mermaid\nflowchart TB\n  subgraph Hote[\"Processus de l'agent hôte\"]\n    Hook[\"Contrôleur de hooks (controller.py)\"]\n    Pli[\"Pli de session (fold.py et Knowledge)\"]\n  end\n  subgraph Magasin[\"Magasin d'état du plugin\"]\n    Captures[\"knowledge_captures : index.json et un .bin par empreinte\"]\n    Etat[\"knowledge_state : faits, preuves, cycles de vie\"]\n  end\n  Depot[\"Fichiers du dépôt\"]\n  Hook -->|\"capture les octets lus (écriture disque sous verrou)\"| Captures\n  Pli -->|\"relit les captures puis les jette (E/S disque)\"| Captures\n  Pli -->|\"lit le fichier courant (E/S disque)\"| Depot\n  Pli -->|\"persiste faits et preuves (écriture JSON atomique)\"| Etat\n  Hook -->|\"charge l'état et revérifie chaque preuve (lecture disque)\"| Etat\n```\n\nOù lire le code :\n\n- Le contrat d'empreinte et son calcul : [tokeneconomizer/knowledge](tokeneconomizer/knowledge)\n\n- Le branchement sur les hooks et la livraison au contexte : [tokeneconomizer/plugin](tokeneconomizer/plugin)\n\n- Les preuves rejouées en test : [tests](tests)",
+      "questions": [
+        "Quels octets exactement une empreinte Knowledge résume-t-elle ?",
+        "Pourquoi le mécanisme est-il désactivé par défaut ?",
+        "Que signifie « une preuve valide » et que ne signifie-t-elle pas ?"
+      ]
+    },
+    {
+      "title": "Où vit le contrat de preuve",
+      "description": "Le paquet `knowledge` est isolé en quatre modules : `capture` garde les octets lus au moment du read, `observation` reconstruit depuis la transcription ce qui a réellement été observé, `proof` porte le contrat d'empreinte, `stage` branche le tout sur le cycle de vie de TE et sur l'injection. Aucun autre module du dépôt ne calcule d'empreinte Knowledge.\n\nLe mécanisme est éteint par défaut : le pli sort immédiatement quand `ctx.config.knowledge` est faux, et rien dans ce paquet n'est importé tant que la configuration ne l'active pas. Le `README` du paquet décrit l'intention et les limites ; le code qui suit est la description de ce qui est réellement appliqué.\n\nUn point du README mérite d'être gardé en tête pour tout le tour : une empreinte qui correspond n'établit pas que l'explication est vraie, seulement qu'elle parlait bien de ces octets-là.",
+      "questions": [
+        "Quel module décide et quel module calcule ?",
+        "Que se passe-t-il pour un hôte dont le format de transcription n'est pas reconnu ?"
+      ],
+      "directory": "tokeneconomizer/knowledge"
+    },
+    {
+      "title": "L'entrée du flux : le pli de session",
+      "description": "Tout part du pli. `_fold_knowledge` refuse de travailler si Knowledge est éteint ou si l'hôte n'est pas l'un des trois reconnus, puis charge l'état du Knowledge du dépôt sous `workspace_id` (`repo--sha256` du chemin réel du workspace) et fixe `stage.workspace`, la racine sur laquelle toutes les empreintes seront relatives.\n\nC'est ici que la boucle entre capture et observation se ferme : `capture.session_dir` désigne le répertoire de captures de la session en cours, `stage.update(...)` le transmet à `observations(...)`, qui relit la transcription en s'appuyant sur ces octets, puis `stage.save(...)` persiste le résultat. `capture.discard(captures)` ne s'exécute qu'après un pli réussi : les captures restent tant que le pli n'a pas abouti, parce qu'une capture au moment du read est la seule preuve disponible.\n\nLe proposeur n'est branché que si le pli n'est ni importé ni partagé avec le proposeur natif ; sinon un modèle hors ligne (`sidecall.local_runner`) est utilisé, et l'appel de modèle n'a pas lieu dans le pli.",
+      "questions": [
+        "Pourquoi les captures ne sont-elles jetées qu'après le save ?",
+        "Comment le workspace détermine-t-il le nom du fichier d'état ?"
+      ],
+      "file": "tokeneconomizer/plugin/fold.py",
+      "pattern": "def _fold_knowledge\\(ctx, adapter, transcript, session_id, imported=False, trace_path=None, shared=None\\):"
+    },
+    {
+      "title": "Conserver les octets au moment du read",
+      "description": "Une lecture Pi partielle ne laisse dans la transcription qu'un texte, avec un pied de page ; au moment du pli, le fichier a pu changer et le relire ne prouverait rien sur ce que le modèle a vu. Le hook `PostToolUse` appelle donc `capture.record` tout de suite après le read, et c'est le seul chemin qui produit une preuve sur une lecture partielle.\n\n`match_read` est le contrat de cette capture : il retrouve, dans les octets du fichier, exactement une fenêtre de lignes dont le texte est le corps du résultat, et valide le pied de page que Pi ajoute (`Showing lines a-b of n`, `X more lines in file`, `Use offset=…`). Un résultat avec caractère de remplacement, un fichier non UTF-8, une ligne unique au-delà de la limite, un pied de page incohérent ou une fenêtre ambiguë rendent `None` : pas de correspondance, donc pas de preuve.\n\n`_store_capture` écrit alors `index.json` et un `<sha256>.bin` dans le répertoire de la session, sous verrou ; un même `tool_use_id` rejoué ne remplace pas la première capture, les plafonds sont de 8 Mio par fichier, 12 fichiers et 8 Mio par session, et les répertoires de plus de sept jours sont supprimés. `load` revérifie le contenu de chaque `.bin` contre le nom qui le désigne.",
+      "questions": [
+        "Pourquoi recalculer l'empreinte d'une lecture partielle après le read serait-il inutile ?",
+        "Que signifie précisément un `match_read` qui renvoie `None` ?",
+        "Pourquoi un `tool_use_id` rejoué ne remplace-t-il pas la capture ?"
+      ],
+      "file": "tokeneconomizer/knowledge/capture.py",
+      "pattern": "def match_read\\(text, data, offset=None, limit=None\\):"
+    },
+    {
+      "title": "Reconstruire l'observation",
+      "description": "`_captured_read` transforme une lecture partielle plus sa capture en observation : le texte journalisé doit toujours correspondre aux octets capturés, et le nombre de lignes concordé. Le fichier est alors prouvé sur la version capturée, le corps de l'observation est l'extrait sans le pied de page, et `symbol_proofs_in` calcule les empreintes des déclarations que la fenêtre a traversées.\n\nLe record partiel enregistre trois choses différentes : `version` (l'empreinte du fichier entier au moment du read), `observed` (les fenêtres réellement renvoyées et le total de lignes) et `symbols` (les preuves par nom). Une lecture complète, elle, ne passe pas par là : elle est acceptée directement quand le résultat n'a ni détails, ni pied de page, ni troncature, et donne une preuve de fichier sur le texte reçu.\n\n`_merge_read` additionne plusieurs lectures partielles du même fichier — fenêtres et symboles — mais seulement si `version` est identique ; après une modification entre deux reads, la dernière lecture reste seule plutôt que de mélanger deux versions.",
+      "questions": [
+        "Pourquoi `version` est-il conservé sur une observation partielle ?",
+        "Que se passe-t-il si le fichier change entre deux lectures partielles ?"
+      ],
+      "file": "tokeneconomizer/knowledge/observation.py",
+      "pattern": "def _captured_read\\(root, capture, text\\):"
+    },
+    {
+      "title": "Calculer l'empreinte d'un fichier",
+      "description": "`file_proof` est délibérément pauvre : il hachète les octets qu'on lui passe, jamais un fichier relu plus tard. La docstring le dit en une phrase — « never hash a later file read » — et c'est ce qui rend l'empreinte attribuable à une lecture précise plutôt qu'à un instant ultérieur.\n\nTrois refus le protègent : une observation incomplète, une observation qui n'est pas de type `bytes`, et un chemin qui sort de la racine (résolution puis contrôle d'appartenance, ce qui couvre aussi les liens symboliques cycliques). Dans ces cas il renvoie `None` ; sinon il rend `{\"path\": relatif, \"sha256\": hex}` sur les octets observés.",
+      "questions": [
+        "Pourquoi hacher les octets reçus plutôt que le fichier sur disque ?",
+        "Quels cas renvoient `None` et pourquoi échouent-ils ainsi ?"
+      ],
+      "file": "tokeneconomizer/knowledge/proof.py",
+      "pattern": "def file_proof\\(root, path, observed, \\*, complete\\):"
+    },
+    {
+      "title": "Vérifier une preuve de fichier",
+      "description": "La vérification est l'opération inverse, et elle échoue fermée : elle résout le chemin, le contrôle contre la racine, relit les octets courants et compare l'empreinte. Fichier supprimé, illisible, chemin hors racine, clé manquante ou type inattendu donnent `False`, jamais une exception qui remonterait jusqu'à l'injection.\n\nCe comportement est ce qui rend la restauration exacte des octets intéressante : remettre le fichier dans son état d'origine rend la preuve de nouveau valide, alors qu'une modification même minime la rend invalide jusqu'à ce que le Knowledge soit réappris. Les tests de `tests/test_knowledge_proof.py` rejouent ces trois états (valide, modifié, supprimé) puis la restauration.",
+      "questions": [
+        "Pourquoi une preuve invalide ne lève-t-elle pas d'exception ?",
+        "Qu'est-ce qui restaure la validité d'une preuve invalidée ?"
+      ],
+      "file": "tokeneconomizer/knowledge/proof.py",
+      "pattern": "def verify_file\\(root, proof\\):"
+    },
+    {
+      "title": "Quelles grammaires peuvent produire une empreinte de symbole",
+      "description": "Une empreinte de symbole n'existe que pour les extensions listées dans `LANGUAGES`, et cette liste est volontairement étroite : Python, JavaScript/JSX, TypeScript/TSX, Go, Rust, Java, C/C++ et `.h`. Un fichier d'une autre extension n'entre jamais dans le calcul, quel que soit son contenu.\n\n`available_languages` fait le pendant honnête de cette table : elle essaie réellement de charger chaque parseur du paquet `tree-sitter-language-pack` et ne renvoie que ceux qui se chargent. C'est ce que la commande d'inspection affiche (`knowledge symbol grammars`), et c'est ce qui explique qu'un environnement sans les dépendances optionnelles n'ait aucune grammaire disponible : les empreintes de symbole deviennent alors impossibles et l'admission retombe sur une preuve de fichier.",
+      "questions": [
+        "Pourquoi la table ne s'étend-elle pas à toutes les extensions connues ?",
+        "Que se passe-t-il si le paquet de parseurs n'est pas installé ?"
+      ],
+      "file": "tokeneconomizer/knowledge/proof.py",
+      "pattern": "LANGUAGES = \\{"
+    },
+    {
+      "title": "Résoudre un symbole non ambigu",
+      "description": "`_symbol_hash` parse le fichier entier, refuse un arbre en erreur, puis retient les déclarations dont le nom est exactement celui demandé. Le compte doit valoir un : zéro ou plusieurs occurrences rendent `None`, car une empreinte ambiguë ne prouverait pas *quel* symbole a été vu.\n\n`_declarations` définit ce qu'est une déclaration reconnue : une liste fermée de types de nœuds (`function_definition`, `class_declaration`, `method_definition`, `struct_item`, `interface_declaration`, …), avec le nom lu dans le champ `name`, et un déballage du `declarator` pour les `function_definition` à la C. Un nœud enveloppé dans `decorated_definition` est remplacé par son parent, pour que les décorateurs fassent partie du symbole qu'ils décorent.",
+      "questions": [
+        "Pourquoi un nom déclaré deux fois ne peut-il rien prouver ?",
+        "Pourquoi les décorateurs sont-ils inclus dans le nœud du symbole ?"
+      ],
+      "file": "tokeneconomizer/knowledge/proof.py",
+      "pattern": "def _symbol_hash\\(data, language, symbol\\):"
+    },
+    {
+      "title": "L'empreinte du symbole : ses jetons, pas ses commentaires",
+      "description": "`_node_hash` parcourt la déclaration en profondeur et ne garde que les feuilles : chaque morceau de texte est préfixé par sa longueur sur huit octets, ce qui rend les frontières de jetons non ambiguës, puis le tout est haché en SHA-256. Tout nœud dont le type contient `comment` est ignoré, avec sa descendance.\n\nLa conséquence pratique est exactement celle annoncée par le README : un changement de commentaire ne périme pas la preuve, un changement de code n'importe où dans la déclaration la périme — y compris dans les lignes que le modèle n'a pas lues, puisqu'il lit l'extrait mais signe la déclaration entière. Un test du dépôt vérifie ces deux directions, plus l'indépendance vis-à-vis d'un autre symbole du même fichier.",
+      "questions": [
+        "Pourquoi préfixer chaque jeton par sa longueur ?",
+        "Quel changement dans la déclaration n'invalide pas la preuve ?",
+        "Que couvre exactement l'empreinte par rapport à ce que le modèle a lu ?"
+      ],
+      "file": "tokeneconomizer/knowledge/proof.py",
+      "pattern": "def _node_hash\\(data, node\\):"
+    },
+    {
+      "title": "La forme enregistrée d'une preuve de symbole",
+      "description": "`_proof` fixe la forme persistée : `kind` à `symbol`, le chemin relatif, le nom du symbole, la langue, l'empreinte SHA-256 des jetons, et deux métadonnées d'environnement — `grammar_version` (paquet `tree-sitter-language-pack`) et `runtime_version` (`tree-sitter`), lues via `importlib.metadata`.\n\nCes versions ne sont pas décoratives. `verify_proof` compare la preuve recalculée au dictionnaire enregistré par égalité complète : une mise à jour du runtime ou de la grammaire change ces champs et périme les preuves existantes au lieu de les valider à tort. C'est la partie « enregistrée » du contrat : ce qui est stocké suffit à un audit ultérieur, et rien de plus n'est nécessaire.",
+      "questions": [
+        "Pourquoi enregistrer les versions de grammaire et de runtime ?",
+        "Quels champs rendent deux preuves égales ou différentes ?"
+      ],
+      "file": "tokeneconomizer/knowledge/proof.py",
+      "pattern": "return \\{\"kind\": \"symbol\", \"path\": file\\[\"path\"\\], \"symbol\": symbol,"
+    },
+    {
+      "title": "Ce qu'une lecture partielle peut prouver",
+      "description": "Une lecture partielle ne donne pas de preuve de fichier : elle ne peut attester que les déclarations que sa fenêtre a traversées, dans la version capturée. `symbol_proofs_in` convertit donc les lignes lues en intervalle d'octets, prend chaque déclaration qui chevauche cet intervalle, écarte celles dont le nom apparaît plusieurs fois (`Counter`), et produit une preuve par nom.\n\nLe résultat est un dictionnaire nom → preuve ; c'est exactement ce que `_captured_read` met dans `symbols`, et ce que l'admission exigera du proposeur. Une fenêtre invalide, un fichier qui ne parse pas, une extension non supportée ou une donnée non décodable renvoient `{}` : aucune preuve n'est fabriquée par défaut.",
+      "questions": [
+        "Pourquoi une lecture partielle ne produit-elle aucune preuve de fichier ?",
+        "Que se passe-t-il si la fenêtre traverse une déclaration ambiguë ?"
+      ],
+      "file": "tokeneconomizer/knowledge/proof.py",
+      "pattern": "def symbol_proofs_in\\(root, path, data, first_line, last_line\\):"
+    },
+    {
+      "title": "Vérifier, quel que soit le type de preuve",
+      "description": "`verify_proof` est le seul point d'entrée de vérification utilisé par le cycle de vie et par l'injection. Il répartit selon `kind` : absent ou `file` donne `verify_file`, `symbol` recalcule `symbol_proof` sur les octets courants et exige l'égalité complète des deux dictionnaires, tout autre `kind` renvoie `False`.\n\nTout est enveloppé : une preuve qui n'est pas un dictionnaire, un chemin hors racine, une clé absente ou un parseur indisponible aboutissent à `False`. Le mécanisme est donc « fail closed » de bout en bout : aucune panne d'environnement ne peut faire passer une preuve pour valide.",
+      "questions": [
+        "Que se passe-t-il pour un `kind` inconnu ?",
+        "Pourquoi la comparaison porte-t-elle sur tout le dictionnaire ?"
+      ],
+      "file": "tokeneconomizer/knowledge/proof.py",
+      "pattern": "def verify_proof\\(root, proof\\):"
+    },
+    {
+      "title": "Admission : calculer et attacher la preuve",
+      "description": "`_admit` est l'endroit où une empreinte est réellement calculée pour une explication proposée. Trois chemins existent.\n\nUne synthèse (`dependencies`) n'a pas de preuve propre : elle exige au moins deux identifiants distincts existants, non synthétiques, dont le contrat est valide à cet instant, et enregistre leurs révisions épinglées comme preuve.\n\nUne observation partielle exige un `symbol` ; la preuve est reprise de `observation['symbols']` et revérifiée tout de suite (`stale-proof` sinon), aucune retombée sur le fichier n'est permise. Une observation complète, elle, calcule `symbol_proof` sur le contenu observé et, si le nom ne se résout pas, retombe sur la preuve de fichier en y inscrivant `fallback: {symbol, reason: symbol-unresolvable}`.\n\nLe reste est un refus explicite et nommé : `source-not-cited`, `source-not-observed`, `partial-needs-symbol`, `symbol-not-observed`, `stale-proof`, `invalid-dependency`.",
+      "questions": [
+        "Pourquoi une lecture partielle n'a-t-elle pas de repli sur la preuve de fichier ?",
+        "Que contient le champ `fallback` et quand apparaît-il ?",
+        "Comment une synthèse prouve-t-elle ses dépendances ?"
+      ],
+      "file": "tokeneconomizer/knowledge/stage.py",
+      "pattern": "def _admit\\(self, spec\\):"
+    },
+    {
+      "title": "Enregistrer la preuve dans l'état",
+      "description": "L'état du Knowledge n'est pas un journal : c'est un unique JSON par workspace, dans `knowledge_state/<repo>.json`, dont le nom dérive de `workspace_id(repo, workspace)` — le préfixe du dépôt plus le SHA-256 du chemin réel du workspace. Deux workspaces du même dépôt n'ont donc ni le même fichier ni les mêmes preuves.\n\nLa persistance elle-même est héritée du distilleur : `save` écrit `facts` sous la forme `{id: {\"spec\": …, \"life\": …}}`, et `spec` contient la preuve telle que `_admit` l'a construite, avec sa provenance (session, chemin, fenêtres observées). `load` reconstruit les `Fact` et rétablit les cycles de vie, y compris les faits oubliés, dont la preuve reste inspectable.\n\nAu moment de l'injection, il ne reste donc que la preuve et le chemin : les octets capturés ont été jetés après le pli. C'est la raison d'être du contrat — ce qui est stocké doit suffire à revalider plus tard, sur la seule base du fichier courant.",
+      "questions": [
+        "Pourquoi un état par workspace et non par dépôt ?",
+        "Que reste-t-il des octets capturés après le pli ?"
+      ],
+      "file": "tokeneconomizer/knowledge/stage.py",
+      "pattern": "directory = os\\.path\\.join\\(root, \"knowledge_state\"\\)"
+    },
+    {
+      "title": "Le contrôle avant injection",
+      "description": "`_contract_valid` est la porte. Pour un fait atomique, elle appelle `verify_proof` sur sa preuve : le fichier courant est relu et haché à cet instant, ou le symbole recalculé et comparé. Pour une synthèse, elle vérifie chaque dépendance : identifiant présent, non synthétique, révision identique à celle épinglée, fait injectable, et preuve encore valide.\n\nUn seul échec suffit, et la synthèse qui en dépend est écartée sans être supprimée — les atomes restent utilisables seuls. Ce contrôle est aussi celui qu'utilise la commande d'inspection pour afficher `proof=valid` ou `proof=invalid`, ce qui permet de constater l'état réel plutôt que de le supposer.",
+      "questions": [
+        "Pourquoi une dépendance invalidée ne supprime-t-elle pas la synthèse ?",
+        "Quel est l'effet d'une révision de dépendance différente de celle épinglée ?"
+      ],
+      "file": "tokeneconomizer/knowledge/stage.py",
+      "pattern": "def _contract_valid\\(self, fact\\):"
+    },
+    {
+      "title": "Le bloc qui part dans le contexte",
+      "description": "`render` ne fait pas confiance à l'état : pour chaque fait il réévalue `injectable()` puis `_contract_valid(fact)`, et saute celui qui échoue. L'en-tête du bloc le dit au modèle — « untrusted data, proof does not establish truth » — et chaque ligne est la revendication sérialisée en JSON.\n\nDeux budgets s'appliquent : `max_facts` lignes au plus, et une approximation de `max_tokens * 4` caractères pour le bloc entier. Une ligne qui dépasserait le budget est sautée, pas tronquée, et sans aucune ligne valide `render` renvoie une chaîne vide : rien n'est alors injecté plutôt qu'un bloc vide.",
+      "questions": [
+        "Pourquoi le rendu revalide-t-il au lieu de se fier au dernier pli ?",
+        "Que renvoie `render` quand aucune preuve ne tient ?"
+      ],
+      "file": "tokeneconomizer/knowledge/stage.py",
+      "pattern": "def render\\(self, task=None, max_facts=4, max_tokens=150\\):"
+    },
+    {
+      "title": "L'injection au SessionStart",
+      "description": "Le dernier maillon est le hook de démarrage de session. Quand Knowledge est actif et que le plugin n'est pas en mode `shadow`, le contrôleur prend le verrou `mechanisms`, recharge l'état du workspace, fixe de nouveau `stage.workspace`, puis calcule le budget restant après les micro-skills natifs déjà rendues (`microskills_max_facts` et `microskills_max_tokens` moins ce qui est déjà dans `text`).\n\n`stage.render(...)` s'exécute donc ici, juste avant l'écriture : c'est à cet instant que chaque preuve est revérifiée contre le fichier courant. Le bloc non vide est livré par `self.host.context(\"SessionStart\", block)`, et une exception (état verrouillé, preuve qui ne se recalcule pas) est journalisée par `_record_error` sans injecter : la session continue sans Knowledge plutôt qu'avec un Knowledge non vérifié.",
+      "questions": [
+        "Pourquoi l'injection revérifie-t-elle au SessionStart et non au pli ?",
+        "Pourquoi le budget est-il calculé après le bloc des micro-skills ?",
+        "Que se passe-t-il en mode `shadow` ?"
+      ],
+      "file": "tokeneconomizer/plugin/controller.py",
+      "pattern": "block = stage.render\\(max_facts=facts, max_tokens=tokens\\)"
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "D'où viennent les faits injectés par TokenEconomizer",
+  "description": "Ce Tour suit une seule chaîne : le bloc de faits que le plugin ajoute au contexte d'une session.\n\nIl part du hook qui l'injecte, remonte au cache que le fold vient d'écrire, puis aux deux sources de vérité — les six familles de faits d'environnement apprises sans modèle, le proposeur payant, et la couche Knowledge adossée à des fichiers réellement lus — et s'arrête sur les conditions exactes qui font qu'un fait entre dans le bloc, y reste, ou en sort.",
+  "steps": [
+    {
+      "title": "Vue d'ensemble",
+      "description": "TokenEconomizer est un plugin pour agents de codage (Claude Code, Codex, le CLI GitHub Copilot et Pi). Il apprend d'un dépôt, à partir des sessions déjà terminées, un petit bloc de faits — la bonne façon d'y lancer les tests, un hôte injoignable, une variable d'environnement requise — et l'ajoute au contexte au démarrage des sessions suivantes. Un développeur y gagne les redécouvertes qu'il paierait sinon à chaque session, sans changer d'agent ni de modèle.\n\n**Diagram — Context view**\n\n```mermaid\nflowchart LR\n  Dev((\"Développeur\"))\n  Agent[\"Agent de codage<br/>Claude Code, Codex, Copilot CLI, Pi\"]\n  Repo[\"Dépôt de travail\"]\n  TE[\"TokenEconomizer<br/>(plugin)\"]\n  Model[\"Modèle du proposeur<br/>(appelé par le CLI de l'agent)\"]\n\n  Dev -->|\"travaille dans une session (TUI, terminal)\"| Agent\n  Agent -->|\"envoie chaque événement de hook (JSON sur stdin)\"| TE\n  TE -->|\"ajoute un bloc de faits au contexte de départ (additionalContext)\"| Agent\n  Agent -->|\"lit et écrit des fichiers (outils)\"| Repo\n  TE -->|\"lit les journaux de session (fichiers JSONL)\"| Agent\n  TE -->|\"demande des faits à rédiger (sous-processus CLI)\"| Model\n```\n\n**Diagram — Containers**\n\n```mermaid\nflowchart TB\n  subgraph HookC[\"Hooks du plugin (un processus court par événement)\"]\n    H[\"controller : démarrage, prompts, outils, fin de session\"]\n  end\n  subgraph FoldC[\"Fold détaché (te fold)\"]\n    F[\"apprentissage d'une session terminée\"]\n  end\n  subgraph StoreC[\"État local ~/.tokeneconomizer (fichiers)\"]\n    Inj[(\"injection.json\")]\n    Mech[(\"mécanismes : faits, preuves, captures\")]\n  end\n  Cli[\"CLI de l'agent, hors session<br/>(appel de modèle)\"]\n\n  H -->|\"lit le bloc rendu (fichier JSON)\"| Inj\n  H -->|\"lance un fold à la fin de session (sous-processus détaché)\"| F\n  F -->|\"écrit le bloc rendu (fichier JSON)\"| Inj\n  F -->|\"enregistre faits et preuves (fichiers JSON)\"| Mech\n  F -->|\"demande des faits au modèle (sous-processus CLI)\"| Cli\n```\n\n**Où vit le travail**\n\n- Hooks, fold, config, état par dépôt : `tokeneconomizer/plugin/`\n\n- Faits d'environnement, proposeur, cycle de vie, observation : `tokeneconomizer/microskills/`\n\n- Couche Knowledge adossée à des fichiers lus : `tokeneconomizer/knowledge/`\n\nLe reste du Tour suit le trajet d'un fait, du journal d'une session jusqu'à la ligne ajoutée au contexte de la suivante.",
+      "questions": [
+        "Quel est le chemin complet d'un fait, du journal de session au bloc injecté ?",
+        "Quelles parties du plugin écrivent dans ~/.tokeneconomizer ?",
+        "Pourquoi le bloc est-il injecté au SessionStart et pas à chaque prompt ?"
+      ]
+    },
+    {
+      "title": "Le seul point d'injection : le démarrage de session",
+      "description": "Au `SessionStart`, le contrôleur ne calcule rien : il lit le bloc déjà rendu dans `injection.json`, le store de ce dépôt pour cet agent (le state root est `$TOKENECONOMIZER_HOME`, sinon `~/.tokeneconomizer`, et l'état est clé par dépôt, pas par répertoire). L'injection est donc un simple cache-hit : le coût du démarrage ne dépend pas du nombre de faits appris.\n\nTrois conditions décident qu'il y a quelque chose à injecter :\n\n- `microskills` n'est pas `off` — c'est le réglage par défaut, donc un dépôt neuf n'injecte rien tant qu'on n'a pas mis `microskills=on` ;\n\n- le cache contient un `rendered` non vide ;\n\n- le plugin n'est pas en `shadow`, où la décision est calculée et journalisée mais rien n'atteint l'agent.\n\nLes autres écritures du plugin dans le contexte ne sont pas des faits et restent hors de ce Tour : la carte du dépôt (`repomap`), la redirection du garde-fou de boucle et ses avis.",
+      "questions": [
+        "Que lit exactement le hook au démarrage ?",
+        "Que fait le plugin quand microskills=off ?",
+        "Où se trouve injection.json pour ce dépôt ?"
+      ],
+      "file": "tokeneconomizer/plugin/controller.py",
+      "pattern": "if self\\.cfg\\.microskills != \"off\":"
+    },
+    {
+      "title": "Quand le bloc est réellement (ré)injecté",
+      "description": "Le hook distingue un démarrage neuf d'une reprise. `source` valant `startup`, `new`, `clear` ou `compact` est considéré comme frais : le bloc en cache part. Une reprise (`resume`, `fork`) ne réinjecte rien sur un agent qui rejoue le contexte de son premier démarrage — Claude Code et Codex le font.\n\nUn agent qui reconstruit la conversation reprise sans ce contexte (`keeps_start_context = False`, le cas du CLI Copilot) reçoit à la place le texte exactement stocké dans la session :\n\n- si la session avait reçu des faits, ils reviennent tels quels, ce qui préserve aussi son cache de prompt ;\n\n- si elle n'en avait pas reçu, elle n'en reçoit pas — une session démarrée sans faits reste sans faits.\n\nQuand le texte part, le hook journalise un événement `inject` (taille, nombre de lignes `- `), ajoute l'avis d'une ligne si son empreinte a changé depuis le dernier, et retient `rendered_ids` dans l'état de session pour le fold à venir.",
+      "questions": [
+        "Pourquoi une session reprise ne reçoit-elle pas deux fois les mêmes faits ?",
+        "Quel agent a besoin d'une réinjection, et pourquoi ?",
+        "À quoi sert rendered_ids conservé dans l'état de session ?"
+      ],
+      "file": "tokeneconomizer/plugin/controller.py",
+      "pattern": "if text and \\(fresh or not self\\.host\\.keeps_start_context\\):"
+    },
+    {
+      "title": "Le bloc est un cache écrit juste après un fold",
+      "description": "Le hook ne rend jamais de faits lui-même : `injection.json` est écrit par le fold, immédiatement après avoir intégré une session terminée. Le fichier contient le texte rendu (`rendered`), les identifiants des faits d'environnement choisis (`rendered_ids`), la couche employée (`profile`), la raison (`envfacts`, `manual-distill` ou `envfacts+manual-distill`) et une ligne de diagnostic par fait (`facts` : état, tirs, taux, injecté ou non, début de la phrase).\n\nC'est ce qui explique le décalage d'une session : les faits injectés dans la session N sont ceux qui étaient injectables à la fin du fold de la session N-1. Une session ne voit jamais l'effet de sa propre preuve.",
+      "questions": [
+        "Quels champs de injection.json le hook utilise-t-il ?",
+        "Pourquoi le bloc de la session N reflète-t-il la session N-1 ?",
+        "À quoi sert la raison enregistrée dans le cache ?"
+      ],
+      "file": "tokeneconomizer/plugin/fold.py",
+      "pattern": "ctx\\.store\\.write\\(\"injection\\.json\", \\{"
+    },
+    {
+      "title": "Une session n'est comptée qu'une fois",
+      "description": "Le fold est déclenché à la fin de la session (`SessionEnd` lance `te fold` détaché, pour ne pas ralentir l'agent), et rattrapé au démarrage suivant pour une session dont la fin n'a jamais été vue, une fois son journal au calme. Chaque session est repliée une seule fois, sous le verrou `fold` et selon `folded.json` : recompter la même trajectoire donnerait au cycle de vie des faits des confirmations qu'elle n'a pas méritées.\n\nUne session importée depuis l'historique de l'agent (`imported`) ne fait jamais appeler de modèle : la couche gratuite apprend d'elle, le proposeur attend les sessions que le plugin a vues se terminer. C'est la même règle quand l'appel de modèle est en pause après un échec d'authentification : les faits qui n'ont besoin d'aucun modèle continuent d'être appris.",
+      "questions": [
+        "Pourquoi un fold détaché plutôt que dans le hook ?",
+        "Que se passe-t-il si une session est relancée (resume) ?",
+        "Quelles sessions apprennent sans appeler de modèle ?"
+      ],
+      "file": "tokeneconomizer/plugin/fold.py",
+      "pattern": "def fold_session\\(ctx, session_id, transcript_path=None\\):"
+    },
+    {
+      "title": "Quelle couche rend le bloc",
+      "description": "`PrefixStage` est le seul objet que le plugin appelle pour rendre et pour apprendre. Le profil vient de la configuration : `off`, `envfacts`, `distiller` ou `envfacts+distiller` (`on` vaut ce dernier). Avec `envfacts`, rien ne peut appeler de modèle puisque `opt_tokens` reste à 0.\n\nEn profil composé, la couche d'environnement rend d'abord, et sa liste de phrases est passée au proposeur comme faits déjà existants (`external_facts`) : le modèle est explicitement chargé de ne pas les reformuler. Chacune des deux couches persiste dans son propre répertoire d'état.\n\nLe vocabulaire d'intentions (interpréteur, lanceur de tests, outil de paquets) est fourni par l'adaptateur, à défaut la lecture Python/git ; le plugin, lui, utilise la lecture générique, tous écosystèmes à la fois.",
+      "questions": [
+        "Que change microskills=envfacts par rapport à microskills=on ?",
+        "Pourquoi la couche gratuite rend-elle avant le proposeur ?",
+        "D'où vient le vocabulaire qui nomme les intentions ?"
+      ],
+      "file": "tokeneconomizer/microskills/stage.py",
+      "pattern": "profile = getattr\\(cfg, \"profile\", \"distiller\"\\) or \"distiller\""
+    },
+    {
+      "title": "La matière première : une session terminée, observée",
+      "description": "Toute la couche sans modèle repose sur une seule fonction. Elle relit le journal de la session terminée, ne garde que les appels d'outils de shell, découpe chaque commande en segments et classe chacun par **intention** (lancer l'interpréteur, les tests, construire ou vérifier, utiliser l'outil de paquets, récupérer une URL, sonder le VCS) et par **forme** (l'orthographe exacte de la commande).\n\nLe résultat d'une commande est ensuite lu dans sa sortie : une classe d'erreur d'environnement (`module_missing`, `command_missing`, `connection_refused`…) ou le signe que les tests ont tourné. L'attribution est volontairement conservatrice dans une commande composée : une erreur est imputée au segment que le message nomme, sinon au dernier segment pertinent, et un échec sans erreur d'infrastructure ne certifie pas que les segments suivants ont tourné.\n\nLa fonction rend les observations, les fichiers édités et les variables d'environnement demandées ou posées : c'est tout ce dont les familles de faits disposent.",
+      "questions": [
+        "Comment une commande composée est-elle attribuée à un segment ?",
+        "Qu'est-ce qui distingue une intention d'une forme ?",
+        "Pourquoi un échec de label ne compte-t-il pas comme un échec de forme ?"
+      ],
+      "file": "tokeneconomizer/microskills/observe.py",
+      "pattern": "def observe_task\\(transcript_path, vocab=None\\):"
+    },
+    {
+      "title": "Un fait d'environnement ne dépend pas des fichiers édités",
+      "description": "Chaque fait est un identifiant (`form_repair:<intention>:<forme>`, `boundary:fetch_remote`, `empty_probe:vcs_refs`, `arg_repair:…`, `env_value:<VARIABLE>`, `absent_tool:<outil>`) et des paramètres appris : la forme qui échoue et celle qui marche, les hôtes refusés, la variable et sa valeur. Aucun chemin, aucun gestionnaire d'environnement, aucun dépôt n'est nommé en dur.\n\nSon cycle de vie est créé avec `drift=False` : là où un fait proposé sur le code doit être confirmé par des sessions ayant édité des fichiers différents, un fait d'environnement se confirme sur n'importe quelles sessions. La raison est concrète : dans un petit dépôt où toutes les sessions touchent le même module, trois sessions où `pytest` manque sont bien trois confirmations.\n\nLa phrase injectée est produite à la demande par `claim()`, jamais stockée comme texte libre.",
+      "questions": [
+        "Pourquoi drift=False pour les faits d'environnement ?",
+        "Quels paramètres chaque famille apprend-elle ?",
+        "Pourquoi la phrase est-elle calculée et non stockée ?"
+      ],
+      "file": "tokeneconomizer/microskills/envfacts.py",
+      "pattern": "class EnvFact:"
+    },
+    {
+      "title": "De candidat à actif : trois confirmations",
+      "description": "Tous les faits, quelle que soit leur origine, traversent le même automate dans `Lifecycle`. Un fait naît `CANDIDATE` et ne devient `ACTIVE` qu'après `K_PROMOTE = 3` confirmations — sur des sessions ayant édité des fichiers différents quand `drift` s'applique.\n\nLe score de récence décroît de `GAMMA` par session écoulée : une preuve ancienne pèse moins qu'une récente, ce qui laisse le manuel suivre un dépôt qui change.\n\n**Diagram — Cycle de vie d'un fait**\n\n```mermaid\nstateDiagram-v2\n  [*] --> CANDIDATE: première preuve\n  CANDIDATE --> ACTIVE: 3 confirmations\n  CANDIDATE --> RETIRED: contradiction d'un fait à fort enjeu\n  ACTIVE --> RETIRED: score sous le plancher\n  RETIRED --> [*]\n```\n\nUn fait confirmé n'est pas encore injecté : le passage à `ACTIVE` est une condition nécessaire, pas suffisante.",
+      "questions": [
+        "Combien de sessions faut-il pour qu'un fait devienne actif ?",
+        "Que pèse une confirmation ancienne ?",
+        "Pourquoi exiger des fichiers différents pour un fait sur le code ?"
+      ],
+      "file": "tokeneconomizer/microskills/lifecycle.py",
+      "pattern": "K_PROMOTE   = 3"
+    },
+    {
+      "title": "La porte de tir : le gaspillage doit revenir",
+      "description": "Un fait `ACTIVE` n'est rendu que s'il franchit la porte de tir : le gaspillage qu'il évite doit s'être produit sur au moins `FIRE_GATE = 0.40` des sessions où le fait était **exercé**, mesuré sur au moins `FIRE_MIN_N = 4` telles sessions.\n\nLes deux compteurs sont distincts : `fire_den` compte les sessions où la commande concernée a été lancée, `fire_num` celles où le gaspillage a eu lieu — ou, le fait étant déjà injecté, celles où il a continué d'être évité. Une fois injecté, un fait qui marche reste donc compté comme tirant : la porte ne récompense pas seulement le fait d'avoir été utile avant.\n\nConséquence pratique : un fait vrai mais jamais exercé dans ce dépôt n'est pas injecté. C'est ce qui garde le bloc court sans avoir à choisir à la main.",
+      "questions": [
+        "Quelle est la différence entre fire_num et fire_den ?",
+        "Pourquoi un fait actif peut-il ne pas être injecté ?",
+        "Comment un fait déjà injecté continue-t-il de justifier sa place ?"
+      ],
+      "file": "tokeneconomizer/microskills/lifecycle.py",
+      "pattern": "def injectable\\(self\\):"
+    },
+    {
+      "title": "Ce que la session a réellement reçu",
+      "description": "Le rendu et le fold ne tournent pas dans le même processus : le hook lit un cache rendu par le fold précédent. Sans rien de plus, un fait injecté ne serait jamais compté comme ayant tiré, et sortirait du bloc par décroissance pendant qu'il travaille.\n\n`seed_injected` referme cette boucle : le hook a retenu `rendered_ids` dans l'état de session, le fold les repasse à la couche d'environnement, qui ne conserve que les identifiants encore connus.\n\nCette mécanique est propre à la couche gratuite. Les faits du proposeur n'ont pas besoin d'être semés : chacun porte un détecteur qui recalcule, à chaque fold, s'il était pertinent et s'il a tenu.",
+      "questions": [
+        "Pourquoi un fait injecté doit-il être signalé au fold suivant ?",
+        "Que se passe-t-il si un fait injecté n'est plus connu du fold ?",
+        "Pourquoi les faits du proposeur n'ont-ils pas besoin de ce mécanisme ?"
+      ],
+      "file": "tokeneconomizer/microskills/envfacts.py",
+      "pattern": "def seed_injected\\(self, ids\\):"
+    },
+    {
+      "title": "Sortir du bloc : contradiction, décroissance, oubli",
+      "description": "Un fait actif se retire quand son score de récence passe sous `SCORE_FLOOR`, avec une contradiction pesant `LAMBDA = 5.0` fois une confirmation : l'automate échoue du côté du retrait. Un fait à fort enjeu (`high`, par exemple un hôte refusé ou un outil absent) est retiré sur une seule contradiction nette (`HARD_KILL`).\n\nDeux ajustements vivent dans la couche d'environnement : un fait à fort enjeu est retiré dès le stade candidat, et une contradiction de `form_repair` — la forme nue a réussi à lancer les tests — n'est retenue qu'après `CONTRADICT_STREAK = 2` sessions consécutives, pour qu'une session sans les paquets manquants ne défasse pas un fait confirmé trente fois.\n\nUn humain peut aussi retirer un fait : `te microskills forget ID` le sort du bloc, garde son identifiant dans l'ensemble `forgotten` de sa couche, et l'admission du proposeur refuse ensuite un nouvel identifiant qui ne se confirmerait que sur les preuves de ce fait oublié.",
+      "questions": [
+        "Pourquoi une contradiction pèse-t-elle cinq confirmations ?",
+        "Quand un fait à fort enjeu est-il retiré ?",
+        "Que devient un fait oublié à la main ?"
+      ],
+      "file": "tokeneconomizer/microskills/lifecycle.py",
+      "pattern": "LAMBDA      = 5\\.0"
+    },
+    {
+      "title": "La seconde source : un proposeur qui doit citer ses preuves",
+      "description": "Avec `distiller` dans le profil, un appel de modèle part tous les `microskills_propose_every` sessions (3 par défaut côté plugin) et reçoit une fenêtre de 8 résumés de sessions terminées — fichiers édités, gabarits de commandes, commandes échouées, indicateurs — jamais les journaux bruts.\n\nChaque fait proposé arrive avec une phrase, une ligne d'injection, un détecteur (des expressions régulières exécutées par l'hôte sur les commandes et sorties) et des citations. C'est l'admission qui décide, sans faire confiance au modèle :\n\n- le détecteur doit confirmer sur au moins `MIN_CITE = 2` des sessions citées, recalculées sur la fenêtre courante — sinon `grounding-fail` ;\n\n- au plus `MAX_CANDS = 4` faits sont retenus par tick ;\n\n- un fait existant ne peut être révisé que sur `detector.contradict` ; tout autre champ modifié est refusé ;\n\n- un identifiant oublié, ou un nouvel identifiant qui ne se confirmerait que sur les preuves d'un fait oublié, est refusé.\n\nUn appel de modèle qui échoue saute le tick au lieu d'abandonner le fold, et compte quand même comme tick : un runner qui échoue est réessayé à la cadence, pas à chaque fold.",
+      "questions": [
+        "Sur quoi le modèle est-il groundé, et avec quelle marge ?",
+        "Que peut-on réviser dans un fait existant ?",
+        "Que se passe-t-il si l'appel de modèle échoue ?"
+      ],
+      "file": "tokeneconomizer/microskills/distiller.py",
+      "pattern": "hits = self\\._ground\\(spec\\)"
+    },
+    {
+      "title": "Troisième source, optionnelle : des faits adossés à un fichier lu",
+      "description": "La couche Knowledge (`knowledge`, désactivée par défaut, sur Claude Code, Pi et Copilot) propose des faits qui citent un fichier et la session qui l'a lu. Son admission est plus stricte que celle du proposeur : la source doit figurer parmi les observations de cette session, la session doit être citée, et une preuve doit exister.\n\n- Pour une lecture complète, la preuve est le `sha256` des octets observés au moment de la lecture — jamais un fichier relu plus tard.\n\n- Pour une lecture partielle, le fait doit nommer un symbole que la lecture a traversé, et la preuve de ce symbole doit encore être valide ; sinon la proposition est refusée (`partial-needs-symbol`, `symbol-not-observed`, `stale-proof`).\n\nLe rendu est encore plus restrictif que pour les micro-skills : il faut que le fait soit injectable **et** que son contrat soit toujours valide — fichier inchangé, ou toutes ses dépendances actives et prouvées. Le bloc est présenté comme des données non fiables : la preuve établit ce qui a été lu, pas que c'est vrai.",
+      "questions": [
+        "Qu'est-ce qu'une preuve de fichier, et quand devient-elle invalide ?",
+        "Pourquoi une lecture partielle exige-t-elle un symbole ?",
+        "Que signifie l'en-tête « untrusted data » dans le bloc injecté ?"
+      ],
+      "file": "tokeneconomizer/knowledge/stage.py",
+      "pattern": "if not fact\\.injectable\\(\\) or not self\\._contract_valid\\(fact\\):"
+    },
+    {
+      "title": "Le budget du bloc, et comment le vérifier soi-même",
+      "description": "Le rendu est plafonné : `MAX_FACTS = 4` et `MAX_TOKENS = 150`, réglables par `microskills_max_facts` et `microskills_max_tokens`. La sélection trie par famille (réparation de forme d'abord), puis par taux de tir, tente chaque ajout ligne par ligne et s'arrête si le bloc dépasse son budget. Deux faits `form_repair` dont les formes qui marchent partagent une racine sont fusionnés en une seule ligne : c'est un seul fait d'environnement.\n\nLa couche Knowledge n'a pas son propre budget : au démarrage, le hook lui donne ce qui reste des deux plafonds, une fois le bloc des micro-skills compté.\n\nPour voir ce qui est injecté et pourquoi, `te microskills` imprime le bloc, puis chaque fait suivi de son état, de ses tirs et de son verdict d'injection, puis les preuves Knowledge et les identifiants oubliés. C'est la contrepartie des conditions ci-dessus : aucune n'est invisible depuis l'extérieur.",
+      "questions": [
+        "Comment le budget du bloc est-il partagé avec Knowledge ?",
+        "Pourquoi deux faits de réparation de forme fusionnent-ils ?",
+        "Que montre exactement la commande te microskills ?"
+      ],
+      "file": "tokeneconomizer/microskills/envfacts.py",
+      "pattern": "def _select\\(self\\):"
+    }
+  ]
+}

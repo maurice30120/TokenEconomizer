@@ -1,0 +1,203 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "D'un événement Pi au mécanisme TokenEconomizer",
+  "description": "TokenEconomizer est un plugin pour agents de codage : il apprend des sessions terminées et change ce que coûtent les suivantes (micro-skills injectées, élagage d'outils, garde-fou de boucle).\n\nCe Tour suit un seul fil : un événement émis par Pi pendant une session — le retour d'un outil — traverse l'extension TypeScript, un processus Python éphémère, un adaptateur d'hôte et un contrôleur, puis atteint un mécanisme, ici le garde-fou de boucle `loopguard`. Chaque étape est ancrée sur le code qui fait le passage, y compris les cas où il ne se passe rien.\n\nLa question posée à chaque étape : qui traduit, qui décide, et où le plugin s'arrête pour ne jamais casser le tour de l'agent.",
+  "steps": [
+    {
+      "title": "Vue d'ensemble",
+      "description": "TokenEconomizer est un plugin pour agents de codage (Claude Code, Codex, Copilot CLI, Pi) qui lit les sessions terminées et change ce que paient les suivantes : des micro-skills injectées au démarrage, un élagage d'outils, et un garde-fou contre les tours bloqués dans une boucle d'échec.\n\nCe Tour répond à une seule question : comment un événement émis par Pi — le retour d'un outil — atteint un mécanisme du plugin. Le chemin traverse quatre zones et deux frontières de processus ; il est conçu pour répondre « aucun changement » à chaque fois que quelque chose manque.\n\n**Diagram — Context view**\n\n```mermaid\nflowchart LR\n  Dev[\"Développeuse / développeur\"] -->|\"pilote une session (prompts, outils)\"| Pi[\"Pi, agent de codage\"]\n  Pi -->|\"émet ses événements (bus d'extensions)\"| TE[\"TokenEconomizer, le plugin\"]\n  TE -->|\"lit le dépôt et les journaux de session (système de fichiers)\"| FS[\"Dépôt de travail et journaux Pi\"]\n  TE -->|\"écrit son état (système de fichiers)\"| State[\"Racine d'état\"]\n  TE -->|\"lance un juge payant (CLI de l'agent)\"| Model[\"Fournisseur de modèle\"]\n  TE -->|\"renvoie contexte et notices (JSON)\"| Pi\n```\n\n**Diagram — Containers**\n\n```mermaid\nflowchart TB\n  subgraph PiProc[\"Processus Pi\"]\n    Ext[\"Extension plugin/pi/tokeneconomizer.ts\"]\n  end\n  subgraph HookProc[\"Processus éphémère par événement (Node → sh → Python)\"]\n    Launch[\"scripts/te-hook + te_bootstrap.py\"] --> Disp[\"tokeneconomizer.plugin.hook\"]\n    Disp --> Ctrl[\"LiveController + mécanisme loopguard\"]\n  end\n  subgraph Disk[\"État sur disque (racine d'état)\"]\n    Files[\"sessions/<sid>.json, envelope.json, locks/\"]\n  end\n  subgraph Job[\"Tâche détachée\"]\n    Async[\"te judge (AsyncJudge)\"]\n  end\n  Ext -->|\"lance un processus et écrit du JSON sur stdin\"| Launch\n  Disp -->|\"lit et écrit sous verrou de fichier\"| Files\n  Ctrl -->|\"démarre un job détaché\"| Async\n  Disp -->|\"répond un objet JSON sur stdout\"| Ext\n```\n\nLes quatre zones, dans l'ordre du parcours :\n\n- `plugin/pi/` — l'extension Pi, seule à parler le bus d'événements de l'agent ; elle traduit, elle ne décide pas.\n\n- `plugin/scripts/` — les lanceurs (`te-hook`, `te`), qui trouvent un Python et le paquet, puis répondent `{}` quand ils n'y arrivent pas.\n\n- `tokeneconomizer/plugin/` — le répartiteur partagé par tous les agents : `hook.py`, les adaptateurs d'hôte, le contexte, le contrôleur, la sérialisation des hooks.\n\n- `tokeneconomizer/loopguard/` — le mécanisme atteint ici : l'état de spirale, les règles, l'enveloppe apprise et le juge.",
+      "questions": [
+        "Quel événement Pi choisit-on de suivre, et pourquoi lui ?",
+        "Combien de frontières de processus le chemin traverse-t-il ?",
+        "Que fait le plugin si le lanceur ne trouve pas Python ?"
+      ]
+    },
+    {
+      "title": "L'extension Pi : le seul point d'entrée côté agent",
+      "description": "Pi n'a pas de protocole de hooks : ses extensions sont des fonctions TypeScript branchées sur son bus d'événements. L'extension comble l'écart en parlant, au nom de Pi, le contrat d'hooks des autres agents.\n\nLa fonction par défaut garde trois variables en mémoire (`manual`, `prompts`, `turn`) et enregistre cinq abonnements : `session_start`, `before_agent_start`, `tool_result`, `agent_end`, `session_shutdown`. Chacun fait la même chose : construire une charge utile, appeler le répartiteur, appliquer la réponse avec un levier propre à Pi.\n\nAucune règle de mécanisme ne vit dans ce fichier. C'est le point de conception à retenir : l'extension est un traducteur, et toute la logique est derrière la frontière de processus qui vient ensuite.",
+      "questions": [
+        "Pourquoi l'extension doit-elle porter la traduction elle-même ?",
+        "Quelles variables l'extension garde-t-elle entre deux événements ?",
+        "Où est la logique du mécanisme si elle n'est pas ici ?"
+      ],
+      "file": "plugin/pi/tokeneconomizer.ts",
+      "pattern": "export default function tokeneconomizer"
+    },
+    {
+      "title": "`tool_result` : l'événement devient une charge utile Claude-compatible",
+      "description": "C'est l'événement du parcours : Pi vient de terminer un appel d'outil. Le handler aplatit `event.content` en texte (seules les parties `text` sont gardées), récupère `isError` et `structuredContent.exit_code`, et compose un objet qui ressemble à ce que Claude Code envoie.\n\nTrois champs méritent l'attention. `base(ctx)` fournit `session_id`, `transcript_path` et `cwd` : la session et son journal, dont le fold se servira plus tard. `prompt_id` reçoit `turn`, construit au prompt précédent sous la forme `<session>:<n>`, parce que Pi ne tamponne aucune identité de tour. `tool_response` est un objet inventé par l'extension, `{content, isError, exit_code}`.\n\nLes autres handlers suivent le même modèle et changent seulement le nom d'événement et les champs : `SessionStart` au démarrage, `UserPromptSubmit` à chaque prompt, `Stop` à la fin de l'agent, `SessionEnd` à la fermeture.",
+      "questions": [
+        "D'où vient l'identité de tour que l'extension transmet ?",
+        "Que devient le code de sortie d'un `bash` de Pi ?",
+        "Pourquoi `tool_response` a-t-il cette forme plutôt qu'une autre ?"
+      ],
+      "file": "plugin/pi/tokeneconomizer.ts",
+      "pattern": "pi\\.on\\(\"tool_result\""
+    },
+    {
+      "title": "La frontière de processus : `hook()` et `run()`",
+      "description": "`hook()` est le seul endroit par lequel passent tous les événements. Il commence par deux sorties immédiates : sous `TE_SIDECALL=1` (les appels payants du plugin lui-même) ou `TE_DISABLE=1`, il rend `{}` sans rien lancer, ce qui empêche le plugin de se rappeler lui-même.\n\nSinon il appelle `run(\"te-hook\", [\"--host\", \"pi\"], JSON.stringify(payload), mode)`. `run()` démarre le lanceur avec `PYTHONUTF8=1` et `TE_PI_MODE=<mode>` dans l'environnement — c'est ainsi que l'adaptateur saura plus tard si la session est interactive ou sans interface.\n\nLe reste est un contrat de survie : 60 secondes puis `SIGKILL`, une erreur de démarrage ou une sortie vide résolue en chaîne vide, et un `JSON.parse` de la **dernière** ligne de stdout, avec `{}` en repli. Un répartiteur absent, lent ou cassé répond « aucun changement », jamais une erreur remontée dans le tour de Pi.",
+      "questions": [
+        "Pourquoi le plugin s'ignore-t-il quand `TE_SIDECALL=1` ?",
+        "Que se passe-t-il si le lanceur dépasse 60 secondes ?",
+        "Pourquoi ne lire que la dernière ligne de stdout ?"
+      ],
+      "file": "plugin/pi/tokeneconomizer.ts",
+      "pattern": "async function hook"
+    },
+    {
+      "title": "`scripts/te-hook` : trouver un Python 3.10+",
+      "description": "Le lanceur est un script `sh` minuscule mais méfiant. Sous Windows il délègue tout de suite à `te_bootstrap.py` lancé par `python`, en évitant l'alias du Microsoft Store ; ailleurs il honore `TE_PYTHON`, puis essaie une liste de `python3` à `python`.\n\nLa sonde affichée ici, exécutée avec `-E -S` (sans `site`, sans variables d'environnement), ne retient qu'un interpréteur au moins 3.10 — `/usr/bin/python3` de macOS est encore 3.9, et le `PATH` d'un hook n'est pas celui d'un shell de connexion. Un interpréteur trop ancien n'est utilisé qu'en dernier recours, pour que l'échec soit explicite.\n\nQuand aucun candidat ne fonctionne, le script vide stdin avec un `read` interne (pas de `cat`, le `PATH` peut être vide) puis imprime `{}`. Le hook a répondu « aucun changement » sans Python.",
+      "questions": [
+        "Pourquoi la sonde de version tourne-t-elle avec `-E -S` ?",
+        "Que fait le lanceur quand aucun Python ne fonctionne ?",
+        "Pourquoi le script ne peut-il pas compter sur `cat` ?"
+      ],
+      "file": "plugin/scripts/te-hook",
+      "line": 54
+    },
+    {
+      "title": "`te_bootstrap.py` : où est le paquet ?",
+      "description": "Le bootstrap est le point d'entrée commun des deux lanceurs (`hook` et `cli`). Il doit rester importable par n'importe quelle version de Python 3 : c'est pour cela qu'il n'utilise ni f-string ni annotation, afin qu'un vieil interpréteur puisse encore répondre `{}` au lieu d'une erreur de syntaxe.\n\n`main()` vérifie `MIN_VERSION`, borne les permissions (`umask 0o077`, l'état dérive des journaux privés de l'agent), publie `TE_PLUGIN_ROOT`, puis cherche le paquet. L'ordre de `core_path()` est explicite : `TE_CORE_PATH`, `plugin/lib` (le lien vers le paquet dans le dépôt), le stub de symlink écrit par git sur Windows, le dépôt parent, les caches de marketplace des agents, et enfin `~/.tokeneconomizer/src`.\n\nTrouvé, il entre dans `sys.path` et appelle `tokeneconomizer.plugin.hook.main(rest)` — le mode `hook` transmet les arguments restants, dont `--host pi`. Non trouvé, un hook écrit `{}`, un import raté fait de même, et `errors.log` dit pourquoi une fois.",
+      "questions": [
+        "Pourquoi le bootstrap évite-t-il les f-strings ?",
+        "Dans quel ordre le paquet est-il cherché ?",
+        "Que voit Pi quand le paquet est introuvable ?"
+      ],
+      "file": "plugin/scripts/te_bootstrap.py",
+      "pattern": "def main\\(\\):"
+    },
+    {
+      "title": "`hook.run()` : détecter l'hôte et construire le contexte",
+      "description": "Ici commence le code partagé par tous les agents. `run()` détecte l'hôte, construit un contexte, vérifie que le plugin est activé, puis confie la charge utile au contrôleur. Rien dans cette fonction ne parle de Pi : l'adaptateur est un objet échangé.\n\nLa détection passe par `hosts.detect(payload, env, hint=host_hint)`, et l'indice vient de `--host pi` : `detect` renvoie `HOSTS[hint]()` avant toute inférence. C'est déterminant, car la charge utile de Pi est de forme Claude (`hook_event_name`, `tool_response`, `prompt_id`) et ne porte aucun marqueur qui nomme Pi — sans l'indice, l'adaptateur retenu serait `ClaudeCode`.\n\nEnsuite viennent les points d'extension que seuls certains hôtes utilisent : `prepare`, `record_event`, `expand` (un appel de hook qui vaut plusieurs événements) et `render`. Pi n'en a aucun : il suit la branche simple, `LiveController(ctx, payload).handle()`.",
+      "questions": [
+        "Que se passe-t-il si l'extension omettait `--host pi` ?",
+        "Pourquoi le contexte est-il construit avec `settle=False` ?",
+        "Quels hôtes ont besoin de `expand` et pourquoi ?"
+      ],
+      "file": "tokeneconomizer/plugin/hook.py",
+      "pattern": "def run\\(payload, env, host_hint=None\\):"
+    },
+    {
+      "title": "`hook.main()` : le contrat stdin/stdout",
+      "description": "`main()` est la frontière d'entrée/sortie du plugin, et le seul endroit où une exception ne remonte jamais. Il lit stdin en octets puis décode en UTF-8 — un stdin texte décoderait avec la page de code de la locale sous Windows — et ignore tout si `TE_SIDECALL` ou `TE_DISABLE` est actif.\n\nPendant l'exécution, `stdout` est redirigé vers `stderr`. Les mécanismes impriment des avertissements et des progrès ; une seule ligne parasite sur stdout ferait jeter à l'agent l'objet de réponse entier.\n\nLa sortie est exactement un objet JSON, précédé au besoin des lignes `progress` de Copilot. Toute exception devient `{}` plus une trace dans `<racine d'état>/errors.log`. C'est ce contrat qui rend le plugin incapable de casser un tour de Pi, et qui explique les `{}` que l'extension sait déjà interpréter.",
+      "questions": [
+        "Pourquoi rediriger stdout pendant l'exécution du contrôleur ?",
+        "Que devient une exception dans un mécanisme ?",
+        "Où atterrit la trace de l'erreur ?"
+      ],
+      "file": "tokeneconomizer/plugin/hook.py",
+      "pattern": "def main\\(argv=None, stdin=None, stdout=None, env=None\\):"
+    },
+    {
+      "title": "L'adaptateur `Pi` : ce que Pi ne fournit pas",
+      "description": "L'adaptateur est petit parce que l'extension a déjà fait le travail de traduction. Il ne reste que les écarts qui comptent pour les mécanismes.\n\n`turn_key` rend `prompt_id`, l'identité de tour que l'extension numérote elle-même. `prompt_context = True` dit que le contexte renvoyé au prompt atteint bien le modèle. `headless` lit `TE_PI_MODE` (`print`, `json`, `rpc` sont sans interface) — la variable que l'extension a posée sur l'environnement du processus. `mechanism_trace` réécrit un journal de session Pi au format que lisent les mécanismes, via `trace.pi_session_to_claude`.\n\n`interrupt` et `end_run` fournissent les mots que le garde-fou met dans sa notice finale. La docstring de la classe est aussi le seul endroit qui documente les champs inventés par l'extension : `prompt_id`, `tool_response` et `TE_PI_MODE`.",
+      "questions": [
+        "Pourquoi l'identité de tour est-elle un champ dérivé plutôt que fourni ?",
+        "Comment le plugin sait-il que Pi tourne sans interface ?",
+        "Quels écarts restent à la charge de l'adaptateur ?"
+      ],
+      "file": "tokeneconomizer/plugin/hosts.py",
+      "pattern": "class Pi\\(Host\\):"
+    },
+    {
+      "title": "`LiveContext.build()` : où l'état sera écrit",
+      "description": "Avant de router l'événement, il faut savoir de quel dépôt, de quel état et de quelle configuration il parle. `build()` fixe cela une fois pour l'appel de hook : la racine d'état (`TE_HOME`, sinon `~/.tokeneconomizer`), un `Store` par couple (dépôt, hôte), et la configuration chargée depuis la racine et le fichier du dépôt.\n\nLe point important pour un agent comme Pi, dont le `cwd` peut changer en cours de session : `repos.pinned` rattache la session au dépôt où elle a commencé, et le dépôt n'est recalculé depuis `cwd` que si aucune épingle n'existe. La session ne se déplace donc pas sous les pieds du garde-fou.\n\n`settle=False` est volontaire : le contexte n'est rattaché (migration des anciennes clés, pose de l'épingle) que lorsque le contrôleur sait qu'il va agir. Un événement ignoré n'écrit rien sur le disque.",
+      "questions": [
+        "Pourquoi épingler une session à un dépôt ?",
+        "Quand le rattachement (`settle`) a-t-il réellement lieu ?",
+        "Où vit l'état d'un couple dépôt/hôte ?"
+      ],
+      "file": "tokeneconomizer/plugin/context.py",
+      "pattern": "def build\\(cls, host"
+    },
+    {
+      "title": "`LiveController.handle()` : router l'événement",
+      "description": "`handle()` fait trois choses avant de router. Il refuse une charge utile sans identifiant de session, car aucun hôte n'appelle un hook ainsi et l'enregistrer laisserait une session « inconnue ». Il appelle `self.ctx.settle()`, maintenant que l'on sait que le hook va travailler. Il lit `hook_event_name` — `\"PostToolUse\"` pour notre événement.\n\nVient ensuite une branche spécifique à Pi : quand Knowledge est activé et que l'événement est `PostToolUse`, `knowledge.capture.record` garde les octets qu'un `read` vient de retourner. À l'instant du retour, et seulement là : le fichier peut changer avant le fold, et une relecture ultérieure ne prouverait plus ce que le modèle a vu. L'import est local, pour qu'un hôte sans Knowledge ne paye pas ce code.\n\nEnfin `handler(event)` choisit la méthode par une table, et `hookqueue.run` l'exécute. Un événement inconnu rend `None`, donc `{}`.",
+      "questions": [
+        "Pourquoi refuser une charge utile sans identifiant de session ?",
+        "Pourquoi capturer les octets du `read` au lieu de les relire plus tard ?",
+        "Que fait le contrôleur d'un nom d'événement inconnu ?"
+      ],
+      "file": "tokeneconomizer/plugin/controller.py",
+      "pattern": "def handle\\(self\\):"
+    },
+    {
+      "title": "`hookqueue.run()` : un seul hook à la fois par session",
+      "description": "Pi peut lancer plusieurs outils en parallèle, donc plusieurs hooks en parallèle. Or chaque hook relit le document de session, y replie son appel et le réécrit : sans sérialisation, le dernier écrivain gagne et le tour perd des appels.\n\n`run()` prend le verrou de la session, puis draine la file d'attente, exécute le handler, et draine de nouveau. L'attente est courte (`WAITS` : 3 s pour `PostToolUse`) parce qu'un hook ne doit pas retenir l'agent. Un hook qui n'obtient pas le verrou sauvegarde sa charge utile dans la file et répond `{}` ; le détenteur l'appliquera.\n\nUn événement rejoué a déjà répondu : sa décision de garde-fou est donc mise en attente sur le tour (`held`) et livrée à l'appel suivant. Un tour qui se termine avant n'a plus personne à rediriger, et la décision est journalisée comme non délivrée.",
+      "questions": [
+        "Pourquoi un verrou par session et non par dépôt ?",
+        "Que devient un hook qui n'obtient pas le verrou à temps ?",
+        "Pourquoi une décision issue d'un événement rejoué attend-elle ?"
+      ],
+      "file": "tokeneconomizer/plugin/hookqueue.py",
+      "pattern": "def run\\(ctrl, event, handler\\):"
+    },
+    {
+      "title": "`post_tool()` : l'entrée du mécanisme",
+      "description": "C'est ici que l'événement devient une décision de mécanisme. Deux sorties immédiates : garde-fou désactivé, ou appel venant d'un sous-agent (`agent_id`).\n\nLe tour est ensuite reconstruit depuis le document de session : `turn_key` est comparé à celui enregistré, et un `prompt_id` différent ferme un tour dont le `Stop` n'a jamais été vu. Le `TurnGuard` reprend l'état persisté, `host.tool_call(payload)` extrait `(nom, args, texte, code de sortie)` — pour Pi, le code vient du contenu structuré du résultat `bash` —, `loopguard.load_envelope` charge l'enveloppe apprise du dépôt, et `fold` rend `None`, `(\"nudge\", raison)` ou `(\"abort\", raison)`.\n\nLa sortie est bâtie avec les leviers de l'hôte : `host.context(event, corps)` pour la redirection, fusionnée avec `host.notice(...)` pour la personne. Puis le tour est réécrit dans la session. Rien de tout cela ne connaît Pi : l'hôte fournit le texte et la forme.",
+      "questions": [
+        "Que se passe-t-il si `prompt_id` a changé depuis le dernier appel ?",
+        "Où le code de sortie de Pi est-il lu ?",
+        "Comment la décision devient-elle un objet de réponse ?"
+      ],
+      "file": "tokeneconomizer/plugin/controller.py",
+      "pattern": "def post_tool\\(self\\):"
+    },
+    {
+      "title": "`TurnGuard.fold()` : replier l'appel et décider",
+      "description": "Le garde-fou vit dans un processus par appel, donc son état vit sur le disque entre deux appels (`to_dict` / `TurnGuard(data=...)`). `fold()` reconstruit cet état, l'enrichit, puis décide.\n\nChaque appel est replié deux fois : dans `self.st`, le segment courant, et dans `self.whole`, le tour entier. Sont comptés les éditions par fichier, les fichiers distincts, les sorties en erreur et la répétition d'une même signature d'échec — la `stagnation`, qui sépare une boucle d'un travail difficile mais productif. Les éditions faites par le shell (`sed -i`, `git checkout --`) sont comptées comme des éditions, et un `git restore` ne compte que si le tour avait édité le fichier.\n\nLa décision passe par le backstop dur (`cum_turns >= backstop_turns`), puis par `assess_abort`. Un nudge reste possible tant que le budget de redirections du tour n'est pas épuisé ; ensuite c'est un `abort`, que l'hôte délivrera comme une notice, pas comme un arrêt.",
+      "questions": [
+        "Pourquoi l'état du tour est-il persisté sur disque ?",
+        "Quelle est la différence entre `st` et `whole` ?",
+        "Que fait le garde-fou quand le budget de redirections est épuisé ?"
+      ],
+      "file": "tokeneconomizer/loopguard/turn.py",
+      "pattern": "def fold\\(self, name, args, result"
+    },
+    {
+      "title": "`assess_abort()` : trois étages, du gratuit au payant",
+      "description": "La décision est une cascade explicite, du moins cher au plus cher. Le backstop dur passe avant tout : un tour coincé et bien au-delà de l'enveloppe du dépôt s'arrête, quel que soit l'avis du juge.\n\nEnsuite la porte gratuite (`gate_for_judge`) décide seulement si le tour vaut un appel payant ; si oui, le juge tranche — bloqué avec assez de confiance, productif, ou ambigu. Sans juge câblé, l'heuristique stricte `is_stuck` prend le relais : churn ou dispersion, **et** densité d'erreurs, **et** répétition d'un même échec.\n\nUne nuance explique beaucoup de silence apparent : le repli n'agit que si une enveloppe existe (`state.turns >= envelope`) et le backstop n'existe que si le tracker en a fourni une. Le contrôleur, lui, ne câble un juge que si l'enveloppe est non nulle. Sur un dépôt sans tours réussis appris, le garde-fou observe, journalise, et ne redirige rien.",
+      "questions": [
+        "Pourquoi le backstop est-il évalué avant le juge ?",
+        "Que signifie « ambigu » pour la décision ?",
+        "Pourquoi le garde-fou reste-t-il muet sur un dépôt neuf ?"
+      ],
+      "file": "tokeneconomizer/loopguard/rules.py",
+      "pattern": "def assess_abort\\(state, envelope"
+    },
+    {
+      "title": "Le juge tourne hors du hook",
+      "description": "Un appel de modèle dans un hook `PostToolUse` retiendrait Pi plusieurs dizaines de secondes. `AsyncJudge` déplace donc la latence hors du tour de l'agent.\n\n`start(guard, digest)` écrit `judge/<sid>.request.json` puis démarre `te judge` en processus détaché. `poll(guard)` lit `judge/<sid>.result.json` et rend le verdict, avec la redirection déjà écrite par le second appel. `TurnGuard._background` branche ces deux méthodes sur la cascade : tant qu'un verdict est en attente, le juge ne répond rien, ce que `assess_abort` lit déjà comme « throttlé ».\n\n`NoVerdict` est la variante silencieuse : quand les appels de modèle de l'hôte sont en pause et qu'aucune route locale n'existe, le juge n'émet aucun verdict et le tour est épargné, plutôt que redirigé sur la seule règle.",
+      "questions": [
+        "Pourquoi deux fichiers (`request` / `result`) plutôt qu'une sortie standard ?",
+        "Que fait la cascade quand le verdict n'est pas encore arrivé ?",
+        "Quand le juge ne répond-il jamais, et pourquoi est-ce voulu ?"
+      ],
+      "file": "tokeneconomizer/plugin/judge.py",
+      "pattern": "class AsyncJudge:"
+    },
+    {
+      "title": "Le retour dans Pi : un message de pilotage, pas un arrêt",
+      "description": "La réponse du dispatcher revient dans l'extension, qui l'applique avec les leviers de Pi. `hookSpecificOutput.additionalContext` est envoyé par `pi.sendMessage` avec `customType` `tokeneconomizer` et `deliverAs: \"steer\"` : la redirection arrive comme une consigne au milieu du tour, attachée à la suite du résultat d'outil que le modèle lira ensuite.\n\n`systemMessage`, lui, passe par `notify` : `ui.notify` quand Pi a une interface, `console.error` en mode `print`/`json`, qui garde stdout pour la réponse. La personne voit donc la raison du changement de cap même sans interface.\n\nLe plugin ne stoppe jamais un tour lui-même. La dernière marche (`abort`) est une notice qui dit comment arrêter — « Press Esc to abort it. » en interactif, « Press Ctrl+C to end the run » sans interface —, et `host.stop_hint` choisit la formulation.",
+      "questions": [
+        "Pourquoi livrer la redirection en `steer` plutôt qu'en fin de tour ?",
+        "Pourquoi `systemMessage` ne passe-t-il pas par stdout ?",
+        "Pourquoi le plugin ne peut-il pas arrêter le tour lui-même ?"
+      ],
+      "file": "plugin/pi/tokeneconomizer.ts",
+      "pattern": "deliverAs: \"steer\""
+    },
+    {
+      "title": "Les autres événements suivent le même tuyau",
+      "description": "Notre événement n'est qu'une des cinq entrées du même chemin. `agent_end` devient `Stop` : `controller.stop` ferme le tour, et `_close_turn` appelle `loopguard.record_turn` quand le tour a compté des appels et qu'il s'est arrêté normalement. C'est ainsi que l'enveloppe du dépôt — la longueur typique d'un tour qui a fini vert — s'apprend, et donc la raison d'être des seuils rencontrés plus haut.\n\n`session_shutdown` devient `SessionEnd` : `session_end` remet la session à un fold détaché (`fold.spawn_fold`), qui alimente les micro-skills. `session_start` déclenche l'injection des faits appris, et `before_agent_start` ouvre le tour (`UserPromptSubmit`) et repose la section de prompt système `tokeneconomizer` à chaque prompt, puisqu'une section omise serait enregistrée comme retirée.\n\nLe garde-fou agit donc en direct, pendant le tour ; l'apprentissage agit en différé, après la session — mais les deux passent par la même chaîne : traduction, processus éphémère, répartiteur, contrôleur, mécanisme.",
+      "questions": [
+        "Quel événement apprend l'enveloppe du dépôt ?",
+        "Pourquoi la section de prompt système est-elle reposée à chaque prompt ?",
+        "Quel mécanisme est atteint après la fin de la session ?"
+      ],
+      "file": "plugin/pi/tokeneconomizer.ts",
+      "pattern": "pi\\.on\\(\"agent_end\""
+    }
+  ]
+}
