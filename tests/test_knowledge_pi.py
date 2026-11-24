@@ -322,3 +322,37 @@ def test_a_read_pi_truncated_is_observable_through_its_capture(tmp_path):
     record = observations(path, tmp_path, host="pi", captures=captures)["big.py"]
     assert record["partial"] is True
     assert record["observed"] == {"reads": [{"offset": 1, "lines": 2000}], "total_lines": 3001}
+
+
+def test_a_capture_that_raises_keeps_the_hook_answer_and_the_guard(tmp_path, monkeypatch):
+    """A capture failure is a line in `errors.log`, as for any hook, not a lost answer."""
+    from tests.test_live_hooks import call, store_for
+    from tokeneconomizer.knowledge import capture
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (repo / "source.py").write_bytes(SOURCE)
+    home = tmp_path / "home"
+    env = {"TOKENECONOMIZER_HOME": str(home), "TE_KNOWLEDGE": "on",
+           "TE_MICROSKILLS": "off", "TE_LOOPGUARD": "on", "TE_TOOLPRUNE": "off"}
+    args, text = {"path": "source.py", "offset": 2, "limit": 1}, pi_read(SOURCE, 2, 1)
+
+    def payload(session_id):
+        return {"hook_event_name": "PostToolUse", "session_id": session_id,
+                "prompt_id": "p1", "transcript_path": "", "cwd": str(repo),
+                "tool_name": "read", "tool_use_id": "r", "tool_input": args,
+                "tool_response": {"content": text, "isError": False}}
+
+    expected = call(env, payload("capturing"), host="pi")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("capture bug")
+
+    monkeypatch.setattr(capture, "_record", boom)
+    assert call(env, payload("broken"), host="pi") == expected
+    # the guard still folded and saved the call: only the capture was lost
+    state = store_for(env, str(repo), host="pi").read("sessions/broken.json")
+    assert state["turn"]["cum_turns"] == 1
+    log = (home / "errors.log").read_text(encoding="utf-8")
+    assert "Traceback (most recent call last)" in log
+    assert "RuntimeError: capture bug" in log

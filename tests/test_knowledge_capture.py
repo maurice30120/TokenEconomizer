@@ -5,6 +5,8 @@ its docstring: the body is the file's own bytes, and the footer is added only wh
 remains past it.
 """
 import os
+import subprocess
+import sys
 import time
 from types import SimpleNamespace
 
@@ -187,16 +189,19 @@ def test_record_refuses_what_it_cannot_vouch_for(tmp_path):
     assert load(session_dir(store, "s1")) == {}
 
 
-def test_record_is_fail_open(tmp_path):
+def test_a_capture_failure_reaches_the_hook_instead_of_being_swallowed(tmp_path):
     root, store = workspace(tmp_path), Store(str(tmp_path / "state"))
     ctx = SimpleNamespace(repo=SimpleNamespace(root=str(root)))
     payload = partial_read_payload(root)
+    # a file the capture cannot vouch for is no failure: nothing is kept, nothing is raised
     (root / "source.py").write_bytes(b"\xff\xfe\x00def")
     record(store, "s1", ctx, payload)
     assert load(session_dir(store, "s1")) == {}
+    # anything going wrong raises: `LiveController.handle` is the boundary that logs it
     (root / "source.py").write_text("def target():\n    return 1\n")
-    ctx.repo = None                       # anything at all may go wrong: the hook still answers
-    record(store, "s1", ctx, payload)
+    ctx.repo = None
+    with pytest.raises(AttributeError):
+        record(store, "s1", ctx, payload)
     assert load(session_dir(store, "s1")) == {}
 
 
@@ -235,3 +240,13 @@ def test_a_replayed_hook_never_replaces_the_capture_of_the_read(tmp_path):
     record(store, "s1", ctx, payload)
     captured = load(session_dir(store, "s1"))["call_1"]
     assert captured["bytes"] == b"def target():\n    return 1\n"
+
+
+def test_the_controller_loads_knowledge_only_for_a_pi_read():
+    """Every hook of every host would otherwise pay for a package it never reaches."""
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import tokeneconomizer.plugin.controller, sys; "
+         "print('tokeneconomizer.knowledge.capture' in sys.modules)"],
+        capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"

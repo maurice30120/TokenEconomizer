@@ -103,11 +103,8 @@ def session_dir(store, session_id):
 
 
 def record(store, session_id, ctx, payload):
-    """Keep the bytes this `read` returned. Fail-open: a capture never breaks the agent."""
-    try:
-        _record(store, session_id, ctx, payload)
-    except Exception:
-        pass
+    """Keep the bytes this `read` returned; the hook is where a failure is logged."""
+    _record(store, session_id, ctx, payload)
 
 
 def _record(store, session_id, ctx, payload):

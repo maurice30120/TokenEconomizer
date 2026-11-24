@@ -29,7 +29,6 @@ import time
 import traceback
 
 from .. import loopguard
-from ..knowledge import capture
 from ..trace import droid as droid_trace
 from . import denylist, fold, history, hookqueue, repomap, repos, sidecall
 from .hosts import merge_outputs
@@ -107,7 +106,13 @@ class LiveController:
         event = self.p.get("hook_event_name") or ""
         if event == "PostToolUse" and self.cfg.knowledge and self.host.name == "pi":
             # At the instant of the read, and only then: the file may change before the fold.
-            capture.record(self.store, self.sid, self.ctx, self.p)
+            # Imported here, as the rest of the Knowledge code is: a host with Knowledge off
+            # never pays for it.
+            from ..knowledge import capture
+            try:
+                capture.record(self.store, self.sid, self.ctx, self.p)
+            except Exception:
+                self._record_error()
         if event in ("SessionStart", "UserPromptSubmit"):
             try:
                 ensure_launcher(self.ctx.env)
