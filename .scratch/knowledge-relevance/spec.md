@@ -66,3 +66,4 @@ Knowledge is given to the agent only when it is Relevant Knowledge. A Knowledge 
 - The aim is to test the interest of Knowledge as fast as possible; the log of injections and prior reads is how the next campaign will tell whether it saved work.
 - Knowledge is untrusted data; a valid proof does not make the fact correct.
 - Which hosts accept context after a tool call is to be verified during implementation.
+- Context after a read arrives too late to save that read. A hook before the tool call (`PreToolUse`; Pi `tool_call`) could inject before it, but is documented only to approve or deny, and agy denies the tool when it prints `{}`. Probe it on Copilot and Pi (accepts context, seen before the result, tool not denied, cached prefix unchanged); use it where it works, fall back to after-the-call elsewhere.
