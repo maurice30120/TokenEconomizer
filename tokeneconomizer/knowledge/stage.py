@@ -115,7 +115,8 @@ class Knowledge(Distiller):
         old = self.facts[original_id]
         old_evidence = old.spec.get("dependencies") if "dependencies" in old.spec else old.spec.get("proof")
         if (old_evidence == evidence and old.claim == spec.get("claim")
-                and old.injection == spec.get("injection", spec.get("claim"))):
+                and old.injection == spec.get("injection", spec.get("claim"))
+                and old.spec.get("detector") == spec.get("detector")):
             return super()._admit(spec)
         if self._ground(spec) < 2:
             return False, "grounding-fail"

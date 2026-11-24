@@ -7,7 +7,7 @@ See `README.md` for the overview and the method, `docs/PLUGIN.md` for the design
 agent behavior, and `docs/ARCHITECTURE.md` for how the package fits together.
 
 ## Layout
-- `tokeneconomizer/` — the one Python package, standard library only
+- `tokeneconomizer/` — the one Python package (Tree-sitter is optional for Knowledge symbol proofs)
   - `microskills/` — learn repository facts from finished sessions; render the injected block
   - `toolprune/` — unused-tool evidence and the deny-list proposal; Codex capability packages
   - `loopguard/` — the per-call failure-loop guard and its per-repository envelope
@@ -34,7 +34,7 @@ agent behavior, and `docs/ARCHITECTURE.md` for how the package fits together.
 - The mechanisms (`microskills`, `toolprune`, `loopguard`, `trace`) never import
   `tokeneconomizer.plugin`, and nothing under `tokeneconomizer/` imports `experiments/`; both
   are pinned by `tests/test_plugin_package.py`.
-- Standard library only, Python >= 3.10. A hook must start fast and fail open: any exception in
+- Python >= 3.10; standard library only except the optional Tree-sitter language pack for Knowledge symbol proofs. A hook must start fast and fail open: any exception in
   a hook becomes `{}` and a line in `~/.tokeneconomizer/errors.log`.
 - On-disk state names (`injection.json`, `untool.json`, `envelope.json`, event kinds) are a
   compatibility surface; renaming them strands what users have learned.

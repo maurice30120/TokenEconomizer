@@ -144,6 +144,47 @@ def test_sessions_learn_then_revalidate_before_each_injection(tmp_path, monkeypa
     assert "Revised observation" in stage.render()
 
 
+def test_detector_revision_must_earn_injection_again(tmp_path, monkeypatch):
+    from tokeneconomizer.microskills import distiller
+    monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
+    source = tmp_path / "source.txt"
+    source.write_text("observed\n")
+    def runner(prompt, model):
+        return json.dumps({"facts": [{"id": "suggestion", "claim": "Source contains observed", "injection": "Source contains observed", "source": "source.txt", "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0
+    stage = Knowledge("repo", runner=runner)
+    stage.workspace = tmp_path
+    def fold_session(i):
+        path = tmp_path / f"s{i}.jsonl"
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read", "content": "observed\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
+        ]
+        path.write_text("\n".join(map(json.dumps, events)))
+        stage.update(path, iid=f"s{i}")
+    for i in range(5):
+        fold_session(i)
+    assert "Source contains observed" in stage.render()
+    fid = next(k for k in stage.debug_row() if not k.startswith("_"))
+    def revise(prompt, model):
+        return json.dumps({"facts": [{"id": fid, "claim": "Revised observation", "source": "source.txt", "source_session": "s6", "cite": ["s5", "s6"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0
+    # Changing only the contradiction detector is still a Knowledge revision.
+    old = stage.facts[fid].spec
+    def revise_detector(prompt, model):
+        candidate = dict(old, detector=dict(old["detector"], contradict="failed"),
+                         source_session="s6", cite=["s5", "s6"])
+        return json.dumps({"facts": [candidate]}), 0
+    stage.runner = revise_detector
+    for i in range(5, 8):
+        fold_session(i)
+    assert not stage.render()
+    assert stage.debug_row()[fid]["rev"] == 2
+    for i in range(8, 12):
+        fold_session(i)
+    assert "Source contains observed" in stage.render()
+    return
+
+
 @pytest.mark.parametrize("parser_available", [True, False])
 def test_symbol_requested_in_session_survives_unrelated_edits_and_fails_closed(tmp_path, monkeypatch, parser_available):
     if not parser_available:
