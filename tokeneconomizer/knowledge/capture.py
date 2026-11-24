@@ -3,8 +3,11 @@
 A Pi read may return only part of a file (`offset` and/or `limit`), and its result is stored
 in the session log as text: by the time the session is folded, the file may have changed, and
 re-reading it then would prove nothing about what the model actually saw. So the hook keeps a
-copy of the file's bytes as they were at the instant of the read, and the fold only accepts a
-partial read whose logged text still matches that copy.
+copy of the file's bytes as soon as the read returns -- no later pass could attribute them to
+that read -- and the fold only accepts a partial read whose logged text still matches them,
+footer included. An edit inside the returned lines, or anywhere that changes the line total the
+footer declares, therefore fails closed; an edit elsewhere that keeps that total cannot be told
+apart from the bytes the read saw.
 
 `match_read` is the contract: given the tool result and the candidate file, it recovers exactly
 one line window whose bytes are the result's body, and validates the footer Pi appends while
