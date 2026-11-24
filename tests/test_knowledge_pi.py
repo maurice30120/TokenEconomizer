@@ -38,6 +38,7 @@ def test_pi_rejects_partial_failed_and_truncated_results(tmp_path):
         ({"path": "source.txt"}, "partial", {"truncation": {"truncated": True}}, False),
         ({"path": "source.txt"}, "partial\n\n[Showing lines 1-1 of 2. Use offset=2 to continue.]", None, False),
         ({"path": "source.txt"}, "partial", None, True),
+        ({"path": "source.txt"}, "invalid \ufffd bytes", None, False),
     ]:
         session(path, tmp_path, args, text, details=details, failed=failed)
         assert observations(path, tmp_path, host="pi") == {}

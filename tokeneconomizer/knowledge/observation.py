@@ -60,7 +60,7 @@ def observations(transcript, root, host="claude"):
                     if (meta.get("type") != "text" or not isinstance(path, str)
                             or file.get("filePath") != path
                             or args.get("offset") is not None or args.get("limit") is not None
-                            or not isinstance(content, str)
+                            or not isinstance(content, str) or "\ufffd" in content
                             or not _visible_complete(content, block.get("content"),
                                                      file.get("totalLines"))
                             or file.get("truncatedByTokenCap") or file.get("originalSize")
@@ -120,7 +120,8 @@ def _pi_observations(transcript, root):
                         or not isinstance(blocks[0], dict) or blocks[0].get("type") != "text"):
                     continue
                 text = blocks[0].get("text")
-                if (not isinstance(text, str) or len(text.encode("utf-8")) >= 50 * 1024
+                if (not isinstance(text, str) or "\ufffd" in text
+                        or len(text.encode("utf-8")) >= 50 * 1024
                         or len(text.splitlines()) >= 2000
                         or re.search(r"\[(?:Showing lines |\d+ more lines in file\.|Line \d+ is )", text)):
                     continue
@@ -163,7 +164,7 @@ def _copilot_observations(transcript, root):
                 text = result.get("content")
                 inputs = json.loads(props.get("inputs", "null"))
                 options = json.loads(props.get("options", "null"))
-                if (not isinstance(text, str) or not isinstance(inputs, list)
+                if (not isinstance(text, str) or "\ufffd" in text or not isinstance(inputs, list)
                         or set(inputs) != {"path", "command"}
                         or options != {"truncateBasedOn": "tokenCount", "truncateStyle": "middle"}
                         or len(text.encode("utf-8")) >= 20480
