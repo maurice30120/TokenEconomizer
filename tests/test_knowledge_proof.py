@@ -19,3 +19,9 @@ def test_partial_or_unverifiable_observation_is_not_a_proof(tmp_path):
     assert file_proof(tmp_path, "source.txt", b"prefix", complete=False) is None
     assert file_proof(tmp_path, "source.txt", "text", complete=True) is None
     assert file_proof(tmp_path, "../outside", b"data", complete=True) is None
+
+
+def test_malformed_or_cyclic_proof_fails_closed(tmp_path):
+    (tmp_path / "cycle").symlink_to("cycle")
+    assert not verify_file(tmp_path, {"path": "cycle", "sha256": "x"})
+    assert not verify_file(tmp_path, {})
