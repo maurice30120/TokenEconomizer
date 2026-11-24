@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] With a budget too small for every match, the stronger match is the one injected
-- [ ] Equal matches are ordered by firing rate
-- [ ] The shared budget with native facts is still respected
-- [ ] Tested through the live hooks
+- [x] With a budget too small for every match, the stronger match is the one injected
+- [x] Equal matches are ordered by firing rate
+- [x] The shared budget with native facts is still respected
+- [x] Tested through the live hooks

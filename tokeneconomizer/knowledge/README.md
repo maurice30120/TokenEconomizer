@@ -62,8 +62,7 @@ opencode), because a text that varies by prompt would rewrite the cached prefix 
 request. The Knowledge goes where the host puts a prompt's context, after the cached prefix;
 on Pi, whose extension re-sends a system-prompt section on every prompt, it is a message after
 the prompt (`promptMessage` in the dispatcher's answer), not part of that section. A selection
-error leaves the hook's output empty. Candidates keep registration order (ranking is not yet
-applied).
+error leaves the hook's output empty.
 
 A Knowledge is injected once per session: its id is kept in the session state
 (`knowledge_given`, separate from the native `injected_ids`), and later prompts naming the same
@@ -72,6 +71,11 @@ that memory, so the Knowledge can be injected again. A resumed session on a host
 its context (Claude Code) keeps it and is not injected twice; a host that rebuilds a resumed
 conversation without what its start added (Copilot, `keeps_start_context` false) also empties
 it, as the native facts are re-sent there, so the Knowledge returns at the next relevant prompt.
+When more Knowledge matches than the shared budget holds, the strongest match is kept first.
+Strength of match is: a symbol named as a whole identifier (3), then a file named by its full
+path (2), then a file named by its bare file name (1); a composed Knowledge counts its strongest
+matching signal. Equal matches are ordered by firing rate, highest first, and what still ties
+keeps registration order, so the choice is deterministic and makes no model call.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores

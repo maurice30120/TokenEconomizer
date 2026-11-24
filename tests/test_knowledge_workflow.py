@@ -611,3 +611,78 @@ def test_a_failed_fold_keeps_the_captures_for_a_retry(tmp_path, env, repo, monke
     monkeypatch.setattr(Knowledge, "update", lambda *a, **kw: None)
     _fold_knowledge(ctx, adapter, str(transcript), "s1")
     assert not directory.exists()
+
+
+def learn_knowledge(tmp_path, env, repo, monkeypatch, files, candidates):
+    """Learn Knowledge through five live sessions that read every file and pass a test run."""
+    from tokeneconomizer.plugin import sidecall
+    paths = {}
+    for name, content in files.items():
+        paths[name] = Path(repo) / name
+        paths[name].parent.mkdir(parents=True, exist_ok=True)
+        paths[name].write_text(content)
+    facts = [dict(c, source_session="s1", cite=["s0", "s1"], detector={"scope": "pytest", "confirm": "passed"})
+             for c in candidates]
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": facts}), 0))
+    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="off", TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
+    for i in range(5):
+        uses, results = [], []
+        for n, (name, path) in enumerate(paths.items()):
+            content = files[name]
+            lines = len(content.splitlines())
+            uses.append({"type": "tool_use", "id": f"r{n}", "name": "Read", "input": {"file_path": str(path)}})
+            results.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": f"r{n}", "content": content}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(path), "content": content, "startLine": 1, "numLines": lines, "totalLines": lines}}})
+        uses.append({"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}})
+        events = [{"type": "assistant", "message": {"content": uses}}, *results,
+                  {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}]
+        tp = tmp_path / f"rank{i}.jsonl"
+        tp.write_text("\n".join(map(json.dumps, events)))
+        run_session(enabled, repo, f"s{i}", str(tp))
+    return enabled
+
+
+def prompt(enabled, repo, sid, text, **limits):
+    env = dict(enabled, **limits)
+    return json.dumps(call(env, {"hook_event_name": "UserPromptSubmit", "session_id": sid, "cwd": repo, "prompt": text}))
+
+
+def test_a_small_budget_keeps_the_stronger_match_then_the_higher_firing_rate(tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    body = "observed\n"
+    names = ["pkg/deep.txt", "lib/full.txt", "lib/twin.txt", "lib/rare.txt"]
+    enabled = learn_knowledge(
+        tmp_path, env, repo, monkeypatch, {n: body for n in names},
+        [{"id": n.split("/")[1][:4], "claim": f"{n} is observed", "source": n} for n in names])
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    one = dict(TE_MICROSKILLS_MAX_FACTS="1")
+    # Registration order puts the file-name match first; the full path is the stronger match.
+    assert "lib/full.txt is observed" in prompt(enabled, repo, "b", "read deep.txt and lib/full.txt", **one)
+    assert "lib/full.txt is observed" in prompt(enabled, repo, "c", "lib/full.txt then deep.txt", **one)
+    # Equal matches: the higher firing rate first, registration order when rates tie.
+    both = "lib/twin.txt and lib/rare.txt"
+    assert "lib/twin.txt is observed" in prompt(enabled, repo, "d", both, **one)
+    stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+    by_source = {f.spec["source"]: f for f in stage.facts.values()}
+    rare, twin = by_source["lib/rare.txt"].life, by_source["lib/twin.txt"].life
+    rare.fire_num, rare.fire_den, twin.fire_num, twin.fire_den = 9, 10, 5, 10
+    stage.save(ctx.mech_dir)
+    assert "lib/rare.txt is observed" in prompt(enabled, repo, "e", both, **one)
+    # The shared budget with native facts is still respected.
+    ctx.store.write("injection.json", {"rendered": "# native\n- A\n- B\n"})
+    together = dict(enabled, TE_MICROSKILLS="envfacts")
+    start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "n", "cwd": repo}
+    assert "- B" in json.dumps(call(dict(together, TE_MICROSKILLS_MAX_FACTS="3"), start))
+    text = prompt(together, repo, "n", "deep.txt lib/full.txt lib/twin.txt", TE_MICROSKILLS_MAX_FACTS="3")
+    assert text.count("is observed") == 1 and "lib/full.txt is observed" in text
+
+
+def test_a_symbol_named_in_the_prompt_outranks_a_file_match(tmp_path, env, repo, monkeypatch):
+    pytest.importorskip("tree_sitter_language_pack")
+    code = "def target():\n    return 1\n"
+    enabled = learn_knowledge(
+        tmp_path, env, repo, monkeypatch, {"first.txt": "observed\n", "second.py": code},
+        [{"id": "file", "claim": "first.txt is observed", "source": "first.txt"},
+         {"id": "sym", "claim": "target returns one", "source": "second.py", "symbol": "target"}])
+    text = prompt(enabled, repo, "a", "in first.txt look at target", TE_MICROSKILLS_MAX_FACTS="1")
+    assert "target returns one" in text and "first.txt is observed" not in text
