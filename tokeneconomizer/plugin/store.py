@@ -105,6 +105,22 @@ class Store:
                 pass
         return target
 
+    def write_bytes(self, name, data):
+        """Opaque bytes, written atomically: the same temporary file and replace as `write`."""
+        target = self.path(name)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        tmp = f"{target}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            _replace(tmp, target)
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+        return target
+
     def append(self, name, record):
         target = self.path(name)
         os.makedirs(os.path.dirname(target), exist_ok=True)

@@ -145,22 +145,34 @@ def _count(value, floor):
 
 
 def _store_capture(store, session_id, entry, data):
-    directory = session_dir(store, session_id)
-    _expire(store)
-    index = _read_index(directory)
-    # The same call may be delivered again (a hook replay): the first capture is the closest
-    # to the read, so a later one never replaces it.
-    if any(c.get("tool_use_id") == entry["tool_use_id"] for c in index):
-        return
-    captures = list(index)
-    known = {c.get("sha256") for c in captures}
-    if entry["sha256"] not in known:
-        if len(known) >= MAX_CAPTURES or _bytes_on_disk(directory) + len(data) > MAX_SESSION_BYTES:
+    """Add the entry and its bytes to the session, under the store's capture lock.
+
+    Two hooks of one session may run at once; a lock that stayed taken skips the capture,
+    which fails closed: the read then has nothing to prove itself against at the fold.
+    """
+    with store.locked("knowledge_captures") as got:
+        if not got:
             return
-        _write_bytes(os.path.join(directory, entry["sha256"] + ".bin"), data)
-    captures.append(entry)
-    store.write(os.path.join(os.path.relpath(directory, store.base), "index.json"),
-                {"captures": captures})
+        directory = session_dir(store, session_id)
+        _expire(store)
+        index = _read_index(directory)
+        # The same call may be delivered again (a hook replay): the first capture is the closest
+        # to the read, so a later one never replaces it.
+        if any(c.get("tool_use_id") == entry["tool_use_id"] for c in index):
+            return
+        captures = list(index)
+        known = {c.get("sha256") for c in captures}
+        if entry["sha256"] not in known:
+            if (len(known) >= MAX_CAPTURES
+                    or _bytes_on_disk(directory) + len(data) > MAX_SESSION_BYTES):
+                return
+            store.write_bytes(_relative(store, directory, entry["sha256"] + ".bin"), data)
+        captures.append(entry)
+        store.write(_relative(store, directory, "index.json"), {"captures": captures})
+
+
+def _relative(store, directory, name):
+    return os.path.join(os.path.relpath(directory, store.base), name)
 
 
 def _read_index(directory):
@@ -171,20 +183,6 @@ def _read_index(directory):
         return []
     captures = document.get("captures") if isinstance(document, dict) else None
     return [c for c in captures if isinstance(c, dict)] if isinstance(captures, list) else []
-
-
-def _write_bytes(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = f"{path}.{os.getpid()}.tmp"
-    try:
-        with open(temporary, "wb") as stream:
-            stream.write(data)
-        os.replace(temporary, path)
-    finally:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
 
 
 def _bytes_on_disk(directory):

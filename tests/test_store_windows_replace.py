@@ -1,6 +1,7 @@
 """On Windows `os.replace` and `open` raise PermissionError while another process holds or is
-replacing the file; `Store.write` and `Store.read` retry briefly there, and only there, so a state
-write is not lost and a blocked read is not taken for a missing document."""
+replacing the file; `Store.write`, `Store.write_bytes` and `Store.read` retry briefly there, and
+only there, so a state write is not lost and a blocked read is not taken for a missing
+document."""
 import builtins
 import os
 import threading
@@ -55,6 +56,24 @@ def test_posix_does_not_retry(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         Store(tmp_path).write("state.json", {"new": True})
     assert len(calls) == 1
+
+
+def test_write_bytes_round_trips_and_leaves_no_temporary(tmp_path):
+    store = Store(tmp_path)
+    target = store.write_bytes("captures/a.bin", b"\x00\xffbytes")
+    assert open(target, "rb").read() == b"\x00\xffbytes"
+    assert not list(tmp_path.glob("captures/*.tmp"))
+    store.write_bytes("captures/a.bin", b"new")
+    assert open(target, "rb").read() == b"new"
+
+
+def test_windows_retries_a_byte_write_blocked_by_an_open_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(store_mod, "_WINDOWS", True)
+    calls = _flaky_replace(monkeypatch, failures=2)
+    Store(tmp_path).write_bytes("captures/a.bin", b"data")
+    assert len(calls) == 3
+    assert (tmp_path / "captures" / "a.bin").read_bytes() == b"data"
+    assert not list(tmp_path.glob("captures/*.tmp"))
 
 
 def _flaky_open(monkeypatch, store, failures):

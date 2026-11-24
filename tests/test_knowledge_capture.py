@@ -4,6 +4,7 @@ Each case reproduces a result the real Pi 1.6.0 `read` tool produced for the cal
 its docstring: the body is the file's own bytes, and the footer is added only while content
 remains past it.
 """
+import contextlib
 import os
 import subprocess
 import sys
@@ -240,6 +241,40 @@ def test_a_replayed_hook_never_replaces_the_capture_of_the_read(tmp_path):
     record(store, "s1", ctx, payload)
     captured = load(session_dir(store, "s1"))["call_1"]
     assert captured["bytes"] == b"def target():\n    return 1\n"
+
+
+def test_a_capture_writes_its_bytes_through_the_store(tmp_path, monkeypatch):
+    root, store = workspace(tmp_path), Store(str(tmp_path / "state"))
+    ctx = SimpleNamespace(repo=SimpleNamespace(root=str(root)))
+    written = []
+    original = Store.write_bytes
+
+    def spy(self, name, data):
+        written.append((name, data))
+        return original(self, name, data)
+
+    monkeypatch.setattr(Store, "write_bytes", spy)
+    record(store, "s1", ctx, partial_read_payload(root))
+    assert written and written[0][0].endswith(".bin")
+    assert written[0][1] == (root / "source.py").read_bytes()
+    assert not list((tmp_path / "state").glob("knowledge_captures/*/*.tmp"))
+
+
+def test_a_capture_whose_lock_stays_taken_is_skipped(tmp_path, monkeypatch):
+    """A skipped capture fails closed: the read has nothing to prove itself against later."""
+    root, store = workspace(tmp_path), Store(str(tmp_path / "state"))
+    ctx = SimpleNamespace(repo=SimpleNamespace(root=str(root)))
+    seen = []
+
+    @contextlib.contextmanager
+    def busy(self, name="state", timeout=10.0):
+        seen.append(name)
+        yield False
+
+    monkeypatch.setattr(Store, "locked", busy)
+    record(store, "s1", ctx, partial_read_payload(root))
+    assert seen == ["knowledge_captures"]
+    assert load(session_dir(store, "s1")) == {}
 
 
 def test_the_controller_loads_knowledge_only_for_a_pi_read():
