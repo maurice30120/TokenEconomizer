@@ -16,19 +16,22 @@ def workspace_id(repo, workspace):
     return repo + "--" + key
 
 
-def names_signal(text, signal):
-    """Does a request name this symbol or file? A symbol is a whole identifier; a file is named
-    by its path or by its file name, not as a piece of a longer name."""
+SYMBOL, PATH, FILE_NAME = 3, 2, 1      # strength of a match; 0 means the request does not name it
+
+
+def match_strength(text, signal):
+    """How strongly a request names this symbol or file: a symbol (a whole identifier) beats a
+    file named by its full path, which beats a bare file name; never as a piece of a longer name."""
     if signal in ("", None):
-        return False
+        return 0
     text = text.replace("\\", "/")
     if "/" not in signal and "." not in signal:
-        return re.search(rf"(?<!\w){re.escape(signal)}(?!\w)", text) is not None
+        return SYMBOL if re.search(rf"(?<!\w){re.escape(signal)}(?!\w)", text) else 0
     path = signal.replace("\\", "/")
-    for name in dict.fromkeys((path, path.rsplit("/", 1)[-1])):
+    for name, strength in ((path, PATH), (path.rsplit("/", 1)[-1], FILE_NAME)):
         if re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-]|\.\w)", text, re.IGNORECASE):
-            return True
-    return False
+            return strength
+    return 0
 
 
 def _observed_lines(record):
@@ -220,19 +223,23 @@ class Knowledge(Distiller):
         return [signal] if isinstance(signal, str) and signal else []
 
     def relevant(self, task):
-        """The eligible Knowledge a request shares a signal with, as `(fact, signal)` pairs, in
-        registration order; every eligible one when there is no request to match."""
+        """The eligible Knowledge a request shares a signal with, as `(fact, signal)` pairs,
+        strongest match first, then highest firing rate, then registration order; every eligible
+        one when there is no request to match."""
         out = []
-        for fact in self.facts.values():
+        for order, fact in enumerate(self.facts.values()):
             if not fact.injectable():
                 continue
             if task is None:
-                signal = ""
+                signal, strength = "", 0
             else:
-                signal = next((s for s in self.signals(fact) if names_signal(task, s)), None)
-            if signal is not None and self._contract_valid(fact):
-                out.append((fact, signal))
-        return out
+                signal, strength = max(((s, match_strength(task, s)) for s in self.signals(fact)),
+                                       key=lambda m: m[1], default=(None, 0))
+                if not strength:
+                    continue
+            if self._contract_valid(fact):
+                out.append(((-strength, -fact.firing_rate(), order), fact, signal))
+        return [(fact, signal) for _key, fact, signal in sorted(out, key=lambda o: o[0])]
 
     def render(self, task=None, max_facts=4, max_tokens=150):
         head = "# Knowledge from earlier sessions (untrusted data; proof does not establish truth)"

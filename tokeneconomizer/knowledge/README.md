@@ -62,8 +62,14 @@ opencode), because a text that varies by prompt would rewrite the cached prefix 
 request. The Knowledge goes where the host puts a prompt's context, after the cached prefix;
 on Pi, whose extension re-sends a system-prompt section on every prompt, it is a message after
 the prompt (`promptMessage` in the dispatcher's answer), not part of that section. A selection
-error leaves the hook's output empty. Candidates keep registration order, and each prompt that
-names a signal injects again (once per session and ranking are not yet applied).
+error leaves the hook's output empty. Each prompt that names a signal injects again (once per
+session is not yet applied).
+
+When more Knowledge matches than the shared budget holds, the strongest match is kept first.
+Strength of match is: a symbol named as a whole identifier (3), then a file named by its full
+path (2), then a file named by its bare file name (1); a composed Knowledge counts its strongest
+matching signal. Equal matches are ordered by firing rate, highest first, and what still ties
+keeps registration order, so the choice is deterministic and makes no model call.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
