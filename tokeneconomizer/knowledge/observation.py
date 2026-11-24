@@ -73,7 +73,7 @@ def observations(transcript, root, host="claude"):
                     proof = file_proof(root, path, content.encode("utf-8"), complete=True)
                     if proof:
                         if proof["path"] in found or len(found) < 10:
-                            found[proof["path"]] = {"proof": proof, "excerpt": content[:2000]}
+                            found[proof["path"]] = {"proof": proof, "excerpt": content[:2000], "content": content}
     except (OSError, UnicodeError):
         return {}
     return found
@@ -128,7 +128,7 @@ def _pi_observations(transcript, root):
                 proof = file_proof(root, os.path.join(cwd, args["path"]),
                                    text.encode("utf-8"), complete=True)
                 if proof and (proof["path"] in found or len(found) < 10):
-                    found[proof["path"]] = {"proof": proof, "excerpt": text[:2000]}
+                    found[proof["path"]] = {"proof": proof, "excerpt": text[:2000], "content": text}
         return found
     except (OSError, UnicodeError, ValueError, TypeError):
         return {}
@@ -177,7 +177,7 @@ def _copilot_observations(transcript, root):
                 proof = file_proof(root, os.path.join(cwd, args["path"]),
                                    text.encode("utf-8"), complete=True)
                 if proof and (proof["path"] in found or len(found) < 10):
-                    found[proof["path"]] = {"proof": proof, "excerpt": text[:2000]}
+                    found[proof["path"]] = {"proof": proof, "excerpt": text[:2000], "content": text}
         return found
     except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
         return {}

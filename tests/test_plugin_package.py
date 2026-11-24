@@ -600,7 +600,7 @@ def test_the_plugin_ships_and_loads_no_benchmark_code():
     assert out.stdout.strip() == "[]", out.stdout + out.stderr
 
 
-def test_the_package_is_stdlib_only_and_never_touches_the_benchmark_harness():
+def test_package_imports_are_bounded_and_never_touch_the_benchmark_harness():
     pkg = os.path.join(REPO, "tokeneconomizer")
     for top, _, files in os.walk(pkg):
         for name in sorted(files):
@@ -615,9 +615,9 @@ def test_the_package_is_stdlib_only_and_never_touches_the_benchmark_harness():
                 root = mod.split(".")[0]
                 assert root not in ("te_harness", "te_bench", "te_live", "docker"), \
                     f"{path} imports {mod}"
-                # tomllib: standard library from 3.11, imported behind an ImportError guard
+                # tomllib and the Knowledge grammar pack are guarded imports
                 assert root in sys.stdlib_module_names or root in (
-                    "tokeneconomizer", "tomllib"), f"{path} imports non-stdlib {mod}"
+                    "tokeneconomizer", "tomllib", "tree_sitter_language_pack"), f"{path} imports non-stdlib {mod}"
 
 
 def test_a_resumed_pi_conversation_keeps_the_section_it_carries():

@@ -29,3 +29,15 @@ eligibility subject to the lifecycle. A revised Knowledge retains its identity b
 new confirmations. Resumed conversations may already contain prior context, which cannot be
 removed retroactively. Knowledge is untrusted data: a matching hash does not establish that
 the explanation is correct.
+
+## Symbol contracts
+
+The optional `symbol` proposal field names one unqualified declaration in a complete
+observed source. Tree-sitter must parse the file without errors and resolve the name
+uniquely. The contract hashes the declaration's non-comment tokens, including decorators;
+changes elsewhere and comment-only changes do not invalidate it. Ambiguous names, missing
+grammars and parse errors produce a file proof with a recorded fallback reason and requested
+symbol. Existing symbol proofs fail closed if the grammar, parser, or recorded version is
+unavailable or changes. The CLI's `te microskills` output lists the extensions whose parsers
+can currently load; supported declaration forms are limited to those recognized by Knowledge.
+Install the package dependencies to enable symbol parsing.

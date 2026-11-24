@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
 from tokeneconomizer.plugin.config import load_config
 from tests.test_live_hooks import call, env, repo, run_session  # noqa: F401
@@ -93,3 +95,36 @@ def test_sessions_learn_then_revalidate_before_each_injection(tmp_path, monkeypa
     assert "Revised observation" not in stage.render()
     source.write_text("observed\n")
     assert "Revised observation" in stage.render()
+
+
+@pytest.mark.parametrize("parser_available", [True, False])
+def test_symbol_requested_in_session_survives_unrelated_edits_and_fails_closed(tmp_path, monkeypatch, parser_available):
+    if not parser_available:
+        import tree_sitter_language_pack
+        def unavailable(*args):
+            raise LookupError("unavailable")
+        monkeypatch.setattr(tree_sitter_language_pack, "get_parser", unavailable)
+    source = tmp_path / "source.py"
+    content = "def target():\n    return 1\n\ndef other():\n    return 2\n"
+    source.write_text(content)
+    candidate = {"id": "s", "claim": "Target returns one", "source": "source.py", "symbol": "target", "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
+    stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": [candidate]}), 0))
+    stage.workspace = tmp_path
+    for i in range(5):
+        path = tmp_path / f"session{i}.jsonl"
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": content}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": content, "startLine": 1, "numLines": 5, "totalLines": 5}}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}
+        ]
+        path.write_text("\n".join(map(json.dumps, events)))
+        stage.update(path, iid=f"s{i}")
+    assert "Target returns one" in stage.render()
+    evidence = next(iter(stage.facts.values())).spec["proof"]
+    assert evidence["kind"] == ("symbol" if parser_available else "file")
+    if not parser_available:
+        assert evidence["fallback"] == {"symbol": "target", "reason": "symbol-unresolvable"}
+    source.write_text(content.replace("return 2", "return 3"))
+    assert ("Target returns one" in stage.render()) == parser_available
+    source.write_text(content.replace("return 1", "return 4"))
+    assert not stage.render()

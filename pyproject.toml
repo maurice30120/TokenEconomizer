@@ -12,10 +12,9 @@ license = { text = "MIT" }
 authors = [{ name = "TokenEconomizer authors" }]
 keywords = ["llm-agents", "cost-optimization", "swe-bench", "token-economy"]
 
-# The package is STDLIB-ONLY: the three mechanisms, the trace reader, the ledger and the plugin
-# runtime import nothing outside the standard library, so it runs on any Python >=3.10 with zero
-# install-time dependencies.
-dependencies = []
+# Tree-sitter is required for experimental Knowledge symbol contracts. The native mechanisms
+# still run when the parser is unavailable; Knowledge then falls back to file proofs.
+dependencies = ["tree-sitter-language-pack==0.13.0", "tree-sitter>=0.25.2,<0.28"]
 
 [project.scripts]
 # The plugin's command line (status, microskills, toolprune, config, ...). The plugin ships its

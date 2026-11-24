@@ -329,11 +329,16 @@ def cmd_microskills(args):
             print(f"  {v.get('state', '?'):9s} fire={v.get('fire', '?'):>5s} "
                   f"{'INJECTED' if v.get('inject') else '        '} {k}")
     stage = Knowledge.load(key, mechanism_dir) if os.path.exists(knowledge_path) else None
+    if stage:
+        from tokeneconomizer.knowledge.proof import verify_proof, available_languages
+        print("\nknowledge symbol grammars: " + (", ".join(f"{ext}={lang}" for ext, lang in sorted(available_languages().items())) or "none"))
     if stage and stage.facts:
-        from tokeneconomizer.knowledge.proof import verify_file
         print("\nknowledge tracked:")
         for fid, fact in sorted(stage.facts.items()):
-            valid = verify_file(ctx.repo.root, fact.spec.get("proof", {}))
+            proof = fact.spec.get("proof", {})
+            valid = verify_proof(ctx.repo.root, proof)
+            if isinstance(proof, dict) and proof.get("fallback"):
+                print(f"  fallback {fid}: {proof['fallback']}")
             print(f"  {fact.state:9s} rev={fact.spec.get('rev', 1)} "
                   f"proof={'valid' if valid else 'invalid'} {fid}  {_short(fact.claim)}")
     from tokeneconomizer.microskills import forgotten_facts
