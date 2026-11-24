@@ -475,3 +475,33 @@ def test_a_partial_source_no_symbol_proves_is_not_offered_to_the_proposer(tmp_pa
     assert dg["_observations"]["source.py"]["symbols"] == {}
     assert stage._admit(partial_candidate(symbol="alpha")) == (False, "symbol-not-observed")
     assert not stage.facts
+
+
+def test_the_cli_shows_the_scope_a_partial_knowledge_really_read(tmp_path, env, repo,
+                                                                 monkeypatch, capsys):
+    """Story 4: what a partial read actually returned stays inspectable, not just its source."""
+    from pathlib import Path
+    from tokeneconomizer.plugin import cli
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    root = Path(repo)
+    (root / "source.py").write_bytes(SOURCE)
+    args = {"path": "source.py", "offset": 2, "limit": 1}
+    text = pi_read(SOURCE, 2, 1)
+    captures = capture_read(root, args, text)
+    ctx = LiveContext.build(ClaudeCode(), repo, env)
+    stage = Knowledge(workspace_id(ctx.repo.label, ctx.repo.root))
+    stage.workspace, stage.host = root, "pi"
+    for i in range(2):
+        pi, trace = tmp_path / f"cli{i}.jsonl", tmp_path / f"clitrace{i}.jsonl"
+        reads_session(pi, root, [("r", args, text, False)])
+        claude_trace(trace)
+        stage.update(trace, iid=f"s{i}", observed_transcript=pi, captures=captures)
+    assert stage._admit(partial_candidate()) == (True, "admitted")
+    stage.save(ctx.mech_dir)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert cli.main(["--host", "claude", "--cwd", repo, "microskills"]) == 0
+    out = capsys.readouterr().out
+    assert "source=source.py session=s1" in out
+    assert 'observed={"reads": [{"lines": 1, "offset": 2}], "total_lines": 7}' in out

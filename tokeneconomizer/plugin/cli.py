@@ -355,6 +355,9 @@ def cmd_microskills(args):
                   f"{'forgotten ' if forgotten else ''}{fid}  {_short(fact.claim)}")
             print(f"    source={provenance.get('path', '?')} "
                   f"session={provenance.get('session', '?')}")
+            # A partial read's real scope: which lines it returned, out of how many.
+            if isinstance(provenance.get("observed"), dict):
+                print("    observed=" + json.dumps(provenance["observed"], sort_keys=True))
     from tokeneconomizer.microskills import forgotten_facts
     gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"),
                            workspace=ctx.repo.root)
