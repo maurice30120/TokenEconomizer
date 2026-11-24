@@ -8,8 +8,9 @@
                       in the background
     UserPromptSubmit  open a prompt-turn for the loop guard; on a session's first prompt, add
                       the repository map (`repomap=on`)
-    PostToolUse       fold the call into the turn's guard; a redirect when it first says the
-                      turn is stuck, then a notice to the person saying how to stop it
+    PostToolUse       fold the call into the turn's guard; keep the bytes a Pi `read`
+                      returned, for the fold; a redirect when it first says the turn is stuck,
+                      then a notice to the person saying how to stop it
     Stop              close the turn; an ended-green turn feeds the repository's envelope
     SessionEnd        hand the session to a detached `te fold`
 
@@ -28,6 +29,7 @@ import time
 import traceback
 
 from .. import loopguard
+from ..knowledge import capture
 from ..trace import droid as droid_trace
 from . import denylist, fold, history, hookqueue, repomap, repos, sidecall
 from .hosts import merge_outputs
@@ -103,6 +105,9 @@ class LiveController:
         self.ctx.settle()
         self.cfg = self.ctx.config
         event = self.p.get("hook_event_name") or ""
+        if event == "PostToolUse" and self.cfg.knowledge and self.host.name == "pi":
+            # At the instant of the read, and only then: the file may change before the fold.
+            capture.record(self.store, self.sid, self.ctx, self.p)
         if event in ("SessionStart", "UserPromptSubmit"):
             try:
                 ensure_launcher(self.ctx.env)

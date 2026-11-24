@@ -120,7 +120,7 @@ def capture_read(root, args, text, tool_use_id="r", session_id="s"):
     return session_dir(store, session_id)
 
 
-def reads_session(path, root, reads):
+def reads_session(path, root, reads, bash=None):
     """A Pi session log: one assistant turn per (id, args) and its tool result."""
     entries = [{"type": "session", "version": 3, "id": "s", "cwd": str(root)}]
     parent = None
@@ -134,6 +134,15 @@ def reads_session(path, root, reads):
                               "content": [{"type": "text", "text": text}]}}
         entries += [call, result]
         parent = f"b{i}"
+    if bash:
+        entries += [
+            {"type": "message", "id": "c", "parentId": parent,
+             "message": {"role": "assistant", "content": [
+                 {"type": "toolCall", "id": "t", "name": "bash",
+                  "arguments": {"command": bash[0]}}]}},
+            {"type": "message", "id": "d", "parentId": "c",
+             "message": {"role": "toolResult", "toolCallId": "t", "toolName": "bash",
+                         "isError": False, "content": [{"type": "text", "text": bash[1]}]}}]
     path.write_text("\n".join(map(json.dumps, entries)))
 
 
@@ -248,3 +257,52 @@ def test_a_partial_read_that_covers_the_file_is_a_complete_observation(tmp_path)
     record = observations(path, tmp_path, host="pi", captures=captures)["source.py"]
     assert record.get("partial") is None
     assert record["content"] == SOURCE.decode()
+
+
+def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tmp_path, monkeypatch):
+    from tests.test_live_hooks import call, run_session
+    from tokeneconomizer.knowledge.capture import load, session_dir
+    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.plugin import sidecall
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import Pi
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (repo / "source.py").write_bytes(SOURCE)
+    env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1",
+           "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off",
+           "TE_LOOPGUARD": "off"}
+    candidate = {"id": "k", "claim": "Alpha returns one", "source": "source.py",
+                 "symbol": "alpha", "source_session": "s1", "cite": ["s0", "s1"],
+                 "detector": {"scope": "pytest", "confirm": "passed"}}
+    monkeypatch.setattr(sidecall, "runner_for",
+                        lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
+    ctx = LiveContext.build(Pi(), str(repo), env)
+    args, text = {"path": "source.py", "offset": 2, "limit": 1}, pi_read(SOURCE, 2, 1)
+    for i in range(5):
+        transcript = tmp_path / f"s{i}.jsonl"
+        reads_session(transcript, repo, [("r", args, text, False)],
+                      bash=("pytest", "1 passed"))
+        call(env, {"hook_event_name": "PostToolUse", "session_id": f"s{i}",
+                   "transcript_path": str(transcript), "cwd": str(repo),
+                   "tool_name": "read", "tool_use_id": "r", "tool_input": args,
+                   "tool_response": {"content": text, "isError": False}}, host="pi")
+        captures = session_dir(ctx.store, f"s{i}")
+        assert load(captures)["r"]["bytes"] == SOURCE
+        run_session(env, str(repo), f"s{i}", str(transcript), host="pi")
+        assert load(captures) == {}, "the fold takes the capture and removes it"
+    stage = Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir)
+    stage.workspace, stage.host = repo, "pi"
+    assert len(stage.facts) == 1
+    assert next(iter(stage.facts.values())).spec["proof"]["kind"] == "symbol"
+    assert "Alpha returns one" in stage.render()
+    start = {"hook_event_name": "SessionStart", "source": "startup", "cwd": str(repo)}
+    assert "Alpha returns one" in json.dumps(call(env, dict(start, session_id="next"), host="pi"))
+    # the symbol's unread line, a comment inside it, and the rest of the file
+    (repo / "source.py").write_bytes(SOURCE.replace(b"    return 1", b"    return 9"))
+    assert "Alpha returns one" not in json.dumps(call(env, dict(start, session_id="edited"), host="pi"))
+    (repo / "source.py").write_bytes(SOURCE.replace(b"    return 1", b"    # why\n    return 1"))
+    assert "Alpha returns one" in json.dumps(call(env, dict(start, session_id="comment"), host="pi"))
+    (repo / "source.py").write_bytes(SOURCE)
+    assert "Alpha returns one" in json.dumps(call(env, dict(start, session_id="restored"), host="pi"))

@@ -111,6 +111,7 @@ def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_
     if not ctx.config.knowledge or not transcript or ctx.host.name not in ("claude", "pi", "copilot"):
         return None
     from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.knowledge import capture
     from tokeneconomizer.microskills import distiller
     distiller.PROPOSE_EVERY = ctx.config.microskills_propose_every
     runner = None
@@ -123,8 +124,14 @@ def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_
     stage.workspace = ctx.repo.root
     stage.host = ctx.host.name
     before = stage.opt_tokens
-    stage.update(trace_path or transcript, iid=session_id, observed_transcript=transcript)
-    stage.save(ctx.mech_dir)
+    captures = capture.session_dir(ctx.store, session_id)
+    try:
+        stage.update(trace_path or transcript, iid=session_id, observed_transcript=transcript,
+                     captures=captures)
+        stage.save(ctx.mech_dir)
+    finally:
+        # The fold has taken what it can from them, and only a read-time capture is evidence.
+        capture.discard(captures)
     if shared is not None:
         shared.stage, shared.root = stage, ctx.mech_dir
     return {"optimizer_tokens": stage.opt_tokens - before}
