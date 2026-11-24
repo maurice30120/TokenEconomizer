@@ -308,11 +308,16 @@ def cmd_microskills(args):
         return 2
     ctx = _ctx(args)
     inj = ctx.store.read("injection.json") or {}
+    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.names import repo_filename
+    key = workspace_id(ctx.repo.label, ctx.repo.root)
+    mechanism_dir = os.path.join(ctx.store.base, "mechanisms")
+    knowledge_path = os.path.join(mechanism_dir, "knowledge_state", repo_filename(key) + ".json")
     if ctx.config.microskills == "off":
         print(f"micro-skills is off here (the default). `config set microskills=on` turns it on: "
               f"facts are then learned from finished sessions, and a model proposes more every "
               f"{ctx.config.microskills_propose_every} sessions, through this agent")
-        if not inj:
+        if not inj and not os.path.exists(knowledge_path):
             return 0
     text = inj.get("rendered") or ""
     print(text.rstrip() or "(nothing injected yet: no fact has cleared its firing gate)")
@@ -323,8 +328,17 @@ def cmd_microskills(args):
         for k, v in sorted(rows):
             print(f"  {v.get('state', '?'):9s} fire={v.get('fire', '?'):>5s} "
                   f"{'INJECTED' if v.get('inject') else '        '} {k}")
+    stage = Knowledge.load(key, mechanism_dir) if os.path.exists(knowledge_path) else None
+    if stage and stage.facts:
+        from tokeneconomizer.knowledge.proof import verify_file
+        print("\nknowledge tracked:")
+        for fid, fact in sorted(stage.facts.items()):
+            valid = verify_file(ctx.repo.root, fact.spec.get("proof", {}))
+            print(f"  {fact.state:9s} rev={fact.spec.get('rev', 1)} "
+                  f"proof={'valid' if valid else 'invalid'} {fid}  {_short(fact.claim)}")
     from tokeneconomizer.microskills import forgotten_facts
-    gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"))
+    gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"),
+                           workspace=ctx.repo.root)
     if gone:
         print("\nforgotten (`microskills unforget ID` brings one back):")
         for k, claim in sorted(gone.items()):

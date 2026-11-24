@@ -120,6 +120,7 @@ class LiveController:
         outputs = []
         seen = self.store.read("notices.json") or {}
         seen_before = dict(seen)
+        text = ""
 
         if self.cfg.microskills != "off":
             inj = self.store.read("injection.json") or {}
@@ -149,6 +150,23 @@ class LiveController:
                             f"{self.ctx.repo.label} to this session's context "
                             f"(review with `{self._cmd('microskills')}`)."))
                         seen["injection"] = digest
+
+        if self.cfg.knowledge and not self.cfg.shadow:
+            fresh = source in ("startup", "new", "clear", "compact")
+            if fresh or not self.host.keeps_start_context:
+                try:
+                    from ..knowledge.stage import Knowledge, workspace_id
+                    stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
+                                           self.ctx.mech_dir)
+                    stage.workspace = self.ctx.repo.root
+                    facts = max(0, self.cfg.microskills_max_facts
+                                - sum(ln.startswith("- ") for ln in text.splitlines()))
+                    tokens = max(0, self.cfg.microskills_max_tokens - (len(text) + 3) // 4)
+                    block = stage.render(max_facts=facts, max_tokens=tokens)
+                    if block:
+                        outputs.append(self.host.context("SessionStart", block))
+                except Exception:
+                    self._record_error()
 
         if (self.cfg.toolprune != "off" and denylist.supports(self.host.name)
                 and not self.cfg.shadow):

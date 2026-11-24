@@ -104,6 +104,26 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
     return {"optimizer_tokens": float(opt_tokens or 0), "rendered_chars": len(rendered)}
 
 
+def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False):
+    if not ctx.config.knowledge or not transcript or ctx.host.name != "claude":
+        return None
+    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.microskills import distiller
+    distiller.PROPOSE_EVERY = ctx.config.microskills_propose_every
+    runner = None
+    if not imported:
+        runner = (sidecall.runner_for(ctx.host.name, ctx.config, role="proposer")
+                  if not sidecall.paused(ctx.host.name, ctx.root)
+                  else sidecall.local_runner("proposer", ctx.config))
+    stage = Knowledge.load(workspace_id(ctx.repo.label, ctx.repo.root), ctx.mech_dir, runner=runner,
+                           vocab=adapter.env_vocabulary())
+    stage.workspace = ctx.repo.root
+    before = stage.opt_tokens
+    stage.update(transcript, iid=session_id)
+    stage.save(ctx.mech_dir)
+    return {"optimizer_tokens": stage.opt_tokens - before}
+
+
 class Busy(RuntimeError):
     """Another fold holds this repository's learning state."""
 
@@ -121,7 +141,8 @@ def forget_microskills(ctx, ids, undo=False):
     with ctx.store.locked("mechanisms") as got:
         if not got:
             raise Busy("a fold of this repository's sessions holds its state")
-        out = forget_facts(ctx.repo.label, ctx.mech_dir, ids, vocab=vocab, undo=undo)
+        out = forget_facts(ctx.repo.label, ctx.mech_dir, ids, vocab=vocab, undo=undo,
+                           workspace=ctx.repo.root)
         prior = ctx.store.read("injection.json")
         profile = (ctx.config.microskills if ctx.config.microskills != "off"
                    else (prior or {}).get("profile"))
@@ -545,11 +566,18 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
             with ctx.store.locked("mechanisms"):
                 inj = _fold_microskills(ctx, adapter, run_dir, session_id,
                                         injected=sess.get("injected_ids"), imported=imported)
+                try:
+                    knowledge = _fold_knowledge(ctx, adapter, transcript, session_id, imported)
+                except Exception:
+                    # One malformed knowledge record must not prevent the other mechanisms
+                    # from folding this session.
+                    knowledge = {"error": "knowledge fold failed"}
                 # A session that ran no prompt is no evidence about the tools.
                 unt = None if prompts == 0 else _fold_toolprune(
                     ctx, adapter, run_dir, session_id, transcript=transcript,
                     workdir=workdir, prompts=prompts, imported=imported)
             record["injection"] = inj
+            record["knowledge"] = knowledge
             record["untool"] = unt
             if unt and unt.get("pending") and not imported:
                 schedule_pending(ctx)
@@ -572,8 +600,9 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
             "untool_applied": [] if imported else denylist.applied_for(
                 ctx.store, ctx.repo.root, ctx.host.name),
             "overhead": {
-                "optimizer_tokens": ((record.get("injection") or {}).get("optimizer_tokens")
-                                     or 0),
+                "optimizer_tokens": (((record.get("injection") or {}).get("optimizer_tokens")
+                                     or 0) + ((record.get("knowledge") or {}).get("optimizer_tokens")
+                                              or 0)),
                 "spiral_judge_tokens": float(sess.get("judge_tokens", 0) or 0),
                 "spiral_nudge_writer_tokens": float(sess.get("writer_tokens", 0) or 0)}})
         ctx.store.append("ledger.jsonl", record)

@@ -357,6 +357,7 @@ commands. They have the same names on every agent; only the way you type them di
 | `toolprune restore` | give them back; they will not be removed again |
 | `config` | every setting in effect |
 | `config set microskills=on` | turn a mechanism on (or `=off`) in this repository; add `--global` for every repository |
+| `config set knowledge=on` | enable experimental file-backed Knowledge independently; see [Knowledge](tokeneconomizer/knowledge/README.md) |
 
 Inside an agent, a command costs one model turn; from a terminal it is free. The other commands
 (`repos`, `doctor`, `config unset`, ...) and each agent's permission prompts are listed under

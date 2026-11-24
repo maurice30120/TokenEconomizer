@@ -2,6 +2,7 @@
 
 The defaults:
 
+  * knowledge   = False      -- optional file-backed Knowledge; independent of microskills;
   * microskills = "off"      -- nothing is learned or injected. `on` is "envfacts+distiller":
                                 the LLM-free facts plus the proposer, which reads digests of
                                 finished sessions every `microskills_propose_every` sessions and
@@ -186,6 +187,7 @@ def _threshold_name(key):
 @dataclass
 class LiveConfig:
     enabled: bool = True
+    knowledge: bool = False
     mode: str = "auto"
     microskills: str = "off"
     microskills_max_facts: int = 4
@@ -349,7 +351,7 @@ class LiveConfig:
 
 
 # Environment variables, old names first so that a new name set alongside its old one wins.
-_ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow",
+_ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow", "TE_KNOWLEDGE": "knowledge",
         "TE_PAID_MODEL": "paid_model", "TE_VOCABULARY": "vocabulary",
         **{f"TE_{a.upper()}_PAID_MODEL": f"{a}_paid_model" for a in (
             "claude", "codex", "copilot", "pi", "opencode", "cursor", "grok", "hermes", "droid")},
