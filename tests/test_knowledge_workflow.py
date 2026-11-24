@@ -345,3 +345,108 @@ def test_native_proposal_survives_unavailable_knowledge_context(tmp_path, env, r
     ctx = LiveContext.build(ClaudeCode(), repo, enabled)
     native = Distiller.load(ctx.repo.label, ctx.mech_dir)
     assert "native" in native.facts
+
+
+# ---- Knowledge from a Pi read of part of a file -------------------------------------------
+def claude_trace(path, command="pytest", output="passed"):
+    """The digest's view of a session: one finished check (observations read the Pi log)."""
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": command}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "sh", "content": output}]}},
+    ]
+    path.write_text("\n".join(map(json.dumps, events)))
+
+
+SOURCE = b"def alpha():\n    return 1\n\ndef beta():\n    # beta marker\n    return 2\n"
+
+
+def partial_stage(tmp_path, sessions=2):
+    """A `Knowledge` fed Pi sessions that each read line 2 of `source.py` and passed pytest."""
+    from tests.test_knowledge_pi import capture_read, pi_read, reads_session
+    source = tmp_path / "source.py"
+    source.write_bytes(SOURCE)
+    args = {"path": "source.py", "offset": 2, "limit": 1}
+    text = pi_read(SOURCE, 2, 1)
+    captures = capture_read(tmp_path, args, text)
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    for i in range(sessions):
+        pi, trace = tmp_path / f"pi{i}.jsonl", tmp_path / f"trace{i}.jsonl"
+        reads_session(pi, tmp_path, [("r", args, text, False)])
+        claude_trace(trace)
+        stage.update(trace, iid=f"s{i}", observed_transcript=pi, captures=captures)
+    return stage, source
+
+
+def partial_candidate(**fields):
+    candidate = {"id": "alpha-one", "claim": "Alpha returns one", "source": "source.py",
+                 "symbol": "alpha", "source_session": "s1", "cite": ["s0", "s1"],
+                 "detector": {"scope": "pytest", "confirm": "passed"}}
+    candidate.update(fields)
+    return {k: v for k, v in candidate.items() if v is not None}
+
+
+def test_partial_knowledge_admits_on_the_symbol_its_read_crossed(tmp_path):
+    stage, _ = partial_stage(tmp_path)
+    assert stage._admit(partial_candidate()) == (True, "admitted")
+    spec = next(iter(stage.facts.values())).spec
+    assert spec["proof"]["kind"] == "symbol" and spec["proof"]["symbol"] == "alpha"
+    assert spec["provenance"] == {
+        "session": "s1", "path": "source.py",
+        "observed": {"reads": [{"offset": 2, "lines": 1}], "total_lines": 7}}
+
+
+def test_partial_knowledge_refuses_anything_but_an_observed_symbol(tmp_path):
+    stage, source = partial_stage(tmp_path)
+    # no symbol at all: an excerpt cannot support a file-wide claim
+    assert stage._admit(partial_candidate(symbol=None)) == (False, "partial-needs-symbol")
+    # declared in the file, but not in the lines the read returned
+    assert stage._admit(partial_candidate(symbol="beta")) == (False, "symbol-not-observed")
+    assert stage._admit(partial_candidate(symbol="gamma")) == (False, "symbol-not-observed")
+    assert not stage.facts
+    # the symbol changed after the read: no partial proof survives it, and no file fallback
+    source.write_bytes(SOURCE.replace(b"return 1", b"return 9"))
+    assert stage._admit(partial_candidate()) == (False, "stale-proof")
+    assert not stage.facts
+
+
+def test_partial_proof_follows_the_whole_symbol_before_and_after_injection(tmp_path):
+    stage, source = partial_stage(tmp_path, sessions=5)
+    assert stage._admit(partial_candidate()) == (True, "admitted")
+    assert "Alpha returns one" in stage.render()
+    # a line of the symbol the read never returned is part of its proof
+    source.write_bytes(SOURCE.replace(b"    return 1", b"    return 9"))
+    assert "Alpha returns one" not in stage.render()
+    source.write_bytes(SOURCE)
+    assert "Alpha returns one" in stage.render()
+    # a comment inside the symbol changes nothing it attests
+    source.write_bytes(SOURCE.replace(b"    return 1", b"    # the one\n    return 1"))
+    assert "Alpha returns one" in stage.render()
+    # neither does another symbol
+    source.write_bytes(SOURCE.replace(b"return 2", b"return 3"))
+    assert "Alpha returns one" in stage.render()
+
+
+def test_a_partial_observation_never_stores_the_captured_file(tmp_path):
+    stage, _ = partial_stage(tmp_path)
+    assert stage._admit(partial_candidate()) == (True, "admitted")
+    stage.save(tmp_path)
+    state = json.loads((tmp_path / "knowledge_state" / "repo.json").read_text())
+    stored = json.dumps(state)
+    assert "beta marker" not in stored and SOURCE.decode() not in stored
+    observation = state["window"][-1]["_observations"]["source.py"]
+    assert observation["content"] == "    return 1"
+    assert observation["excerpt"].startswith("    return 1")
+    assert observation["observed"]["total_lines"] == 7
+    assert "proof" not in observation
+
+
+def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
+    stage, _ = partial_stage(tmp_path)
+    prompts = []
+    stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"facts": []}', 0)
+    stage._maybe_propose()
+    assert "read only in part" in prompts[0]
+    assert "observed_lines" in prompts[0]
