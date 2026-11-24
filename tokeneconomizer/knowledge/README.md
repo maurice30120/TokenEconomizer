@@ -53,3 +53,34 @@ injection, each dependency must still exist at its pinned revision, be eligible,
 and have a valid proof. Forgetting, revising, or invalidating a dependency excludes
 the synthesis without deleting it; atomics remain independently usable. Nested
 syntheses are not supported. Inspection displays the pinned dependencies.
+
+## Recorded-session evaluation
+
+`tests/test_knowledge_pi.py::test_pi_hook_learns_from_recorded_active_sessions`
+replays the sanitized Pi complete-read recording five times through the live hooks,
+with distinct session IDs, an added simulated successful `pytest` command, and a
+stub proposer returning one grounded file candidate. No lifecycle threshold or
+proposal cadence is overridden. The following counts are `(stored, eligible for
+rendering)` after each fold: `(0, 0), (1, 0), (1, 0), (1, 1), (1, 1)`.
+The test also checks the hook output, forget/unforget, deletion and restoration.
+The separate Copilot recording test exercises a second host. Workflow tests cover
+file and symbol contracts, compositions, revision, warm-cache revalidation,
+workspace isolation, budget, native coexistence and user controls.
+
+This is a deterministic integration scenario, not a representative yield estimate:
+the same read is replayed, confirmations are synthetic and the candidate is supplied
+by a stub rather than a real model. It does not measure real-world proposal quality,
+latency, token savings or cost. Proof validity does not establish semantic truth.
+Already-injected context in a resumed conversation cannot be retracted.
+
+## Upstream maintenance surface
+
+The local baseline `e7cc7598bd013bf71011ae49c27f6c3e14c22ac4` is the fork's
+`main` at evaluation time; no upstream remote-tracking ref was available locally,
+so this is a baseline comparison, not a claim about current upstream HEAD. Before
+this evaluation change, the branch differs by 26 files, 1,187 insertions and 19
+deletions. Most additions are the isolated `knowledge` package and tests/fixtures;
+shared changes touch configuration, fold and controller hooks, CLI inspection,
+selection budget, packaging dependencies and the micro-skills stage. Future rebases
+must recheck these seams, host transcript formats and the optional Tree-sitter pack.
+No performance improvement is assumed.
