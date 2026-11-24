@@ -329,13 +329,24 @@ def cmd_microskills(args):
             print(f"  {v.get('state', '?'):9s} fire={v.get('fire', '?'):>5s} "
                   f"{'INJECTED' if v.get('inject') else '        '} {k}")
     stage = Knowledge.load(key, mechanism_dir) if os.path.exists(knowledge_path) else None
-    if stage and stage.facts:
+    if stage and (stage.facts or stage.forgotten):
         from tokeneconomizer.knowledge.proof import verify_file
+        from tokeneconomizer.microskills.distiller import Fact
         print("\nknowledge tracked:")
-        for fid, fact in sorted(stage.facts.items()):
+        entries = [(fid, fact, False) for fid, fact in stage.facts.items()]
+        for fid, record in stage.forgotten.items():
+            try:
+                entries.append((fid, Fact.from_dict(record["record"]), True))
+            except (KeyError, TypeError, ValueError):
+                continue
+        for fid, fact, forgotten in sorted(entries, key=lambda item: item[0]):
             valid = verify_file(ctx.repo.root, fact.spec.get("proof", {}))
+            provenance = fact.spec.get("provenance") or {}
             print(f"  {fact.state:9s} rev={fact.spec.get('rev', 1)} "
-                  f"proof={'valid' if valid else 'invalid'} {fid}  {_short(fact.claim)}")
+                  f"proof={'valid' if valid else 'invalid'} "
+                  f"{'forgotten ' if forgotten else ''}{fid}  {_short(fact.claim)}")
+            print(f"    source={provenance.get('path', '?')} "
+                  f"session={provenance.get('session', '?')}")
     from tokeneconomizer.microskills import forgotten_facts
     gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"),
                            workspace=ctx.repo.root)

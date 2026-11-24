@@ -11,7 +11,7 @@ def test_knowledge_is_independent_and_disabled_by_default(tmp_path):
     assert cfg.knowledge and cfg.microskills == "off"
 
 
-def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, repo, monkeypatch):
+def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, repo, monkeypatch, capsys):
     from tokeneconomizer.plugin import sidecall
     source = __import__("pathlib").Path(repo) / "source.txt"
     source.write_text("observed\n")
@@ -37,7 +37,6 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     assert "Source is observed" not in json.dumps(call(enabled, dict(payload, cwd=str(other), session_id="other")))
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode
-    from tokeneconomizer.microskills import forget_facts
     ctx = LiveContext.build(ClaudeCode(), repo, enabled)
     ctx.store.write("injection.json", {"rendered": "# native\n- Native fact\n"})
     together = dict(enabled, TE_MICROSKILLS="envfacts")
@@ -48,9 +47,21 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     assert "Source is observed" not in text and "- A" in text
     saved = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
     fid = next(iter(saved.facts))
-    forget_facts(ctx.repo.label, ctx.mech_dir, [fid], workspace=repo)
+    from tokeneconomizer.plugin import cli
+    for key, value in enabled.items():
+        monkeypatch.setenv(key, value)
+    def command(*args):
+        return cli.main(["--host", "claude", "--cwd", repo, "microskills", *args])
+    assert command() == 0
+    output = capsys.readouterr().out
+    assert fid in output and "rev=1" in output and "proof=valid" in output
+    assert "source.txt" in output and "s1" in output
+    assert command("forget", fid) == 0
+    assert command() == 0
+    output = capsys.readouterr().out
+    assert fid in output and "source.txt" in output and "s1" in output and "forgotten" in output
     assert "Source is observed" not in json.dumps(call(enabled, dict(payload, session_id="forgotten")))
-    forget_facts(ctx.repo.label, ctx.mech_dir, [fid], undo=True, workspace=repo)
+    assert command("unforget", fid) == 0
     assert "Source is observed" in json.dumps(call(enabled, dict(payload, session_id="restored")))
     source.write_text("changed\n")
     assert "Source is observed" not in json.dumps(call(enabled, dict(payload, session_id="next")))
