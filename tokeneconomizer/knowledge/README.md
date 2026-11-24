@@ -7,30 +7,37 @@ accepts:
 - Claude Code `Read` results with complete-file metadata and matching model-visible content;
 - Pi `read` results on the active session branch. A complete file read must carry no
   truncation details or notices; a read of part of a file (`offset` and/or `limit`) counts only
-  when the PostToolUse hook kept the file's bytes at the instant of the read and the logged
-  result still matches them, footer included. This adapter was checked against the locally
-  installed Pi 1.2.0, and the result formats against Pi 1.6.0;
+  when the PostToolUse hook kept the file's bytes immediately after the read returned, and the
+  logged result -- the body plus the line total its footer declares -- still matches those
+  bytes, footer included. An edit inside the read's window between the read and the capture
+  fails closed; an edit outside that window is caught only when it changes the line count the
+  footer declares. This adapter was checked against the locally installed Pi 1.2.0, and the
+  result formats against Pi 1.6.0;
 - Copilot `view` file results from session format version 1.0.105, without a range or avoided
   large output, with telemetry confirming that the whole result reached the model. Files at or
   above 20 KiB and sessions without the required telemetry are rejected conservatively.
 
 Failed, lossy, transformed and unverifiable reads are ignored, as is a partial read whose
 capture is missing or no longer describes the file. Captures are kept per Pi session (at most
-12 files and 8 MiB, expiring after 7 days), removed after the session is folded, and never
-store the file for a partial observation: only the excerpt the model received. Other hosts,
-Copilot versions and read formats do not yet supply evidence. The Pi and Copilot test fixtures
-are sanitized local sessions recorded with a simulated model provider; their file paths and Pi
-system prompt were replaced, while the tool calls and results were retained.
+12 files and 8 MiB, expiring after 7 days) and removed after the session is folded: each one
+holds the file's bytes, bounded, only until then. The captured file itself is never stored in
+the observation or in the persisted Knowledge state, where only the excerpt the model received
+appears. Other hosts, Copilot versions and read formats do not yet supply evidence. The Pi and
+Copilot test fixtures are sanitized local sessions recorded with a simulated model provider;
+their file paths and Pi system prompt were replaced, while the tool calls and results were
+retained.
 
-The proposer sees bounded excerpts of complete observed reads and identifies a source and
-session. It runs on the existing micro-skills proposal cadence and uses TE's grounding,
-confirmation, contradiction and firing thresholds. The proposal is a separate model call;
+The proposer sees bounded excerpts of observed reads -- complete ones, and partial ones with
+the lines they returned (`observed_lines`) -- and identifies a source and session. A partial
+read that crossed no declaration has nothing to prove, so it is not offered at all. It runs
+on the existing micro-skills proposal cadence and uses TE's grounding, confirmation,
+contradiction and firing thresholds. The proposal is a separate model call;
 verification is local and makes no model call. Knowledge shares the configured micro-skills
 injection limits with native facts. State is isolated by workspace path. `te microskills`
-lists Knowledge identity, revision, lifecycle, proof status, and source session and path,
-including forgotten records. Use `te microskills forget ID` to suppress one and
-`te microskills unforget ID` to restore its saved lifecycle; injection still requires
-a valid proof and the usual lifecycle gates.
+lists Knowledge identity, revision, lifecycle, proof status, source session and path, and the
+lines a partial read actually returned, including forgotten records. Use
+`te microskills forget ID` to suppress one and `te microskills unforget ID` to restore its
+saved lifecycle; injection still requires a valid proof and the usual lifecycle gates.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
