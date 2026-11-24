@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -505,3 +506,29 @@ def test_the_cli_shows_the_scope_a_partial_knowledge_really_read(tmp_path, env, 
     out = capsys.readouterr().out
     assert "source=source.py session=s1" in out
     assert 'observed={"reads": [{"lines": 1, "offset": 2}], "total_lines": 7}' in out
+
+
+def test_a_failed_fold_keeps_the_captures_for_a_retry(tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.knowledge import capture
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.fold import _fold_knowledge
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    from types import SimpleNamespace
+    adapter = SimpleNamespace(env_vocabulary=lambda: {})
+    ctx = LiveContext.build(ClaudeCode(), repo, dict(env, TE_KNOWLEDGE="on"))
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}")
+    directory = Path(capture.session_dir(ctx.store, "s1"))
+    directory.mkdir(parents=True)
+    (directory / "index.json").write_text("{}")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("fold failed")
+    monkeypatch.setattr(Knowledge, "update", boom)
+    with pytest.raises(RuntimeError):
+        _fold_knowledge(ctx, adapter, str(transcript), "s1")
+    assert directory.exists()
+
+    monkeypatch.setattr(Knowledge, "update", lambda *a, **kw: None)
+    _fold_knowledge(ctx, adapter, str(transcript), "s1")
+    assert not directory.exists()
