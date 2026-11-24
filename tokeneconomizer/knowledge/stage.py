@@ -112,7 +112,8 @@ class Knowledge(Distiller):
             # only as it was at the instant of the read. Nothing falls back to the file.
             if symbol is None:
                 return False, "partial-needs-symbol"
-            evidence = (observation.get("symbols") or {}).get(symbol)
+            symbols = observation.get("symbols")
+            evidence = symbols.get(symbol) if isinstance(symbols, dict) else None
             if evidence is None:
                 return False, "symbol-not-observed"
             if not verify_proof(self.workspace, evidence):
