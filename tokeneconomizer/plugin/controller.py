@@ -127,6 +127,10 @@ class LiveController:
         source = self.p.get("source") or "startup"
         s = self._session()
         s["source"] = source
+        if source in ("startup", "new", "clear", "compact") or not self.host.keeps_start_context:
+            # What a cleared, compacted or new conversation was given is gone, and so is what a
+            # host that rebuilds a resumed one without its start context had added.
+            s.pop("knowledge_given", None)
         s.setdefault("cwd", self.host.cwd(self.p, self.ctx.env))
         outputs = []
         seen = self.store.read("notices.json") or {}
@@ -331,7 +335,11 @@ class LiveController:
                 facts = max(0, self.cfg.microskills_max_facts
                             - sum(ln.startswith("- ") for ln in native.splitlines()))
                 tokens = max(0, self.cfg.microskills_max_tokens - (len(native) + 3) // 4)
-                return stage.render(prompt, max_facts=facts, max_tokens=tokens)
+                given = list(s.get("knowledge_given") or [])
+                block = stage.render(prompt, max_facts=facts, max_tokens=tokens, given=given)
+                if block:
+                    s["knowledge_given"] = given
+                return block
         except Exception:
             self._record_error()
             return ""

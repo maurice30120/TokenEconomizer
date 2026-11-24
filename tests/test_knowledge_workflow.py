@@ -15,6 +15,68 @@ def test_knowledge_is_independent_and_disabled_by_default(tmp_path):
     assert cfg.knowledge and cfg.microskills == "off"
 
 
+def _learn_source_knowledge(tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.plugin import sidecall
+    source = Path(repo) / "source.txt"
+    source.write_text("observed\n")
+    candidate = {"id": "k", "claim": "Source is observed", "source": "source.txt", "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
+    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="off", TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
+    for i in range(5):
+        tp = tmp_path / f"hook{i}.jsonl"
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "     1→observed"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
+        ]
+        tp.write_text("\n".join(map(json.dumps, events)))
+        run_session(enabled, repo, f"s{i}", str(tp))
+    return enabled
+
+
+def test_a_knowledge_is_injected_once_per_session(tmp_path, env, repo, monkeypatch):
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    sid = "once"
+
+    def start(source, host=None):
+        call(enabled, {"hook_event_name": "SessionStart", "source": source, "session_id": sid, "cwd": repo}, host)
+
+    def prompt(text="please check source.txt", host=None):
+        return "Source is observed" in json.dumps(call(enabled, {
+            "hook_event_name": "UserPromptSubmit", "session_id": sid, "cwd": repo, "prompt": text}, host))
+    start("startup")
+    assert prompt()
+    assert not prompt("and source.txt again")
+    assert not prompt("source.txt once more")
+    start("resume")                       # Claude replays its context: nothing again
+    assert not prompt()
+    start("clear")
+    assert prompt()
+    assert not prompt()
+    start("compact")
+    assert prompt()
+    # Another session is not affected by this one's memory.
+    sid = "other-session"
+    start("startup")
+    assert prompt()
+
+
+def test_a_resumed_session_that_lost_its_context_gets_the_knowledge_again(
+        tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    # A host that rebuilds a resumed conversation without what its start added (Copilot).
+    monkeypatch.setattr(ClaudeCode, "keeps_start_context", False)
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+
+    def send(event, **kw):
+        return json.dumps(call(enabled, dict({"hook_event_name": event, "session_id": "c1", "cwd": repo}, **kw)))
+    send("SessionStart", source="new")
+    assert "Source is observed" in send("UserPromptSubmit", prompt="look at source.txt")
+    assert "Source is observed" not in send("UserPromptSubmit", prompt="look at source.txt")
+    send("SessionStart", source="resume")
+    assert "Source is observed" in send("UserPromptSubmit", prompt="look at source.txt")
+
+
 def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, repo, monkeypatch, capsys):
     from tokeneconomizer.plugin import sidecall
     source = __import__("pathlib").Path(repo) / "source.txt"

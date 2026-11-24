@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] A second prompt naming the same file or symbol injects nothing new
-- [ ] After a clear or compact, the Knowledge can be injected again
-- [ ] A resumed session that keeps its context is not injected twice
-- [ ] Tested through the live hooks
+- [x] A second prompt naming the same file or symbol injects nothing new
+- [x] After a clear or compact, the Knowledge can be injected again
+- [x] A resumed session that keeps its context is not injected twice
+- [x] Tested through the live hooks
