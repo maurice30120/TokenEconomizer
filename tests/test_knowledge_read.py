@@ -84,3 +84,24 @@ def test_a_read_after_a_clear_gives_the_knowledge_again(tmp_path, env, repo, mon
     call(enabled, {"hook_event_name": "SessionStart", "source": "clear", "session_id": "k1", "cwd": repo})
     assert CLAIM in json.dumps(_read(enabled, repo, "k1", source))
     assert _logged(enabled, repo)[-1]["read_before"] is False
+
+
+def test_a_prompt_flags_the_knowledge_files_read_earlier_in_the_session(
+        tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    source = str(Path(repo) / "source.txt")
+
+    def prompt(sid):
+        out = call(enabled, {"hook_event_name": "UserPromptSubmit", "session_id": sid, "cwd": repo,
+                             "prompt": "check source.txt"})
+        assert CLAIM in json.dumps(out)
+        entry = _logged(enabled, repo)[-1]
+        assert entry["trigger"] == "prompt"
+        return entry["read_before"]
+    assert prompt("p1") is False
+    # A host whose read cannot inject still reports the read, and the flag follows it.
+    with monkeypatch.context() as m:
+        m.setattr(ClaudeCode, "tool_context", False, raising=False)
+        assert _read(enabled, repo, "p2", source) == {}
+    assert prompt("p2") is True

@@ -130,9 +130,10 @@ class LiveController:
         source = self.p.get("source") or "startup"
         s = self._session()
         s["source"] = source
-        if source in ("startup", "new", "clear", "compact") or not self.host.keeps_start_context:
-            # What a cleared, compacted or new conversation was given is gone, and so is what a
-            # host that rebuilds a resumed one without its start context had added.
+        if source in ("startup", "new", "clear", "compact"):
+            # What a cleared, compacted or new conversation was given is gone. A resumed one
+            # keeps the Knowledge: it came as prompt or tool context, which stays in the history,
+            # unlike the start context a host may rebuild without.
             s.pop("knowledge_given", None)
             s.pop("files_read", None)
         s.setdefault("cwd", self.host.cwd(self.p, self.ctx.env))
@@ -321,37 +322,12 @@ class LiveController:
         return bool(self.cfg.knowledge and not self.cfg.shadow
                     and self.host.prompt_context and self.host.prompt_knowledge)
 
-    def _relevant_knowledge(self, s, prompt):
-        """The Knowledge block for a prompt that names a Knowledge's symbol or file, within what
-        the native facts injected this session left of the shared budget; "" when none is
-        relevant. A failure leaves the hook's output as it would be without Knowledge."""
-        if self.replaying or not prompt:     # a replayed hook's answer reaches no one
-            return ""
-        try:
-            from ..knowledge.stage import Knowledge, workspace_id
-            native = s.get("injected_text") or ""
-            with self.ctx.store.locked("mechanisms") as got:
-                if not got:
-                    raise RuntimeError("knowledge state busy")
-                stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
-                                       self.ctx.mech_dir)
-                stage.workspace = self.ctx.repo.root
-                facts = max(0, self.cfg.microskills_max_facts
-                            - sum(ln.startswith("- ") for ln in native.splitlines()))
-                tokens = max(0, self.cfg.microskills_max_tokens - (len(native) + 3) // 4)
-                given = list(s.get("knowledge_given") or [])
-                head, lines, chosen = stage.selection(prompt, max_facts=facts, max_tokens=tokens,
-                                                      given=given)
-                for fact, signal in chosen:
-                    self._log("knowledge", knowledge_id=fact.id, signal=signal, trigger="prompt")
-                if lines:
-                    s["knowledge_given"] = given
-                return "\n".join([head, *lines]) + "\n" if lines else ""
-        except Exception:
-            self._record_error()
-            return ""
-
-    def _read_knowledge_block(self, s, rel, read_before):
+    def _inject_knowledge(self, s, trigger, extra=None, **match):
+        """The Knowledge block for `match` (a prompt `task`, or the file `read`), within what the
+        native facts injected this session left of the shared budget, which applies to this one
+        injection and not to the session as a whole; "" when none fits. Each Knowledge chosen is
+        logged with `trigger` and `extra(fact)`. Mutates the session `s`: the ids chosen join
+        its `knowledge_given`."""
         from ..knowledge.stage import Knowledge, workspace_id
         native = s.get("injected_text") or ""
         with self.ctx.store.locked("mechanisms") as got:
@@ -364,14 +340,30 @@ class LiveController:
                         - sum(ln.startswith("- ") for ln in native.splitlines()))
             tokens = max(0, self.cfg.microskills_max_tokens - (len(native) + 3) // 4)
             given = list(s.get("knowledge_given") or [])
-            head, lines, chosen = stage.selection(max_facts=facts, max_tokens=tokens,
-                                                  given=given, read=rel)
+            text, chosen = stage.selection(max_facts=facts, max_tokens=tokens, given=given,
+                                           **match)
             for fact, signal in chosen:
-                self._log("knowledge", knowledge_id=fact.id, signal=signal, trigger="read",
-                          when="after_read", read_before=read_before)
-            if lines:
+                self._log("knowledge", knowledge_id=fact.id, signal=signal, trigger=trigger,
+                          **(extra(stage, fact) if extra else {}))
+            if text:
                 s["knowledge_given"] = given
-            return "\n".join([head, *lines]) + "\n" if lines else ""
+            return text
+
+    def _relevant_knowledge(self, s, prompt):
+        """The Knowledge block for a prompt that names a Knowledge's symbol or file; "" when none
+        is relevant. A Knowledge whose own file was read earlier in the session is logged with
+        `read_before`. A failure leaves the hook's output as it would be without Knowledge."""
+        if self.replaying or not prompt:     # a replayed hook's answer reaches no one
+            return ""
+        read = s.get("files_read") or []
+        try:
+            return self._inject_knowledge(
+                s, "prompt", task=prompt,
+                extra=lambda stage, fact: {
+                    "read_before": any(f in read for f in stage.files(fact))})
+        except Exception:
+            self._record_error()
+            return ""
 
     def user_prompt(self):
         if self.cfg.loopguard == "off" and not self.knowledge_on_prompt() and not (
@@ -511,10 +503,16 @@ class LiveController:
         return "" if rel == os.pardir or rel.startswith(os.pardir + os.sep) \
             or os.path.isabs(rel) else rel.replace(os.sep, "/")
 
+    def _reports_read(self):
+        """Did the host report a successful read of a file, whether or not it could inject?"""
+        return bool(self.cfg.knowledge and self.p.get("hook_event_name") == "PostToolUse"
+                    and self.host.read_path(self.p))
+
     def _knowledge_on_read(self):
-        """The context that gives the Knowledge covering the file just read, logged with the file
-        as its signal, `after_read` and whether the file had been read earlier in the session.
-        {} when none is given; a failure leaves the output as it would be without Knowledge."""
+        """Remember the file just read (`files_read`), and where the host allows it give the
+        Knowledge covering it, logged with the file as its signal, `after_read` and whether the
+        file had been read earlier in the session. {} when none is given; a failure leaves the
+        output as it would be without Knowledge."""
         try:
             rel = self._workspace_path(self.host.read_path(self.p))
             if not rel:
@@ -524,7 +522,11 @@ class LiveController:
             read_before = rel in read
             if not read_before:
                 s["files_read"] = (read + [rel])[-KNOWLEDGE_READS:]
-            block = "" if self.replaying else self._read_knowledge_block(s, rel, read_before)
+            block = ""
+            if self.knowledge_on_read() and not self.replaying:
+                block = self._inject_knowledge(
+                    s, "read", read=rel,
+                    extra=lambda stage, fact: {"when": "after_read", "read_before": read_before})
             self._save(s)
             return self.host.context("PostToolUse", block) if block else {}
         except Exception:
@@ -534,7 +536,7 @@ class LiveController:
     def post_tool(self):
         if self.host.is_subagent(self.p):
             return {}
-        out = self._knowledge_on_read() if self.knowledge_on_read() else {}
+        out = self._knowledge_on_read() if self._reports_read() else {}
         return merge_outputs(out, self._guard_tool()) if out else self._guard_tool()
 
     def _guard_tool(self):

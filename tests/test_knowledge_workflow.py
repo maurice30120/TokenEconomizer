@@ -61,10 +61,10 @@ def test_a_knowledge_is_injected_once_per_session(tmp_path, env, repo, monkeypat
     assert prompt()
 
 
-def test_a_resumed_session_that_lost_its_context_gets_the_knowledge_again(
-        tmp_path, env, repo, monkeypatch):
+def test_a_resumed_session_keeps_the_knowledge_it_was_given(tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin.hosts import ClaudeCode
-    # A host that rebuilds a resumed conversation without what its start added (Copilot).
+    # Copilot rebuilds a resumed conversation without its start context, but the Knowledge came
+    # as prompt context, which stays in the history: it is not given again.
     monkeypatch.setattr(ClaudeCode, "keeps_start_context", False)
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
 
@@ -72,8 +72,9 @@ def test_a_resumed_session_that_lost_its_context_gets_the_knowledge_again(
         return json.dumps(call(enabled, dict({"hook_event_name": event, "session_id": "c1", "cwd": repo}, **kw)))
     send("SessionStart", source="new")
     assert "Source is observed" in send("UserPromptSubmit", prompt="look at source.txt")
-    assert "Source is observed" not in send("UserPromptSubmit", prompt="look at source.txt")
     send("SessionStart", source="resume")
+    assert "Source is observed" not in send("UserPromptSubmit", prompt="look at source.txt")
+    send("SessionStart", source="clear")
     assert "Source is observed" in send("UserPromptSubmit", prompt="look at source.txt")
 
 

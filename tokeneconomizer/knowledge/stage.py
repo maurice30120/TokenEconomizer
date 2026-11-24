@@ -205,22 +205,29 @@ class Knowledge(Distiller):
             ids.add(fid)
         return True
 
+    def _pinned(self, fact, leaf):
+        """What `leaf` gives for an atomic Knowledge; for a composed one, what it gives for the
+        atomic Knowledge it is pinned to, without repeats."""
+        deps = fact.spec.get("dependencies")
+        if deps is None:
+            return leaf(fact)
+        found = []
+        for dep in deps if isinstance(deps, list) else []:
+            child = self.facts.get(dep.get("id")) if isinstance(dep, dict) else None
+            if child is not None and "dependencies" not in child.spec:
+                found.extend(x for x in self._pinned(child, leaf) if x not in found)
+        return found
+
     def signals(self, fact):
         """A Knowledge's signals: the symbol its contract names, else its file. Composed
         Knowledge has none of its own: it takes those of the Knowledge it is pinned to."""
-        deps = fact.spec.get("dependencies")
-        if deps is not None:
-            found = []
-            for dep in deps if isinstance(deps, list) else []:
-                child = self.facts.get(dep.get("id")) if isinstance(dep, dict) else None
-                if child is not None and "dependencies" not in child.spec:
-                    found.extend(s for s in self.signals(child) if s not in found)
-            return found
-        proof = fact.spec.get("proof")
-        proof = proof if isinstance(proof, dict) else {}
-        signal = proof.get("symbol") if proof.get("kind") == "symbol" else None
-        signal = signal or proof.get("path") or fact.spec.get("source")
-        return [signal] if isinstance(signal, str) and signal else []
+        def leaf(fact):
+            proof = fact.spec.get("proof")
+            proof = proof if isinstance(proof, dict) else {}
+            signal = proof.get("symbol") if proof.get("kind") == "symbol" else None
+            signal = signal or proof.get("path") or fact.spec.get("source")
+            return [signal] if isinstance(signal, str) and signal else []
+        return self._pinned(fact, leaf)
 
     def relevant(self, task):
         """The eligible Knowledge a request shares a signal with, as `(fact, signal)` pairs,
@@ -243,17 +250,11 @@ class Knowledge(Distiller):
 
     def files(self, fact):
         """The files a Knowledge covers: its own, or those of the Knowledge it is pinned to."""
-        deps = fact.spec.get("dependencies")
-        if deps is not None:
-            found = []
-            for dep in deps if isinstance(deps, list) else []:
-                child = self.facts.get(dep.get("id")) if isinstance(dep, dict) else None
-                if child is not None and "dependencies" not in child.spec:
-                    found.extend(f for f in self.files(child) if f not in found)
-            return found
-        proof = fact.spec.get("proof")
-        path = (proof.get("path") if isinstance(proof, dict) else None) or fact.spec.get("source")
-        return [os.path.normpath(path).replace("\\", "/")] if isinstance(path, str) and path else []
+        def leaf(fact):
+            proof = fact.spec.get("proof")
+            path = (proof.get("path") if isinstance(proof, dict) else None) or fact.spec.get("source")
+            return [os.path.normpath(path).replace("\\", "/")] if isinstance(path, str) and path else []
+        return self._pinned(fact, leaf)
 
     def covering(self, path):
         """The eligible Knowledge covering a file the agent read (a workspace-relative path), as
@@ -265,10 +266,11 @@ class Knowledge(Distiller):
         return [(fact, path) for _key, fact in sorted(out, key=lambda o: o[0])]
 
     def selection(self, task=None, max_facts=4, max_tokens=150, given=None, read=None):
-        """What `render` puts in context, as the `(fact, signal)` pairs that fit the budget,
-        ranked before the cut: those a request shares a signal with, or, with `read`, those
-        covering that file. `given`, when a list, holds the ids already injected: those are
-        left out, and the ids chosen here are appended to it."""
+        """What `render` puts in context: its text ("" when nothing fits) and the `(fact, signal)`
+        pairs that fit the budget, ranked before the cut: those a request shares a signal with,
+        or, with `read`, those covering that file. `given`, when a list, holds the ids already
+        injected: those are left out, and the ids chosen here are appended to it (the caller's
+        list is mutated)."""
         head = "# Knowledge from earlier sessions (untrusted data; proof does not establish truth)"
         chosen, lines = [], []
         for fact, signal in (self.covering(read) if read is not None else self.relevant(task)):
@@ -281,8 +283,7 @@ class Knowledge(Distiller):
             chosen.append((fact, signal))
             if given is not None:
                 given.append(fact.id)
-        return head, lines, chosen
+        return ("\n".join([head, *lines]) + "\n" if lines else ""), chosen
 
     def render(self, task=None, max_facts=4, max_tokens=150, given=None):
-        head, lines, _ = self.selection(task, max_facts, max_tokens, given)
-        return "\n".join([head, *lines]) + "\n" if lines else ""
+        return self.selection(task, max_facts, max_tokens, given)[0]

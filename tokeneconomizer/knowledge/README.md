@@ -67,10 +67,12 @@ error leaves the hook's output empty.
 A Knowledge is injected once per session: its id is kept in the session state
 (`knowledge_given`, separate from the native `injected_ids`), and later prompts naming the same
 signal inject nothing new. A clear, a compact or a new session drops the context and empties
-that memory, so the Knowledge can be injected again. A resumed session on a host that replays
-its context (Claude Code) keeps it and is not injected twice; a host that rebuilds a resumed
-conversation without what its start added (Copilot, `keeps_start_context` false) also empties
-it, as the native facts are re-sent there, so the Knowledge returns at the next relevant prompt.
+that memory, so the Knowledge can be injected again. A resumed session keeps it, on every host:
+the Knowledge arrives as prompt or tool context, which stays in the resumed history (unlike the
+start context, which Copilot rebuilds), so it is not injected twice.
+The shared budget (the native facts' share of `microskills_max_facts` and
+`microskills_max_tokens`) applies to each injection, a prompt's or a read's, not cumulatively
+over the session: Knowledge already given does not use it up.
 When more Knowledge matches than the shared budget holds, the strongest match is kept first.
 Strength of match is: a symbol named as a whole identifier (3), then a file named by its full
 path (2), then a file named by its bare file name (1); a composed Knowledge counts its strongest
@@ -87,14 +89,17 @@ context after the tool's result at the end of the conversation (`tool_context`: 
 Copilot, Pi). A host not verified gets nothing from this trigger. The same once-per-session
 memory (`knowledge_given`) and the same budget, proof, lifecycle and forgotten gates apply, so a
 Knowledge given by the prompt is not given again by the read, nor the reverse. The file must lie
-inside the workspace. Covering Knowledge is ordered by firing rate. A subagent's read, a failed
+inside the workspace. Every match is an exact path, so covering Knowledge is ordered by firing rate, then
+registration order. A subagent's read, a failed
 read, a shadow run and a replayed (queued) hook inject nothing.
 
 **It cannot save the read.** Probed on 2026-11-24, no host accepts context for the model before
 the tool runs, so the Knowledge is always injected after the read (`when: "after_read"`); there
 is no pre-read path. The session state remembers the files read (`files_read`, emptied with
 `knowledge_given`), so the log says when the file had been read earlier in the session
-(`read_before`): then the Knowledge came too late for that read as well.
+(`read_before`): then the Knowledge came too late for that read as well. The reads are
+remembered whenever the host reports one, also where it cannot inject after a read. Reads are
+recognized by tool name (`Read`, `read`, `view`); a host with another name for it reports none.
 
 #### Verified hosts: hook before the tool call (probe, 2026-11-24)
 
@@ -126,7 +131,8 @@ Each Knowledge actually injected is logged, one line per Knowledge, in the repos
 `events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
 `knowledge_id`, `signal` (the symbol or file the prompt named, or the file that was read),
 `trigger` (`"prompt"` or `"read"`), plus the usual `at`, `session_id` and `shadow`. A read
-adds `when` (`"after_read"`) and `read_before` (the file had been read earlier in the session). Nothing is logged when nothing is injected, and
+adds `when` (`"after_read"`). Both triggers add `read_before`: on a read, the file had been read
+earlier in the session; on a prompt, one of the Knowledge's own files had been. Nothing is logged when nothing is injected, and
 forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
