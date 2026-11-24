@@ -3,7 +3,8 @@ import json
 import os
 import re
 
-from .proof import file_proof
+from .capture import load as load_captures, match_read
+from .proof import file_proof, symbol_proofs_in
 
 
 def _visible_complete(raw, visible, total):
@@ -17,13 +18,17 @@ def _visible_complete(raw, visible, total):
                for lines in variants)
 
 
-def observations(transcript, root, host="claude"):
+def observations(transcript, root, host="claude", captures=None):
     """Read Claude's paired Read results with explicit complete-file metadata.
 
-    Unknown host encodings and transformed, truncated or partial results are rejected.
+    A Pi read of part of a file (`offset`/`limit`) is taken from its capture, the bytes the
+    hook kept at the instant of the read (`captures`, that session's capture directory):
+    the logged text must still match them, and the proof it yields is over the whole symbol
+    the read crossed. Unknown host encodings and transformed, truncated or partial results
+    are rejected.
     """
     if host == "pi":
-        return _pi_observations(transcript, root)
+        return _pi_observations(transcript, root, captures)
     if host == "copilot":
         return _copilot_observations(transcript, root)
     if host != "claude":
@@ -87,7 +92,7 @@ def _strict_records(transcript):
     return events
 
 
-def _pi_observations(transcript, root):
+def _pi_observations(transcript, root, captures=None):
     from ..trace.pi import pi_active_branch
     try:
         entries = _strict_records(transcript)
@@ -96,6 +101,7 @@ def _pi_observations(transcript, root):
         if not isinstance(cwd, str) or not os.path.isabs(cwd):
             return {}
         calls, found = {}, {}
+        captured = load_captures(captures) if captures else {}
         branch = pi_active_branch(entries)
         if not branch or branch[0].get("parentId") is not None:
             return {}
@@ -115,12 +121,18 @@ def _pi_observations(transcript, root):
                 if (message.get("toolName") != "read" or message.get("isError") is not False
                         or message.get("details") not in (None, {})
                         or not isinstance(args, dict) or not isinstance(args.get("path"), str)
-                        or "offset" in args or "limit" in args
                         or not isinstance(blocks, list) or len(blocks) != 1
                         or not isinstance(blocks[0], dict) or blocks[0].get("type") != "text"):
                     continue
                 text = blocks[0].get("text")
-                if (not isinstance(text, str) or "\ufffd" in text
+                if not isinstance(text, str):
+                    continue
+                if "offset" in args or "limit" in args:
+                    partial = _captured_read(root, captured.get(message.get("toolCallId")), text)
+                    if partial and (partial["path"] in found or len(found) < 10):
+                        found[partial["path"]] = _merge_read(found.get(partial["path"]), partial)
+                    continue
+                if ("\ufffd" in text
                         or len(text.encode("utf-8")) >= 50 * 1024
                         or len(text.splitlines()) >= 2000
                         or re.search(r"\[(?:Showing lines |\d+ more lines in file\.|Line \d+ is )", text)):
@@ -132,6 +144,50 @@ def _pi_observations(transcript, root):
         return found
     except (OSError, UnicodeError, ValueError, TypeError):
         return {}
+
+
+def _captured_read(root, capture, text):
+    """One partial read, matched against the bytes captured when it returned; None if not.
+
+    The proof is over the whole declaration the read crossed, never over the file: the model
+    read an excerpt, so `content` is that excerpt (without Pi's footer) and there is no file
+    proof to fall back on.
+    """
+    if not isinstance(capture, dict) or not isinstance(capture.get("path"), str):
+        return None
+    data = capture.get("bytes")
+    match = match_read(text, data, capture.get("offset"))
+    if match is None or match["lines"] != capture.get("lines"):
+        return None
+    file = file_proof(root, capture["path"], data, complete=True)
+    if not file:
+        return None
+    lines = data.decode("utf-8").split("\n")
+    body = "\n".join(lines[match["offset"] - 1:match["offset"] - 1 + match["lines"]])
+    if match["complete"]:
+        return {"path": file["path"], "record": {"proof": file, "excerpt": text[:2000],
+                                                 "content": body}}
+    first = match["offset"]
+    last = first + match["lines"] - 1
+    return {"path": file["path"], "record": {
+        "partial": True, "excerpt": text[:2000], "content": body,
+        "symbols": symbol_proofs_in(root, file["path"], data, first, last),
+        "observed": {"reads": [{"offset": first, "lines": match["lines"]}],
+                     "total_lines": match["total_lines"]}}}
+
+
+def _merge_read(previous, read):
+    """Fold a later read of the same file in: ranges and symbols add up, a whole file wins."""
+    if previous is None or not read["record"].get("partial"):
+        return read["record"]
+    if not previous.get("partial"):
+        return previous
+    merged = dict(read["record"])
+    merged["symbols"] = dict(previous["symbols"], **read["record"]["symbols"])
+    merged["observed"] = {
+        "reads": previous["observed"]["reads"] + read["record"]["observed"]["reads"],
+        "total_lines": read["record"]["observed"]["total_lines"]}
+    return merged
 
 
 def _copilot_observations(transcript, root):
