@@ -7,7 +7,8 @@
                       (`history`), in the background; with `repomap` on, refresh a stale map
                       in the background
     UserPromptSubmit  open a prompt-turn for the loop guard; on a session's first prompt, add
-                      the repository map (`repomap=on`)
+                      the repository map (`repomap=on`); with `knowledge=on`, add the
+                      Knowledge whose symbol or file the prompt names (never at session start)
     PostToolUse       fold the call into the turn's guard; keep the bytes a Pi `read`
                       returned, for the fold; a redirect when it first says the turn is stuck,
                       then a notice to the person saying how to stop it
@@ -161,26 +162,6 @@ class LiveController:
                             f"(review with `{self._cmd('microskills')}`)."))
                         seen["injection"] = digest
 
-        if self.cfg.knowledge and not self.cfg.shadow:
-            fresh = source in ("startup", "new", "clear", "compact")
-            if fresh or not self.host.keeps_start_context:
-                try:
-                    from ..knowledge.stage import Knowledge, workspace_id
-                    with self.ctx.store.locked("mechanisms") as got:
-                        if not got:
-                            raise RuntimeError("knowledge state busy")
-                        stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
-                                               self.ctx.mech_dir)
-                        stage.workspace = self.ctx.repo.root
-                        facts = max(0, self.cfg.microskills_max_facts
-                                    - sum(ln.startswith("- ") for ln in text.splitlines()))
-                        tokens = max(0, self.cfg.microskills_max_tokens - (len(text) + 3) // 4)
-                        block = stage.render(max_facts=facts, max_tokens=tokens)
-                    if block:
-                        outputs.append(self.host.context("SessionStart", block))
-                except Exception:
-                    self._record_error()
-
         if (self.cfg.toolprune != "off" and denylist.supports(self.host.name)
                 and not self.cfg.shadow):
             outputs.extend(self._toolprune_notices(seen))
@@ -326,9 +307,38 @@ class LiveController:
         s["turn"] = None
         return summary
 
+    def knowledge_on_prompt(self):
+        """Does this prompt hook bring Knowledge? Only where its output reaches the model and
+        can follow the conversation without rewriting its cached prefix."""
+        return bool(self.cfg.knowledge and not self.cfg.shadow
+                    and self.host.prompt_context and self.host.prompt_knowledge)
+
+    def _relevant_knowledge(self, s, prompt):
+        """The Knowledge block for a prompt that names a Knowledge's symbol or file, within what
+        the native facts injected this session left of the shared budget; "" when none is
+        relevant. A failure leaves the hook's output as it would be without Knowledge."""
+        if self.replaying or not prompt:     # a replayed hook's answer reaches no one
+            return ""
+        try:
+            from ..knowledge.stage import Knowledge, workspace_id
+            native = s.get("injected_text") or ""
+            with self.ctx.store.locked("mechanisms") as got:
+                if not got:
+                    raise RuntimeError("knowledge state busy")
+                stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
+                                       self.ctx.mech_dir)
+                stage.workspace = self.ctx.repo.root
+                facts = max(0, self.cfg.microskills_max_facts
+                            - sum(ln.startswith("- ") for ln in native.splitlines()))
+                tokens = max(0, self.cfg.microskills_max_tokens - (len(native) + 3) // 4)
+                return stage.render(prompt, max_facts=facts, max_tokens=tokens)
+        except Exception:
+            self._record_error()
+            return ""
+
     def user_prompt(self):
-        if self.cfg.loopguard == "off" and not (self.cfg.repomap == "on"
-                                             and self.host.prompt_context):
+        if self.cfg.loopguard == "off" and not self.knowledge_on_prompt() and not (
+                self.cfg.repomap == "on" and self.host.prompt_context):
             return {}
         s = self._session()
         outputs = []
@@ -340,6 +350,10 @@ class LiveController:
             outputs = self._inject_map(s, seen, block, "UserPromptSubmit", how)
             if outputs:
                 self.store.write("notices.json", seen)
+        block = self._relevant_knowledge(s, self.p.get("prompt") or "") \
+            if self.knowledge_on_prompt() else ""
+        if block:
+            outputs.append(self.host.prompt_message("UserPromptSubmit", block))
         if self.cfg.loopguard != "off":
             # A turn still open here never reached Stop -- the person interrupted it. Its
             # outcome is unknown, so it is recorded but does not feed the envelope.

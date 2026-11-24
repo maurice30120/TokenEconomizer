@@ -31,8 +31,14 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
         ]
         tp.write_text("\n".join(map(json.dumps, events)))
         run_session(enabled, repo, f"s{i}", str(tp))
-    payload = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "new", "cwd": repo}
+    start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "new", "cwd": repo}
+    payload = {"hook_event_name": "UserPromptSubmit", "session_id": "new", "cwd": repo,
+               "prompt": "please check source.txt"}
+    assert "Source is observed" not in json.dumps(call(enabled, start))
     assert "Source is observed" in json.dumps(call(enabled, payload))
+    assert call(enabled, dict(payload, session_id="unrelated", prompt="rename the widget")) == {}
+    assert "Source is observed" in json.dumps(call(enabled, dict(payload, session_id="path", prompt="open ./src/../source.txt now")))
+    assert call(enabled, dict(payload, session_id="near", prompt="open resource.txt and source.txt.bak")) == {}
     other = tmp_path / "other"
     (other / ".git").mkdir(parents=True)
     (other / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
@@ -44,11 +50,22 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     ctx = LiveContext.build(ClaudeCode(), repo, enabled)
     ctx.store.write("injection.json", {"rendered": "# native\n- Native fact\n"})
     together = dict(enabled, TE_MICROSKILLS="envfacts")
-    text = json.dumps(call(together, dict(payload, session_id="both")))
-    assert "Native fact" in text and "Source is observed" in text
+    text = json.dumps(call(together, dict(start, session_id="both")))
+    assert "Native fact" in text and "Source is observed" not in text
+    assert "Source is observed" in json.dumps(call(together, dict(payload, session_id="both")))
     ctx.store.write("injection.json", {"rendered": "# native\n- A\n- B\n- C\n- D\n"})
-    text = json.dumps(call(together, dict(payload, session_id="budget")))
+    text = json.dumps(call(together, dict(start, session_id="budget")))
     assert "Source is observed" not in text and "- A" in text
+    assert call(together, dict(payload, session_id="budget")) == {}
+    # No hook output reaches the model on a host without prompt context: no Knowledge there.
+    from tokeneconomizer.plugin.hosts import ClaudeCode as Claude
+    with monkeypatch.context() as m:
+        m.setattr(Claude, "prompt_context", False)
+        assert call(enabled, dict(payload, session_id="mute")) == {}
+    # A selection error leaves the output empty: the hook fails open.
+    with monkeypatch.context() as m:
+        m.setattr(Knowledge, "load", lambda *a, **kw: 1 / 0)
+        assert call(enabled, dict(payload, session_id="broken")) == {}
     saved = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
     fid = next(iter(saved.facts))
     from tokeneconomizer.plugin import cli

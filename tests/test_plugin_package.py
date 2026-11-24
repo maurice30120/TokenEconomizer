@@ -655,6 +655,52 @@ console.log(JSON.stringify([
     assert json.loads(run.stdout) == ["", facts, facts, "", "", facts]
 
 
+def test_pi_sends_prompt_knowledge_as_a_message_and_leaves_its_section_alone(tmp_path):
+    """Relevant Knowledge varies by prompt. The extension sets its system-prompt section again on
+    every prompt, so Knowledge there would rewrite the cached prefix: it is returned as a message
+    after the prompt, and the section is the same on a prompt with Knowledge and one without."""
+    from tokeneconomizer.plugin.hosts import Pi
+    node = shutil.which("node")
+    if not node or os.name == "nt":
+        pytest.skip("node or a POSIX shell is not available")
+    (tmp_path / "pi").mkdir()
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(os.path.join(PLUGIN, "pi", "tokeneconomizer.ts"), tmp_path / "pi")
+    answers = {"SessionStart": Pi().context("SessionStart", "native facts"),
+               "UserPromptSubmit": Pi().prompt_message("UserPromptSubmit", "knowledge text")}
+    hook = tmp_path / "scripts" / "te-hook"
+    hook.write_text("#!/bin/sh\ninput=$(cat)\ncase \"$input\" in\n"
+                    f"*'\"prompt\":\"with'*) echo '{json.dumps(answers['UserPromptSubmit'])}' ;;\n"
+                    f"*SessionStart*) echo '{json.dumps(answers['SessionStart'])}' ;;\n"
+                    "*) echo '{}' ;;\nesac\n")
+    hook.chmod(0o755)
+    script = """
+const { pathToFileURL } = await import("node:url");
+const ext = (await import(pathToFileURL(process.argv[1]).href)).default;
+const on = {};
+ext({ on: (name, fn) => { on[name] = fn; }, registerCommand() {}, sendMessage() {} });
+const ctx = { cwd: "/x", mode: "print", hasUI: false,
+  sessionManager: { getSessionId: () => "s", getSessionFile: () => "", getBranch: () => [] } };
+await on.session_start({ reason: "startup" }, ctx);
+const prompt = async (text) => {
+  const event = { prompt: text, systemPromptOptions: { sections: {} } };
+  const result = await on.before_agent_start(event, ctx);
+  return { sections: event.systemPromptOptions.sections, result };
+};
+console.log(JSON.stringify([await prompt("with a file"), await prompt("nothing")]));
+"""
+    run = subprocess.run([node, "--experimental-strip-types", "--no-warnings",
+                          "--input-type=module", "-e", script, str(tmp_path / "pi" / "tokeneconomizer.ts")],
+                         capture_output=True, text=True, timeout=60)
+    if run.returncode and "strip-types" in run.stderr:
+        pytest.skip("this node cannot load TypeScript")
+    assert run.returncode == 0, run.stderr
+    with_knowledge, without = json.loads(run.stdout)
+    assert with_knowledge["sections"] == without["sections"] == {"tokeneconomizer": "native facts"}
+    assert with_knowledge["result"]["message"]["content"] == "knowledge text"
+    assert without.get("result") is None
+
+
 def test_pi_completes_te_as_its_parser_declares_it():
     """`/te` completes the `te` command line from a table that must match `build_parser()`: every
     subcommand a Pi user runs, its actions and its options. It completes a word at a time, the

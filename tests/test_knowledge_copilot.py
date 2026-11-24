@@ -83,7 +83,9 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
         ]
         transcript.write_text(text + "\n".join(map(json.dumps, extra)))
         run_session(env, str(repo), f"s{i}", str(transcript), host="copilot")
-    payload = {"hook_event_name": "SessionStart", "source": "new", "session_id": "next", "cwd": str(repo)}
-    assert "Copilot observation" in json.dumps(call(env, payload, host="copilot"))
+    start = {"hook_event_name": "SessionStart", "source": "new", "session_id": "next", "cwd": str(repo)}
+    assert "Copilot observation" not in json.dumps(call(env, start, host="copilot"))
+    payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
+    assert "Copilot observation" in call(env, payload, host="copilot")["additionalContext"]
     (repo / "source.txt").write_text("changed\n")
     assert "Copilot observation" not in json.dumps(call(env, dict(payload, session_id="after"), host="copilot"))

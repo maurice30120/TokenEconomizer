@@ -2,6 +2,7 @@
 import json
 import hashlib
 import os
+import re
 import uuid
 
 from ..microskills.distiller import Distiller, Fact
@@ -13,6 +14,21 @@ from .proof import symbol_proof, verify_proof
 def workspace_id(repo, workspace):
     key = hashlib.sha256(os.fsencode(os.path.realpath(workspace))).hexdigest()
     return repo + "--" + key
+
+
+def names_signal(text, signal):
+    """Does a request name this symbol or file? A symbol is a whole identifier; a file is named
+    by its path or by its file name, not as a piece of a longer name."""
+    if signal in ("", None):
+        return False
+    text = text.replace("\\", "/")
+    if "/" not in signal and "." not in signal:
+        return re.search(rf"(?<!\w){re.escape(signal)}(?!\w)", text) is not None
+    path = signal.replace("\\", "/")
+    for name in dict.fromkeys((path, path.rsplit("/", 1)[-1])):
+        if re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-]|\.\w)", text, re.IGNORECASE):
+            return True
+    return False
 
 
 def _observed_lines(record):
@@ -186,12 +202,42 @@ class Knowledge(Distiller):
             ids.add(fid)
         return True
 
+    def signals(self, fact):
+        """A Knowledge's signals: the symbol its contract names, else its file. Composed
+        Knowledge has none of its own: it takes those of the Knowledge it is pinned to."""
+        deps = fact.spec.get("dependencies")
+        if deps is not None:
+            found = []
+            for dep in deps if isinstance(deps, list) else []:
+                child = self.facts.get(dep.get("id")) if isinstance(dep, dict) else None
+                if child is not None and "dependencies" not in child.spec:
+                    found.extend(s for s in self.signals(child) if s not in found)
+            return found
+        proof = fact.spec.get("proof")
+        proof = proof if isinstance(proof, dict) else {}
+        signal = proof.get("symbol") if proof.get("kind") == "symbol" else None
+        signal = signal or proof.get("path") or fact.spec.get("source")
+        return [signal] if isinstance(signal, str) and signal else []
+
+    def relevant(self, task):
+        """The eligible Knowledge a request shares a signal with, as `(fact, signal)` pairs, in
+        registration order; every eligible one when there is no request to match."""
+        out = []
+        for fact in self.facts.values():
+            if not fact.injectable():
+                continue
+            if task is None:
+                signal = ""
+            else:
+                signal = next((s for s in self.signals(fact) if names_signal(task, s)), None)
+            if signal is not None and self._contract_valid(fact):
+                out.append((fact, signal))
+        return out
+
     def render(self, task=None, max_facts=4, max_tokens=150):
         head = "# Knowledge from earlier sessions (untrusted data; proof does not establish truth)"
         lines = []
-        for fact in self.facts.values():
-            if not fact.injectable() or not self._contract_valid(fact):
-                continue
+        for fact, _signal in self.relevant(task):
             line = "- " + json.dumps(fact.injection, ensure_ascii=True)
             if len(lines) >= max_facts or len("\n".join([head, *lines, line])) > max_tokens * 4:
                 continue

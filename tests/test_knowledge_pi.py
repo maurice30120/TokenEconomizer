@@ -71,8 +71,15 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
         stage.workspace = repo
         counts.append((len(stage.facts), int("Pi observation" in stage.render())))
     assert counts == [(0, 0), (1, 0), (1, 0), (1, 1), (1, 1)]
-    payload = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "next", "cwd": str(repo)}
-    assert "Pi observation" in json.dumps(call(env, payload, host="pi"))
+    start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "next", "cwd": str(repo)}
+    assert "Pi observation" not in json.dumps(call(env, start, host="pi"))
+    payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
+    out = call(env, payload, host="pi")
+    # A message after the prompt, never the system prompt section the extension re-sends and
+    # whose rewrite would change the cached prefix.
+    assert "Pi observation" in out["hookSpecificOutput"]["promptMessage"]
+    assert "additionalContext" not in out["hookSpecificOutput"]
+    assert call(env, dict(payload, session_id="other", prompt="rename widget"), host="pi") == {}
     from tokeneconomizer.plugin import cli
     fid = next(iter(Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir).facts))
     for key, value in env.items():
@@ -298,8 +305,10 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
     assert len(stage.facts) == 1
     assert next(iter(stage.facts.values())).spec["proof"]["kind"] == "symbol"
     assert "Alpha returns one" in stage.render()
-    start = {"hook_event_name": "SessionStart", "source": "startup", "cwd": str(repo)}
+    start = {"hook_event_name": "UserPromptSubmit", "source": "startup", "cwd": str(repo),
+             "prompt": "what does alpha return?"}
     assert "Alpha returns one" in json.dumps(call(env, dict(start, session_id="next"), host="pi"))
+    assert call(env, dict(start, session_id="beta", prompt="what does beta return?"), host="pi") == {}
     # the symbol's unread line, a comment inside it, and the rest of the file
     (repo / "source.py").write_bytes(SOURCE.replace(b"    return 1", b"    return 9"))
     assert "Alpha returns one" not in json.dumps(call(env, dict(start, session_id="edited"), host="pi"))

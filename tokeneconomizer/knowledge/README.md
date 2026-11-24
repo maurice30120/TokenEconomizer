@@ -37,17 +37,38 @@ read that crossed no declaration has nothing to prove, so it is not offered at a
 on the existing micro-skills proposal cadence and uses TE's grounding, confirmation,
 contradiction and firing thresholds. The proposal is a separate model call;
 verification is local and makes no model call. Knowledge shares the configured micro-skills
-injection limits with native facts. State is isolated by workspace path. `te microskills`
+injection limits with native facts (what the native facts injected at session start counts
+against them). State is isolated by workspace path. `te microskills`
 lists Knowledge identity, revision, lifecycle, proof status, source session and path, and the
 lines a partial read actually returned, including forgotten records. Use
 `te microskills forget ID` to suppress one and `te microskills unforget ID` to restore its
 saved lifecycle; injection still requires a valid proof and the usual lifecycle gates.
 
+## When Knowledge is injected
+
+Knowledge is injected only when it is Relevant Knowledge, and never at session start. A
+Knowledge Signal is the symbol the Knowledge's contract names or, failing that, its file. The
+user prompt hook injects a Knowledge when the request names its symbol (as a whole identifier)
+or its file (by path or file name, in any case; `source.txt` is not matched inside
+`resource.txt` or `source.txt.bak`). Matching is local and deterministic, with no model call.
+A request that shares no signal injects nothing. Stored Knowledge needs no migration: its
+signal comes from its current contract. A composed Knowledge has no signal of its own and is
+relevant when a signal of any Knowledge it is pinned to matches.
+
+Native facts still arrive at session start. A host whose hook output does not reach the model
+(`prompt_context` false: Codex, Cursor, Antigravity, Grok) gets no Knowledge, and neither does
+one whose plugin can only put prompt context in its system prompt (`prompt_knowledge` false:
+opencode), because a text that varies by prompt would rewrite the cached prefix of every later
+request. The Knowledge goes where the host puts a prompt's context, after the cached prefix;
+on Pi, whose extension re-sends a system-prompt section on every prompt, it is a message after
+the prompt (`promptMessage` in the dispatcher's answer), not part of that section. A selection
+error leaves the hook's output empty. Candidates keep registration order, and each prompt that
+names a signal injects again (once per session and ranking are not yet applied).
+
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
 eligibility subject to the lifecycle. A revised Knowledge retains its identity but must earn
-new confirmations. Resumed conversations may already contain prior context, which cannot be
-removed retroactively. Knowledge is untrusted data: a matching hash does not establish that
+new confirmations. Earlier context in a conversation cannot be removed retroactively. Knowledge is untrusted data: a matching hash does not establish that
 the explanation is correct.
 
 ## Symbol contracts
@@ -93,7 +114,7 @@ This is a deterministic integration scenario, not a representative yield estimat
 the same read is replayed, confirmations are synthetic and the candidate is supplied
 by a stub rather than a real model. It does not measure real-world proposal quality,
 latency, token savings or cost. Proof validity does not establish semantic truth.
-Already-injected context in a resumed conversation cannot be retracted.
+Already-injected context cannot be retracted from a conversation.
 
 ## Upstream maintenance surface
 

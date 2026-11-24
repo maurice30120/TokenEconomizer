@@ -12,7 +12,10 @@
  *   before_agent_start  -> UserPromptSubmit   opens a prompt-turn; the manual is set as the
  *                                             `tokeneconomizer` system-prompt section, on every
  *                                             prompt, because Pi diffs sections between runs and
- *                                             an omitted one would be recorded as removed
+ *                                             an omitted one would be recorded as removed;
+ *                                             Relevant Knowledge, which varies by prompt, is
+ *                                             returned as a message instead, so the section
+ *                                             and the cached prefix stay as they were
  *   tool_result         -> PostToolUse        the guard; a redirect is delivered as a steering
  *                                             message, a still-stuck notice as a UI notice
  *   agent_end           -> Stop               closes the turn
@@ -226,6 +229,12 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
     notify(ctx, out?.systemMessage);
     if (manual) {
       event.systemPromptOptions.sections = { ...(event.systemPromptOptions.sections ?? {}), [SECTION]: manual };
+    }
+    // Relevant Knowledge varies with the prompt: as a message after the prompt it leaves the
+    // system prompt section, and so the cached prefix, as it was.
+    const knowledge = out?.hookSpecificOutput?.promptMessage;
+    if (knowledge) {
+      return { message: { customType: SECTION, content: knowledge, display: true } };
     }
   });
 

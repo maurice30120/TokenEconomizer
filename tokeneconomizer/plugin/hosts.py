@@ -122,6 +122,10 @@ class Host:
     end_run = "Press Ctrl+C to end the run."
     # Whether context returned from UserPromptSubmit reaches the model (verified per host).
     prompt_context = False
+    # Whether context that varies from one prompt to the next can be given where the prompt's
+    # context goes without changing the cached prefix of later requests. A host whose plugin
+    # adds prompt context to its system prompt cannot: it says False and gets no Knowledge.
+    prompt_knowledge = True
 
     def session_id(self, p):
         return str(p.get("session_id") or "")
@@ -145,6 +149,11 @@ class Host:
 
     def context(self, event, text):
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+
+    def prompt_message(self, event, text):
+        """Context that varies with the prompt (Relevant Knowledge), as it reaches the model: at
+        the end of the conversation, after what the cached prefix holds."""
+        return self.context(event, text)
 
     def notice(self, text):
         return {"systemMessage": text}
@@ -436,6 +445,12 @@ class Pi(Host):
     """
     name = "pi"
     prompt_context = True              # the extension appends it to the session's section
+
+    def prompt_message(self, event, text):
+        # `promptMessage`, not `additionalContext`: the extension adds the latter to the system
+        # prompt section it sets again on every prompt, which a prompt-varying text must not
+        # rewrite. It sends this one as a message after the user's prompt.
+        return {"hookSpecificOutput": {"hookEventName": event, "promptMessage": text}}
     # 1.3.0: Esc aborts the turn and its command; Ctrl+C ends `pi -p`, but a command it started
     # runs on (detached) until it finishes.
     interrupt = "Press Esc to abort it."
@@ -480,6 +495,7 @@ class OpenCode(Host):
     """
     name = "opencode"
     prompt_context = True              # the plugin appends it to the system prompt
+    prompt_knowledge = False           # ... so a text that varies by prompt would rewrite it
     interrupt = "Press Esc to interrupt it."
     end_run = "Press Ctrl+C to end the run."
 
