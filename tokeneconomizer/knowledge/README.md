@@ -20,7 +20,11 @@ accepts:
 Failed, lossy, transformed and unverifiable reads are ignored, as is a partial read whose
 capture is missing or no longer describes the file. Captures are kept per Pi session (at most
 12 files and 8 MiB, expiring after 7 days) and removed after the session is folded: each one
-holds the file's bytes, bounded, only until then. The captured file itself is never stored in
+holds the file's bytes, bounded, only until then. They live under
+`knowledge_captures/<session>-<digest>/` in the store: an `index.json` and one `<sha256>.bin`
+per capture, whose content is checked against its name on load. Treat that name and layout as a
+compatibility surface. Several partial reads of one file add up only when they were captured on
+the same version of the file; after a change in between, the later read stands alone. The captured file itself is never stored in
 the observation or in the persisted Knowledge state, where only the excerpt the model received
 appears. Other hosts, Copilot versions and read formats do not yet supply evidence. The Pi and
 Copilot test fixtures are sanitized local sessions recorded with a simulated model provider;

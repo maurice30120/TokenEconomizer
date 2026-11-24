@@ -298,3 +298,15 @@ def test_the_controller_loads_knowledge_only_for_a_pi_read():
          "print('tokeneconomizer.knowledge.capture' in sys.modules)"],
         capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"
+
+
+def test_a_capture_whose_bytes_changed_on_disk_is_not_loaded(tmp_path):
+    root, store = workspace(tmp_path), Store(str(tmp_path / "state"))
+    ctx = SimpleNamespace(repo=SimpleNamespace(root=str(root)))
+    record(store, "s1", ctx, partial_read_payload(root))
+    directory = session_dir(store, "s1")
+    for name in os.listdir(directory):
+        if name.endswith(".bin"):
+            with open(os.path.join(directory, name), "wb") as stream:
+                stream.write(b"tampered")
+    assert load(directory) == {}

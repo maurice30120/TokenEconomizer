@@ -356,3 +356,16 @@ def test_a_capture_that_raises_keeps_the_hook_answer_and_the_guard(tmp_path, mon
     log = (home / "errors.log").read_text(encoding="utf-8")
     assert "Traceback (most recent call last)" in log
     assert "RuntimeError: capture bug" in log
+
+
+def test_partial_reads_of_two_versions_of_a_file_do_not_merge():
+    from tokeneconomizer.knowledge.observation import _merge_read
+
+    def read(version, offset):
+        return {"record": {"partial": True, "version": version, "symbols": {version: {}},
+                           "observed": {"reads": [{"offset": offset, "lines": 1}], "total_lines": 7}}}
+    same = _merge_read(read("v1", 1)["record"], read("v1", 4))
+    assert sorted(same["symbols"]) == ["v1"] and len(same["observed"]["reads"]) == 2
+    changed = _merge_read(read("v1", 1)["record"], read("v2", 4))
+    assert sorted(changed["symbols"]) == ["v2"]
+    assert changed["observed"]["reads"] == [{"offset": 4, "lines": 1}]

@@ -225,6 +225,8 @@ def load(directory):
         try:
             with open(os.path.join(directory, entry["sha256"] + ".bin"), "rb") as stream:
                 data = stream.read()
+            if hashlib.sha256(data).hexdigest() != entry["sha256"]:
+                continue
             record = {"path": entry["path"], "bytes": data, "offset": entry["offset"],
                       "lines": entry["lines"]}
         except (OSError, KeyError, TypeError):

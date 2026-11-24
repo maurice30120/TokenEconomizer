@@ -169,18 +169,24 @@ def _captured_read(root, capture, text):
     first = match["offset"]
     last = first + match["lines"] - 1
     return {"path": file["path"], "record": {
-        "partial": True, "excerpt": text[:2000], "content": body,
+        "partial": True, "version": file["sha256"], "excerpt": text[:2000], "content": body,
         "symbols": symbol_proofs_in(root, file["path"], data, first, last),
         "observed": {"reads": [{"offset": first, "lines": match["lines"]}],
                      "total_lines": match["total_lines"]}}}
 
 
 def _merge_read(previous, read):
-    """Fold a later read of the same file in: ranges and symbols add up, a whole file wins."""
+    """Fold a later read of the same file in: ranges and symbols add up, a whole file wins.
+
+    Partial reads add up only when both were captured on the same version of the file; if the
+    file changed between them, the later read stands alone rather than mixing versions.
+    """
     if previous is None or not read["record"].get("partial"):
         return read["record"]
     if not previous.get("partial"):
         return previous
+    if previous.get("version") != read["record"].get("version"):
+        return read["record"]
     merged = dict(read["record"])
     merged["symbols"] = dict(previous["symbols"], **read["record"]["symbols"])
     merged["observed"] = {
