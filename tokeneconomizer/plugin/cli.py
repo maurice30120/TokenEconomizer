@@ -330,6 +330,7 @@ def cmd_microskills(args):
                   f"{'INJECTED' if v.get('inject') else '        '} {k}")
     stage = Knowledge.load(key, mechanism_dir) if os.path.exists(knowledge_path) else None
     if stage:
+        stage.workspace = ctx.repo.root
         from tokeneconomizer.knowledge.proof import verify_proof, available_languages
         print("\nknowledge symbol grammars: " + (", ".join(f"{ext}={lang}" for ext, lang in sorted(available_languages().items())) or "none"))
     if stage and (stage.facts or stage.forgotten):
@@ -343,9 +344,11 @@ def cmd_microskills(args):
                 continue
         for fid, fact, forgotten in sorted(entries, key=lambda item: item[0]):
             proof = fact.spec.get("proof", {})
-            valid = verify_proof(ctx.repo.root, proof)
+            valid = stage._contract_valid(fact)
             if isinstance(proof, dict) and proof.get("fallback"):
                 print(f"  fallback {fid}: {proof['fallback']}")
+            if "dependencies" in fact.spec:
+                print(f"  dependencies {fid}: {fact.spec['dependencies']}")
             provenance = fact.spec.get("provenance") or {}
             print(f"  {fact.state:9s} rev={fact.spec.get('rev', 1)} "
                   f"proof={'valid' if valid else 'invalid'} "

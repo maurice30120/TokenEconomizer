@@ -156,13 +156,16 @@ class LiveController:
             if fresh or not self.host.keeps_start_context:
                 try:
                     from ..knowledge.stage import Knowledge, workspace_id
-                    stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
-                                           self.ctx.mech_dir)
-                    stage.workspace = self.ctx.repo.root
-                    facts = max(0, self.cfg.microskills_max_facts
-                                - sum(ln.startswith("- ") for ln in text.splitlines()))
-                    tokens = max(0, self.cfg.microskills_max_tokens - (len(text) + 3) // 4)
-                    block = stage.render(max_facts=facts, max_tokens=tokens)
+                    with self.ctx.store.locked("mechanisms") as got:
+                        if not got:
+                            raise RuntimeError("knowledge state busy")
+                        stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
+                                               self.ctx.mech_dir)
+                        stage.workspace = self.ctx.repo.root
+                        facts = max(0, self.cfg.microskills_max_facts
+                                    - sum(ln.startswith("- ") for ln in text.splitlines()))
+                        tokens = max(0, self.cfg.microskills_max_tokens - (len(text) + 3) // 4)
+                        block = stage.render(max_facts=facts, max_tokens=tokens)
                     if block:
                         outputs.append(self.host.context("SessionStart", block))
                 except Exception:

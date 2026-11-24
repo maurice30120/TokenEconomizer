@@ -44,3 +44,12 @@ symbol. Existing symbol proofs fail closed if the grammar, parser, or recorded v
 unavailable or changes. The CLI's `te microskills` output lists the extensions whose parsers
 can currently load; supported declaration forms are limited to those recognized by Knowledge.
 Install the package dependencies to enable symbol parsing.
+
+
+The proposer can synthesize two or more distinct existing atomic Knowledge entries.
+TE resolves their IDs to current revisions while holding the mechanisms lock, and
+the synthesis follows the same lifecycle and selection budget. Before every new
+injection, each dependency must still exist at its pinned revision, be eligible,
+and have a valid proof. Forgetting, revising, or invalidating a dependency excludes
+the synthesis without deleting it; atomics remain independently usable. Nested
+syntheses are not supported. Inspection displays the pinned dependencies.

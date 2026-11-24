@@ -139,3 +139,53 @@ def test_symbol_requested_in_session_survives_unrelated_edits_and_fails_closed(t
     assert ("Target returns one" in stage.render()) == parser_available
     source.write_text(content.replace("return 1", "return 4"))
     assert not stage.render()
+
+
+def test_composed_knowledge_follows_atomic_dependencies(tmp_path, monkeypatch):
+    from tokeneconomizer.microskills import distiller
+    monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
+    source = tmp_path / "source.txt"
+    source.write_text("observed\n")
+    candidates = [
+        {"id": name, "claim": name, "source": "source.txt", "source_session": "s1",
+         "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
+        for name in ("first", "second")
+    ]
+    stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": candidates}), 0))
+    stage.workspace = tmp_path
+    def session(i):
+        path = tmp_path / f"composed{i}.jsonl"
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "observed\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
+        ]
+        path.write_text("\n".join(map(json.dumps, events)))
+        stage.update(path, iid=f"s{i}")
+    for i in range(5):
+        session(i)
+    ids = list(stage.facts)
+    assert len(ids) == 2
+    candidates[:] = [{"id": "synthesis", "claim": "combined", "dependencies": ids,
+                      "cite": ["s3", "s4"], "detector": {"scope": "pytest", "confirm": "passed"}}]
+    for i in range(5, 11):
+        session(i)
+    assert "combined" in stage.render()
+    stage.save(tmp_path)
+    stage = Knowledge.load("repo", tmp_path)
+    stage.workspace = tmp_path
+    assert "combined" in stage.render()
+    source.write_text("changed\n")
+    assert "combined" not in stage.render()
+    source.write_text("observed\n")
+    assert "combined" in stage.render()
+    composite_id = next(fid for fid in stage.facts if fid not in ids)
+    stage.runner = lambda *args: (json.dumps({"facts": [{"id": "nested", "claim": "nested", "dependencies": [ids[0], composite_id], "cite": ["s8", "s9"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0)
+    for i in range(11, 14):
+        session(i)
+    assert all(f.claim != "nested" for f in stage.facts.values())
+    stage.facts[ids[0]].spec["rev"] += 1
+    assert "combined" not in stage.render()
+    assert "second" in stage.render()
+    del stage.facts[ids[0]]
+    assert "combined" not in stage.render()
