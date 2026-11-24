@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] A second prompt naming the same file or symbol injects nothing new
 - [x] After a clear or compact, the Knowledge can be injected again

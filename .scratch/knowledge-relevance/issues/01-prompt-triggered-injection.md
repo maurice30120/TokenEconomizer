@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] A prompt naming a Knowledge's symbol or file injects it; a prompt sharing no signal injects nothing
 - [x] A Knowledge whose contract has no symbol is matched on its file

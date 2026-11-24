@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] With a budget too small for every match, the stronger match is the one injected
 - [x] Equal matches are ordered by firing rate

@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02, 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Probe first, on Copilot and Pi: does a hook before the tool call (`PreToolUse` / Pi `tool_call`) accept context for the model, is it seen before the read result, is the tool not denied, and does the cached prefix stay unchanged? Record the result per host in the documentation
 - [ ] (not applicable: the probe succeeded on no host, 2026-11-24 — Copilot delivers pre-call context after the result, Pi accepts none) On a host where the probe succeeds, the Knowledge is injected **before** the read runs (the file is known from the tool input), so it can save the read; the log records the injection as made before the read

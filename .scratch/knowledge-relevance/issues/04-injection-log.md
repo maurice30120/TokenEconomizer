@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Every injection records the Knowledge identity and the triggering signal
 - [x] Nothing is recorded when nothing is injected
