@@ -44,6 +44,8 @@ Knowledge is given to the agent only when it is Relevant Knowledge. A Knowledge 
 - Full-content Knowledge loaded on demand is out of scope; the short injected fact stays.
 - Glossary: Knowledge Signal and Relevant Knowledge are defined in the TokenEconomizer glossary and must be used as written.
 
+- An injection must leave the cached prefix of the next request unchanged on every host. Context added at the end of the conversation is expected to satisfy this; Pi, which places context in its system prompt section, needs a specific check and an alternative delivery if a varying injection would rewrite that section.
+
 ## Testing Decisions
 
 - A good test checks only what the hooks emit and log for a given stored state and event, never the matching or ranking internals.
