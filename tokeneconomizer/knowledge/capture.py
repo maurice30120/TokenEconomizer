@@ -97,9 +97,15 @@ def _window(lines, body, footer, start, total, limit):
 
 
 def session_dir(store, session_id):
-    """Where one session's captures live: the hook that writes them and the fold share a store."""
-    name = re.sub(r"[^A-Za-z0-9_.-]", "__", str(session_id)).rstrip(". ") or "session"
-    return store.path("knowledge_captures", name)
+    """Where one session's captures live: the hook that writes them and the fold share a store.
+
+    The sanitized id alone can name two sessions at once (`a/b` and `a__b` both read
+    `a__b`), so the raw id's digest keeps their captures apart.
+    """
+    raw = str(session_id)
+    name = re.sub(r"[^A-Za-z0-9_.-]", "__", raw).rstrip(". ") or "session"
+    digest = hashlib.sha256(os.fsencode(raw)).hexdigest()[:12]
+    return store.path("knowledge_captures", f"{name}-{digest}")
 
 
 def record(store, session_id, ctx, payload):

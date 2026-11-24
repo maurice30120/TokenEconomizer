@@ -171,7 +171,7 @@ def test_record_dedupes_the_bytes_and_keeps_one_entry_per_read(tmp_path):
     record(store, "s1", ctx, partial_read_payload(root, tool_use_id="b"))
     captured = load(session_dir(store, "s1"))
     assert sorted(captured) == ["a", "b"]
-    assert len([n for n in (tmp_path / "state").glob("knowledge_captures/s1/*.bin")]) == 1
+    assert len(list((tmp_path / "state").glob("knowledge_captures/*/*.bin"))) == 1
 
 
 def test_record_refuses_what_it_cannot_vouch_for(tmp_path):
@@ -219,7 +219,20 @@ def test_capture_is_bounded_per_session_and_purged(tmp_path):
     old = time.time() - 8 * 24 * 3600
     os.utime(stale, (old, old))
     record(store, "s2", ctx, partial_read_payload(root, tool_use_id="fresh"))
-    assert sorted(p.name for p in (tmp_path / "state" / "knowledge_captures").iterdir()) == ["s1", "s2"]
+    assert sorted(p.name for p in (tmp_path / "state" / "knowledge_captures").iterdir()) \
+        == sorted(os.path.basename(session_dir(store, name)) for name in ("s1", "s2"))
+
+
+def test_two_session_ids_that_sanitize_alike_keep_separate_captures(tmp_path):
+    """`a/b` and `a__b` both sanitize to `a__b`: distinct ids must not share captures."""
+    root, store = workspace(tmp_path), Store(str(tmp_path / "state"))
+    ctx = SimpleNamespace(repo=SimpleNamespace(root=str(root)))
+    first, second = session_dir(store, "a/b"), session_dir(store, "a__b")
+    assert os.path.basename(first).startswith("a__b-")
+    assert first != second
+    record(store, "a/b", ctx, partial_read_payload(root, tool_use_id="slash"))
+    assert load(first)["slash"]["path"] == "source.py"
+    assert load(second) == {}
 
 
 def test_discard_removes_the_session_directory(tmp_path):
