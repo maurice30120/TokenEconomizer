@@ -10,3 +10,7 @@
 - [x] Equal matches are ordered by firing rate
 - [x] The shared budget with native facts is still respected
 - [x] Tested through the live hooks
+
+## Comments
+
+- 2026-11-25: `90ea1a5` narrowed `match_strength` to require the file alongside a named symbol, though the spec makes a request match on the symbol *or* the file, and deleted the prompt-side ranking tests. Both restored in `ad2c448` (`test_a_small_budget_keeps_the_stronger_match_then_the_higher_firing_rate`, `test_a_symbol_named_in_the_prompt_outranks_a_file_match`).

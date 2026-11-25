@@ -16,3 +16,7 @@
 - [x] After a read-triggered injection, the next request keeps exactly the same cached prefix on each host
 - [x] Verified hosts are recorded in the documentation
 - [x] Tested through the live hooks
+
+## Comments
+
+- 2026-11-25: `test_a_knowledge_given_by_the_prompt_is_not_given_again_by_the_read` was deleted by `90ea1a5`, leaving "not injected twice with the prompt trigger" unverified; it was replaced by a test asserting the prompt injects nothing. Restored in `ad2c448`.

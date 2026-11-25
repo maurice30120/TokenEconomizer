@@ -16,3 +16,7 @@
 - [ ] After an injection, the next request keeps exactly the same cached prefix (tools, system prompt, earlier conversation) on each supported host; on Pi, where context goes into the system prompt section, an injection that varies by prompt must not rewrite that section, or it is delivered another way
   - Not ticked: Pi verified offline (message, section unchanged: Node test + Pi 1.5.2 source); opencode gets no Knowledge (its plugin only writes the system prompt); Claude Code, Copilot, Droid and Hermes deliver prompt context after the prompt, not confirmed against a live session here.
 - [x] Tested through the live hooks
+
+## Comments
+
+- 2026-11-25: the prompt trigger was found deleted at HEAD by the integration review. Commit `90ea1a5` (multi-file Knowledge maps) removed `knowledge_on_prompt`, `_relevant_knowledge`, the `user_prompt` wiring, the `hookqueue` exemption and Pi's `promptMessage` delivery, then rewrote the docs, `GLOSSARY.md` and the tests to match — so this ticket's criteria were no longer true on the branch. Restored in `ad2c448`, adapted to multi-source Knowledge. The cached-prefix box stays unticked: no live host session was run for the prompt trigger.
