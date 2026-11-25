@@ -24,7 +24,15 @@ The bytes of a file kept by the hook as a Pi `read` returned them, so a partial 
 The symbol a Knowledge is about or, failing that, the file it is about, taken from its contract. A user request shares a signal when it names that symbol (as a whole identifier) or that file (by path or by file name). A Knowledge with several sources has one signal per source.
 
 **Relevant Knowledge**:
-Knowledge that shares a Knowledge Signal with the user's current request, or that covers a file the agent has read. Only Relevant Knowledge is ever given to the agent, and never at session start; when none is relevant, none is given.
+Knowledge that shares a Knowledge Signal with the user's current request, or that covers a file the agent has read. Only Relevant Knowledge is ever given to the agent. It is given at session start, up to the startup share of the Knowledge allowance, and again when a successful read covers it; when none is relevant, none is given.
+_Avoid_: matching knowledge, applicable knowledge
+
+**Knowledge Allowance**:
+What the conversation may receive of Knowledge in total: how many Knowledge entries and how many tokens, together with the share of both available at session start.
+_Avoid_: knowledge budget, knowledge quota
+
+**Startup Share**:
+The fraction of the Knowledge Allowance a session may be given at session start. What the startup does not use stays available for Knowledge given after a read.
 
 **Knowledge Revision**:
 A marker identifying a particular revision of a Knowledge entry, separate from its stable identity.
