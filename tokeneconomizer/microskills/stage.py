@@ -65,7 +65,8 @@ class PrefixStage(Stage):
     name = "prefix"
 
     def __init__(self, cfg, repo, results_root, fresh,
-                 runner=None, optimizer_model="agent", adapter=None, agent=None):
+                 runner=None, optimizer_model="agent", adapter=None, agent=None,
+                 shared_propose=None):
         self.results_root = results_root
         self.adapter = adapter
         self.agent = agent
@@ -99,6 +100,7 @@ class PrefixStage(Stage):
                     else Distiller.load(repo, results_root, runner=runner,
                                         model=optimizer_model, external_facts=external,
                                         vocab=vocab))
+            dist.shared_propose = shared_propose
             if env is not None:
                 self.reason = "envfacts+manual-distill"
                 self.distiller = ComposedDistiller(env, dist)

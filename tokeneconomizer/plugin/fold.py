@@ -87,10 +87,9 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
         runner = (sidecall.runner_for(ctx.host.name, ctx.config, role="proposer")
                   if not sidecall.paused(ctx.host.name, ctx.root)
                   else sidecall.local_runner("proposer", ctx.config))
-    if runner is not None and shared is not None:
-        runner = shared.wrap(runner)
     stage = PrefixStage(icfg, ctx.repo.label, ctx.mech_dir, False, runner=runner,
-                        optimizer_model="agent", adapter=adapter, agent=ctx.host.name)
+                        optimizer_model="agent", adapter=adapter, agent=ctx.host.name,
+                        shared_propose=shared.propose if shared is not None else None)
     srow = {"resolved": None}
     task = {"instance_id": session_id}
     if injected is not None:
@@ -104,7 +103,10 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
         "facts": srow.get("manual_facts"), "updated": time.time(),
         "sessions": int(prior.get("sessions", 0)) + 1,
         "imported_sessions": int(prior.get("imported_sessions", 0)) + bool(imported)})
-    return {"optimizer_tokens": float(opt_tokens or 0), "rendered_chars": len(rendered)}
+    result = {"optimizer_tokens": float(opt_tokens or 0), "rendered_chars": len(rendered)}
+    if shared is not None and shared.counts is not None:
+        result["shared_proposals"] = shared.counts
+    return result
 
 
 def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_path=None, shared=None):
@@ -139,44 +141,45 @@ class _SharedProposer:
     """Share the native tick and its candidate budget with Knowledge."""
     stage = None
     root = None
+    counts = None
+    max_candidates = 8
 
-    def wrap(self, runner):
-        def propose(prompt, model):
-            if self.stage is None:
-                return runner(prompt, model)
-            from tokeneconomizer.microskills import distiller
-            stage = self.stage
-            captured = []
-            previous = stage.last_propose
-            try:
-                stage.runner = lambda p, m: (captured.append(p) or "{}", None)
-                stage._maybe_propose()
-            except Exception:
-                # Knowledge context is optional; preserve the native proposer tick.
-                pass
-            finally:
-                stage.runner = None
-                stage.last_propose = previous
-            if not captured:
-                return runner(prompt, model)
-            raw, tokens = runner(prompt + "\n\nKnowledge context (share the same four-fact budget):\n" + captured[0], model)
-            exts, facts = distiller.parse_payload(raw)
-            facts = facts[:distiller.MAX_CANDS]
-            # `dependencies` is the retired synthesis form: the Knowledge stage refuses it.
-            kinds = ("source", "sources", "dependencies")
-            knowledge = [f for f in facts if any(k in f for k in kinds)]
-            native = [f for f in facts if not any(k in f for k in kinds)]
-            try:
-                stage.runner = lambda p, m: (json.dumps({"extractors": exts, "facts": knowledge}), None)
-                stage._maybe_propose()
-                stage.save(self.root)
-            except Exception:
-                # A malformed Knowledge record must not discard the native response.
-                pass
-            finally:
-                stage.runner = None
-            return json.dumps({"extractors": exts, "facts": native}), tokens
-        return propose
+    def propose(self, native):
+        from tokeneconomizer.microskills.distiller import parse_payload
+        stage = self.stage
+        try:
+            if stage is None or not stage.has_proposal_sources():
+                return False
+            knowledge_prompt = stage._proposal_prompt(self.max_candidates)
+        except Exception:
+            return False  # Knowledge context is optional; keep the native tick.
+        prompt = (native._proposal_prompt(self.max_candidates)
+                  + "\n\nKnowledge context:\n" + knowledge_prompt
+                  + f"\nReturn one facts list with up to {self.max_candidates} candidates TOTAL. "
+                  "Mix native Facts and Knowledge freely. Include sources only on Knowledge.")
+        try:
+            raw, tokens = native.runner(prompt, native.model)
+        except Exception:
+            native.last_propose = native.now
+            return True
+        if tokens is not None:
+            native.opt_tokens += tokens
+        extractors, facts = parse_payload(raw, max_candidates=self.max_candidates)
+        # The Knowledge stage also rejects the retired source/dependencies forms.
+        kinds = ("source", "sources", "dependencies")
+        knowledge = [f for f in facts if any(k in f for k in kinds)]
+        native_facts = [f for f in facts if not any(k in f for k in kinds)]
+        self.counts = {"native": {"proposed": len(native_facts),
+                                  "admitted": native._apply_proposals(extractors, native_facts)},
+                       "knowledge": {"proposed": len(knowledge), "admitted": 0}}
+        try:
+            admitted = stage._apply_proposals(extractors, knowledge)
+            stage.save(self.root)
+            self.counts["knowledge"]["admitted"] = admitted
+        except Exception:
+            # A failed Knowledge save must not discard the native response.
+            self.counts["knowledge"]["error"] = "proposal not saved"
+        return True
 
 
 class Busy(RuntimeError):

@@ -152,7 +152,8 @@ def test_a_prompt_that_may_carry_context_is_not_queued():
              tool_context=False, shadow=False):
         """A controller enough for `_queues`: the real predicates, over the host's flags."""
         host = SimpleNamespace(prompt_context=prompt_context, prompt_knowledge=prompt_knowledge,
-                               tool_context=tool_context, read_path=lambda p: "/r/a.py")
+                               knowledge_start_context=False, tool_context=tool_context,
+                               read_path=lambda p: "/r/a.py")
         c = SimpleNamespace(cfg=SimpleNamespace(repomap=repomap, knowledge=knowledge,
                                                shadow=shadow),
                             host=host, p={"hook_event_name": "PostToolUse"})

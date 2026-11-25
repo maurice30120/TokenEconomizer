@@ -34,6 +34,8 @@ Each mechanism also takes a plain `on` / `off` (`on` = the value above), and has
 person can tune by hand:
 
   * microskills_max_facts, microskills_max_tokens -- caps on the injected block;
+  * knowledge_max_cards, knowledge_max_tokens -- total Knowledge allowance per conversation;
+  * knowledge_startup_share    -- fraction of both Knowledge limits available at startup (0–1);
   * microskills_propose_every   -- sessions between proposer runs;
   * toolprune_evidence          -- prompts a never-used tool must have stayed unused through,
                                    over at least toolprune_min_sessions sessions, before it is
@@ -190,6 +192,9 @@ def _threshold_name(key):
 class LiveConfig:
     enabled: bool = True
     knowledge: bool = False
+    knowledge_max_cards: int = 4
+    knowledge_max_tokens: int = 300
+    knowledge_startup_share: float = 0.5
     mode: str = "auto"
     microskills: str = "off"
     microskills_max_facts: int = 4
@@ -354,6 +359,9 @@ class LiveConfig:
 
 # Environment variables, old names first so that a new name set alongside its old one wins.
 _ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow", "TE_KNOWLEDGE": "knowledge",
+        "TE_KNOWLEDGE_MAX_CARDS": "knowledge_max_cards",
+        "TE_KNOWLEDGE_MAX_TOKENS": "knowledge_max_tokens",
+        "TE_KNOWLEDGE_STARTUP_SHARE": "knowledge_startup_share",
         "TE_PAID_MODEL": "paid_model", "TE_VOCABULARY": "vocabulary",
         **{f"TE_{a.upper()}_PAID_MODEL": f"{a}_paid_model" for a in (
             "claude", "codex", "copilot", "pi", "opencode", "cursor", "grok", "hermes", "droid")},

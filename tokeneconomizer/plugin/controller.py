@@ -128,13 +128,24 @@ class LiveController:
     # ---- SessionStart -----------------------------------------------------------------
     def session_start(self):
         source = self.p.get("source") or "startup"
+        retained = self.p.get("retained_knowledge_reads")
+        if source == "compact" and self.host.name == "pi" and isinstance(retained, list):
+            return self._compact_pi_knowledge(retained)
+        fresh = source in ("startup", "new", "clear", "compact")
         s = self._session()
+        # A host can aggregate multiple hooks for the same start. Share the delivery guard
+        # for native Facts and Knowledge, including when the host rebuilds context on resume.
+        timestamp = self.p.get("timestamp")
+        start_event = [source, timestamp]
+        if timestamp is not None and s.get("start_event") == start_event:
+            return {}
+        s["start_event"] = start_event
         s["source"] = source
-        if source in ("startup", "new", "clear", "compact"):
-            # What a cleared, compacted or new conversation was given is gone. A resumed one
-            # keeps the Knowledge: it came as prompt or tool context, which stays in the history,
-            # unlike the start context a host may rebuild without.
+        if fresh:
             s.pop("knowledge_given", None)
+            s.pop("knowledge_tokens", None)
+            s.pop("knowledge_startup", None)
+            s.pop("knowledge_read_blocks", None)
             s.pop("files_read", None)
         s.setdefault("cwd", self.host.cwd(self.p, self.ctx.env))
         outputs = []
@@ -148,7 +159,6 @@ class LiveController:
             # A resumed or forked conversation already carries what the first start injected,
             # where the agent replays it; a cleared or compacted one has lost it. ("new" is
             # Copilot's word for "startup".)
-            fresh = source in ("startup", "new", "clear", "compact")
             if not fresh and not self.host.keeps_start_context:
                 # The agent rebuilt the conversation without what its first start added: the
                 # same text again puts it back as it was (and as its prompt cache has it), so a
@@ -170,6 +180,11 @@ class LiveController:
                             f"{self.ctx.repo.label} to this session's context "
                             f"(review with `{self._cmd('microskills')}`)."))
                         seen["injection"] = digest
+
+        if self.host.knowledge_start_context and not self.host.is_subagent(self.p):
+            block = self._knowledge_at_start(s, fresh)
+            if block:
+                outputs.append(self.host.context("SessionStart", block))
 
         if (self.cfg.toolprune != "off" and denylist.supports(self.host.name)
                 and not self.cfg.shadow):
@@ -320,33 +335,93 @@ class LiveController:
         """Does this prompt hook bring Knowledge? Only where its output reaches the model and
         can follow the conversation without rewriting its cached prefix."""
         return bool(self.cfg.knowledge and not self.cfg.shadow
+                    and not self.host.knowledge_start_context
                     and self.host.prompt_context and self.host.prompt_knowledge)
 
-    def _inject_knowledge(self, s, trigger, extra=None, **match):
-        """The Knowledge block for `match` (a prompt `task`, or the file `read`), within what the
-        native facts injected this session left of the shared budget, which applies to this one
-        injection and not to the session as a whole; "" when none fits. Each Knowledge chosen is
-        logged with `trigger` and `extra(fact)`. Mutates the session `s`: the ids chosen join
-        its `knowledge_given`."""
+    def _knowledge_stage(self):
         from ..knowledge.stage import Knowledge, workspace_id
-        native = s.get("injected_text") or ""
+        root = self.ctx.repo.root
+        stage = Knowledge.load(workspace_id(self.ctx.repo.label, root), self.ctx.mech_dir)
+        stage.workspace = root
+        return stage
+
+    def _compact_pi_knowledge(self, retained):
+        """Pi keeps its startup section and the messages after the compaction boundary."""
+        s = self._session()
+        blocks = s.get("knowledge_read_blocks") or {}
+        dropped = [block for call_id, block in blocks.items() if call_id not in retained]
+        if dropped:
+            ids = {fid for block in dropped for fid in block["cards"]}
+            s["knowledge_given"] = [fid for fid in s["knowledge_given"] if fid not in ids]
+            s["knowledge_tokens"] -= sum(block["tokens"] for block in dropped)
+            s["knowledge_read_blocks"] = {call_id: block for call_id, block in blocks.items()
+                                          if call_id in retained}
+            self._save(s)
+        return {}
+
+    def _knowledge_at_start(self, s, fresh):
+        if self.replaying:
+            return ""
+        enabled = self.cfg.knowledge and not self.cfg.shadow
+        try:
+            if fresh:
+                return self._inject_knowledge(s, "startup") if enabled else ""
+            startup = s.get("knowledge_startup")
+            if self.host.keeps_start_context or not startup:
+                return ""
+            # Copilot rebuilds startup context. Restore only previously delivered cards whose
+            # revisions and proofs are still eligible, without charging or logging them again.
+            from ..knowledge.stage import knowledge_tokens
+            block, kept = "", []
+            if enabled:
+                with self.ctx.store.locked("mechanisms") as got:
+                    if not got:
+                        raise fold.Busy("a fold of this repository's sessions holds its state")
+                    block, kept = self._knowledge_stage().restore_startup(startup["cards"])
+            dropped = {fid for fid, _ in startup["cards"]} - {fid for fid, _ in kept}
+            s["knowledge_given"] = [fid for fid in s["knowledge_given"] if fid not in dropped]
+            tokens = knowledge_tokens(block)
+            s["knowledge_tokens"] += tokens - startup["tokens"]
+            s["knowledge_startup"] = {"cards": kept, "tokens": tokens}
+            return block
+        except Exception:
+            self._record_error()
+            return ""
+
+    def _inject_knowledge(self, s, trigger, extra=None, **match):
+        """Deliver eligible cards within the budget left in this conversation context."""
+        from ..knowledge.stage import knowledge_tokens
+        given = list(s.get("knowledge_given") or [])
+        # Old sessions recorded IDs but not the token cost. Keep their deduplication and
+        # conservatively wait for a context reset before giving more cards.
+        tokens_used = s.get("knowledge_tokens", self.cfg.knowledge_max_tokens if given else 0)
+        share = self.cfg.knowledge_startup_share if trigger == "startup" else 1
+        facts = int(self.cfg.knowledge_max_cards * share) - len(given)
+        tokens = int(self.cfg.knowledge_max_tokens * share) - tokens_used
+        if facts <= 0 or tokens <= 0:
+            return ""
         with self.ctx.store.locked("mechanisms") as got:
             if not got:
                 raise fold.Busy("a fold of this repository's sessions holds its state")
-            stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
-                                   self.ctx.mech_dir)
-            stage.workspace = self.ctx.repo.root
-            facts = max(0, self.cfg.microskills_max_facts
-                        - sum(ln.startswith("- ") for ln in native.splitlines()))
-            tokens = max(0, self.cfg.microskills_max_tokens - (len(native) + 3) // 4)
-            given = list(s.get("knowledge_given") or [])
+            stage = self._knowledge_stage()
             text, chosen = stage.selection(max_facts=facts, max_tokens=tokens, given=given,
                                            **match)
             for fact, signal in chosen:
                 self._log("knowledge", knowledge_id=fact.id, signal=signal, trigger=trigger,
                           **(extra(stage, fact) if extra else {}))
             if text:
+                cost = knowledge_tokens(text)
                 s["knowledge_given"] = given
+                s["knowledge_tokens"] = tokens_used + cost
+                if trigger == "startup":
+                    s["knowledge_startup"] = {
+                        "cards": [(fact.id, fact.spec.get("rev", 1)) for fact, _ in chosen],
+                        "tokens": cost,
+                    }
+                if trigger == "read" and self.host.name == "pi" and self.p.get("tool_use_id"):
+                    s.setdefault("knowledge_read_blocks", {})[self.p["tool_use_id"]] = {
+                        "cards": [fact.id for fact, _ in chosen], "tokens": cost,
+                    }
             return text
 
     def _knowledge_from_prompt(self, s, prompt):

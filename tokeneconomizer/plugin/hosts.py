@@ -130,6 +130,7 @@ class Host:
     # the end of the conversation (verified per host, 2026-11-24: Claude Code, Copilot, Pi).
     # No host accepts it before the call: see "PreToolUse" in docs/PLUGIN.md.
     tool_context = False
+    knowledge_start_context = False
 
     def session_id(self, p):
         return str(p.get("session_id") or "")
@@ -138,7 +139,10 @@ class Host:
         """The file a PostToolUse payload's file-reading tool (`Read`, `read`, `view`) read, as
         the tool was given it; "" for any other call."""
         name, args, _text, _code = self.tool_call(p)
-        if name not in ("Read", "read", "view"):
+        response = p.get("tool_response") or p.get("tool_result")
+        if (name not in ("Read", "read", "view")
+                or (isinstance(response, dict)
+                    and (response.get("isError") or response.get("is_error")))):
             return ""
         path = args.get("file_path") or args.get("path")
         return path if isinstance(path, str) else ""
@@ -460,6 +464,7 @@ class Pi(Host):
     name = "pi"
     prompt_context = True              # the extension appends it to the session's section
     tool_context = True                # verified 1.6.0: its steering message follows the result
+    knowledge_start_context = True
 
     def prompt_message(self, event, text):
         # `promptMessage`, not `additionalContext`: the extension adds the latter to the system
@@ -1167,6 +1172,7 @@ class Copilot(Host):
     interrupt = "Press Esc twice to interrupt it."  # 1.0.101: "esc esc interrupt"
     prompt_context = True              # verified: top-level additionalContext
     tool_context = True                # verified 1.0.114: appended to the tool's result
+    knowledge_start_context = True
     # 1.0.102 rebuilds a resumed conversation's first message without it, dropping the facts
     # and missing the prompt cache; the same text given again rebuilds it as it was.
     keeps_start_context = False

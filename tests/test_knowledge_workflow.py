@@ -387,9 +387,9 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
     support.write_text("support\n")
     detector = {"scope": "pytest", "confirm": "passed"}
     facts = [{"id": "native", "claim": "native claim", "cite": ["s0", "s1"], "detector": detector}]
-    facts += [{"id": f"k{i}", "claim": f"knowledge {i}", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}],
+    facts += [{"id": f"k{i}", "claim": f"knowledge {i}", "flow": "source and support", "sources": [{"source": "source.txt" if i != 1 else "invalid\0.txt", "role": "source"}, {"source": "support.txt", "role": "support"}],
                "source_session": "s1", "cite": ["s0", "s1"], "detector": detector}
-              for i in range(4)]
+              for i in range(8)]
     def runner(prompt, model):
         calls.append(prompt)
         return json.dumps({"facts": facts}), 5
@@ -408,6 +408,7 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
         run_session(enabled, repo, f"s{i}", str(path))
     assert len(calls) == 1
     assert "observed_sources" in calls[0]
+    assert "up to 8 candidates TOTAL" in calls[0] and "<=4" not in calls[0]
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode
     from tokeneconomizer.microskills.distiller import Distiller
@@ -415,7 +416,14 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
     native = Distiller.load(ctx.repo.label, ctx.mech_dir)
     knowledge = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
     assert len(native.facts) == 1
-    assert len(knowledge.facts) == 3
+    assert {fact.claim for fact in knowledge.facts.values()} == {
+        f"knowledge {i}" for i in (0, 2, 3, 4, 5, 6)}
+    batches = [row["injection"]["shared_proposals"] for row in ctx.store.read_lines("ledger.jsonl")
+               if "shared_proposals" in (row.get("injection") or {})]
+    assert batches == [{
+        "native": {"proposed": 1, "admitted": 1},
+        "knowledge": {"proposed": 7, "admitted": 6},
+    }]
 
 
 @pytest.mark.parametrize("failure", ["empty_window", "capture_error", "admission_error"])
@@ -435,15 +443,11 @@ def test_native_proposal_survives_unavailable_knowledge_context(tmp_path, env, r
     if failure == "empty_window":
         monkeypatch.setattr(Knowledge, "update", lambda *a, **kw: None)
     else:
-        original_propose = Knowledge._maybe_propose
-        attempts = []
-        def fail_capture(self):
-            if self.runner is not None:
-                attempts.append(1)
-                if failure == "capture_error" or len(attempts) == 2:
-                    raise ValueError("invalid Knowledge context")
-            return original_propose(self)
-        monkeypatch.setattr(Knowledge, "_maybe_propose", fail_capture)
+        monkeypatch.setattr(Knowledge, "has_proposal_sources", lambda self: True)
+        def fail(*args):
+            raise ValueError("invalid Knowledge context")
+        method = "_proposal_prompt" if failure == "capture_error" else "_apply_proposals"
+        monkeypatch.setattr(Knowledge, method, fail)
     enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller",
                    TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
     for i in range(3):
@@ -713,7 +717,7 @@ def test_read_budget_prioritizes_the_highest_firing_card(tmp_path, env, repo, mo
     payload = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": repo,
                "tool_name": "Read", "tool_input": {"file_path": "support.txt"},
                "tool_response": {"content": "support"}}
-    text = json.dumps(call(dict(enabled, TE_MICROSKILLS_MAX_FACTS="1"), payload))
+    text = json.dumps(call(dict(enabled, TE_KNOWLEDGE_MAX_CARDS="1"), payload))
     assert "second card" in text and "first card" not in text
 
 
@@ -729,7 +733,7 @@ def test_a_small_budget_keeps_the_stronger_match_then_the_higher_firing_rate(
         tmp_path, env, repo, monkeypatch, {n: body for n in names},
         [{"id": n.split("/")[1][:4], "claim": f"{n} is observed", "source": n} for n in names])
     ctx = LiveContext.build(ClaudeCode(), repo, enabled)
-    one = dict(TE_MICROSKILLS_MAX_FACTS="1")
+    one = dict(TE_KNOWLEDGE_MAX_CARDS="1")
     # Registration order puts the file-name match first; the full path is the stronger match.
     assert "lib/full.txt is observed" in prompt(enabled, repo, "b", "read deep.txt and lib/full.txt", **one)
     assert "lib/full.txt is observed" in prompt(enabled, repo, "c", "lib/full.txt then deep.txt", **one)
@@ -742,12 +746,12 @@ def test_a_small_budget_keeps_the_stronger_match_then_the_higher_firing_rate(
     rare.fire_num, rare.fire_den, twin.fire_num, twin.fire_den = 9, 10, 5, 10
     stage.save(ctx.mech_dir)
     assert "lib/rare.txt is observed" in prompt(enabled, repo, "e", both, **one)
-    # The shared budget with native facts is still respected.
+    # Delivered native facts do not alter the Knowledge limit.
     ctx.store.write("injection.json", {"rendered": "# native\n- A\n- B\n"})
     together = dict(enabled, TE_MICROSKILLS="envfacts")
     start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "n", "cwd": repo}
     assert "- B" in json.dumps(call(dict(together, TE_MICROSKILLS_MAX_FACTS="3"), start))
-    text = prompt(together, repo, "n", "deep.txt lib/full.txt lib/twin.txt", TE_MICROSKILLS_MAX_FACTS="3")
+    text = prompt(together, repo, "n", "deep.txt lib/full.txt lib/twin.txt", **one)
     assert text.count("is observed") == 1 and "lib/full.txt is observed" in text
 
 
@@ -759,5 +763,5 @@ def test_a_symbol_named_in_the_prompt_outranks_a_file_match(tmp_path, env, repo,
         tmp_path, env, repo, monkeypatch, {"first.txt": "observed\n", "second.py": code},
         [{"id": "file", "claim": "first.txt is observed", "source": "first.txt"},
          {"id": "sym", "claim": "target returns one", "source": "second.py", "symbol": "target"}])
-    text = prompt(enabled, repo, "a", "in first.txt look at target", TE_MICROSKILLS_MAX_FACTS="1")
+    text = prompt(enabled, repo, "a", "in first.txt look at target", TE_KNOWLEDGE_MAX_CARDS="1")
     assert "target returns one" in text and "first.txt is observed" not in text

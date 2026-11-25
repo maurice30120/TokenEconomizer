@@ -490,7 +490,7 @@ PROPOSER_SYSTEM_GENERIC = (_GENERIC_HEAD + PROPOSER_SYSTEM[len(_PROPOSER_HEAD):]
 
 
 def build_proposer_prompt(repo, window, existing, existing_feats, raw_excerpts,
-                          external=(), generic=False):
+                          external=(), generic=False, max_candidates=MAX_CANDS):
     """`existing` maps each fact id to its claim (ids alone are accepted). The plugin's
     (`generic`) prompt shows the claims, so a fact already held is not authored again under a
     new id; the experiments' prompt names the ids alone, as the paper ran it."""
@@ -506,7 +506,11 @@ def build_proposer_prompt(repo, window, existing, existing_feats, raw_excerpts,
         known = ("\n\nExisting fact ids (re-emit an id with ONLY detector.contradict changed to "
                  "revise its contradiction condition, else use a NEW id):\n"
                  + (", ".join(sorted(existing)) or "(none)"))
-    p = ((PROPOSER_SYSTEM_GENERIC if generic else PROPOSER_SYSTEM)
+    system = PROPOSER_SYSTEM_GENERIC if generic else PROPOSER_SYSTEM
+    if max_candidates != MAX_CANDS:
+        system = system.replace(f"JSON list of <={MAX_CANDS} such objects",
+                                f"facts list of at most {max_candidates} such objects")
+    p = (system
          + f"\n\nRepo: {repo}"
          + known
          + "\n\nExisting feature names:\n" + (", ".join(sorted(existing_feats)) or "(none)")
@@ -527,7 +531,7 @@ def build_proposer_prompt(repo, window, existing, existing_feats, raw_excerpts,
     return p
 
 
-def parse_payload(raw):
+def parse_payload(raw, max_candidates=None):
     m = re.search(r"\{.*\}", raw or "", re.S)
     if not m:
         return [], []
@@ -539,7 +543,8 @@ def parse_payload(raw):
     exts = [e for e in (exts if isinstance(exts, list) else [])
             if isinstance(e, dict) and isinstance(e.get("name"), str) and e.get("name")
             and isinstance(e.get("pattern"), str) and e.get("pattern")]
-    facts = [f for f in (facts if isinstance(facts, list) else [])
+    facts = facts if isinstance(facts, list) else []
+    facts = [f for f in facts[:max_candidates]
              if isinstance(f, dict) and isinstance(f.get("id"), str) and f.get("id")
              and isinstance(f.get("detector"), dict) and f.get("detector")
              and _detector_fields_ok(f["detector"])
@@ -594,6 +599,7 @@ class Distiller(Forgetting):
         self.facts = {}                 # id -> Fact
         self.window = []                # rolling digests since last propose
         self.runner = runner
+        self.shared_propose = None
         self.model = model
         self.opt_tokens = 0.0           # cumulative effective proposer cost
         self.last_propose = -1
@@ -648,17 +654,22 @@ class Distiller(Forgetting):
         return out[:RAW_SAMPLE * 4]
 
     # ---- proposer tick (the only paid step) --------------------------------
-    def _maybe_propose(self):
-        if self.runner is None or not self.window:
-            return
+    def _proposal_prompt(self, max_candidates=MAX_CANDS):
         cov = [self._coverage(c) for c in self.raw_window[-WINDOW:]]
         abstaining = cov and (sum(cov) / len(cov)) < ABSTAIN_GATE
         excerpts = self._abstaining_excerpts()[:RAW_SAMPLE] if abstaining else []
         external = list(self.external_facts()) if self.external_facts else []
-        prompt = build_proposer_prompt(self.repo, self.window,
-                                       {i: f.claim for i, f in self.facts.items()},
-                                       set(self.extractors), excerpts, external=external,
-                                       generic=self.generic)
+        return build_proposer_prompt(self.repo, self.window,
+                                     {i: f.claim for i, f in self.facts.items()},
+                                     set(self.extractors), excerpts, external=external,
+                                     generic=self.generic, max_candidates=max_candidates)
+
+    def _maybe_propose(self):
+        if self.runner is None or not self.window:
+            return
+        if self.shared_propose is not None and self.shared_propose(self):
+            return
+        prompt = self._proposal_prompt()
         # A side call that fails (a CLI error, a timeout) skips this tick instead of aborting the
         # fold, as the loop guard's judge does (#131). It still counts as the tick: a runner
         # that keeps failing is tried every PROPOSE_EVERY sessions, not at every fold.
@@ -670,13 +681,16 @@ class Distiller(Forgetting):
         if eff is not None:
             self.opt_tokens += eff
         exts, facts = parse_payload(raw)
-        for e in exts:
-            self._admit_extractor(e)              # append-only
         # A forgotten id is refused at admission anyway: keep it from taking a candidate slot.
         facts = [f for f in facts if f.get("id") not in self.forgotten]
-        for spec in facts[:MAX_CANDS]:
-            self._admit(spec)
+        self._apply_proposals(exts, facts[:MAX_CANDS])
+
+    def _apply_proposals(self, extractors, facts):
+        for spec in extractors:
+            self._admit_extractor(spec)
+        admitted = sum(self._admit(spec)[0] for spec in facts)
         self.last_propose = self.now
+        return admitted
 
     def _admit_extractor(self, spec):
         if spec["name"] in self.extractors or len(self.extractors) >= MAX_EXTRACTORS:

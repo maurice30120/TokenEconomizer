@@ -764,10 +764,10 @@ def test_the_plugin_directory_is_also_a_pi_package():
     (ext,) = pkg["pi"]["extensions"]
     src = open(os.path.join(PLUGIN, ext), encoding="utf-8").read()
     assert 'join(HERE, "..", "scripts")' in src and '"te-hook", ["--host", "pi"]' in src
-    # Exactly the dispatcher's five events. Not `tool_call`, the one Pi event that can block a
-    # call before it runs: the plugin guards nothing, on Pi as on the hook hosts.
+    # Compaction also reconciles session state. No `tool_call`, which can block a tool.
     assert set(re.findall(r'pi\.on\("(\w+)"', src)) == {
-        "session_start", "before_agent_start", "tool_result", "agent_end", "session_shutdown"}
+        "session_start", "session_compact", "before_agent_start", "tool_result", "agent_end",
+        "session_shutdown"}
     # The repository root is the same package for `pi install git:github.com/...`, which clones
     # the repository and reads the manifest at its root: same package, same extension file.
     root = _json(os.path.dirname(PLUGIN), "package.json")

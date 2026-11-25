@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_knowledge_workflow import _learn_source_knowledge
+from tests.test_knowledge_workflow import _learn_source_knowledge, learn_knowledge
 from tests.test_live_hooks import call, env, repo, store_for  # noqa: F401
 
 CLAIM = "Source is observed"
@@ -29,9 +29,10 @@ def test_a_card_reaches_each_host_after_read_and_stops_when_a_proof_changes(
     assert CLAIM not in json.dumps(_read(enabled, repo, "host2", path, host=host, name=name, key=key))
 
 
-def _read(enabled, repo, sid, path, host=None, event="PostToolUse", name="Read", key="file_path"):
+def _read(enabled, repo, sid, path, host=None, event="PostToolUse", name="Read", key="file_path",
+          call_id=None):
     return call(enabled, {"hook_event_name": event, "session_id": sid, "cwd": repo,
-                          "tool_name": name, "tool_input": {key: path},
+                          "tool_name": name, "tool_input": {key: path}, "tool_use_id": call_id,
                           "tool_response": {"content": "observed"},
                           "tool_result": {"text_result_for_llm": "observed"}}, host)
 
@@ -101,13 +102,74 @@ def test_a_knowledge_given_by_the_prompt_is_not_given_again_by_the_read(
     assert CLAIM not in json.dumps(_prompt(enabled, repo, "r4", "check source.txt"))
 
 
-def test_card_respects_budget_left_by_native_facts(tmp_path, env, repo, monkeypatch):
+def test_card_has_its_own_budget_even_when_native_facts_fill_theirs(tmp_path, env, repo, monkeypatch):
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
     store = store_for(enabled, repo)
     store.write("injection.json", {"rendered": "# native\n- A\n- B\n- C\n- D\n"})
     both = dict(enabled, TE_MICROSKILLS="envfacts")
     call(both, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "budget", "cwd": repo})
-    assert CLAIM not in json.dumps(_read(both, repo, "budget", str(Path(repo) / "source.txt")))
+    assert CLAIM in json.dumps(_read(both, repo, "budget", str(Path(repo) / "source.txt")))
+
+
+@pytest.mark.parametrize("host,tool", [("pi", "read"), ("copilot", "view")])
+def test_startup_reserves_budget_and_does_not_repeat_cards(tmp_path, env, repo, monkeypatch, host, tool):
+    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode, Copilot, Pi
+    names = ["a.txt", "b.txt", "c.txt", "d.txt"]
+    enabled = learn_knowledge(tmp_path, env, repo, monkeypatch,
+                              dict.fromkeys(names, "observed\n"),
+                              [{"id": n[0], "claim": f"card for {n}", "source": n} for n in names])
+    enabled.update(TE_KNOWLEDGE_MAX_CARDS="3", TE_KNOWLEDGE_MAX_TOKENS="300",
+                   TE_KNOWLEDGE_STARTUP_SHARE="0.5", TE_MICROSKILLS="envfacts")
+    src = LiveContext.build(ClaudeCode(), repo, enabled)
+    dst = LiveContext.build(Pi() if host == "pi" else Copilot(), repo, enabled)
+    stage = Knowledge.load(workspace_id(src.repo.label, repo), src.mech_dir)
+    for fact in stage.facts.values():
+        fact.life.fire_num = 9 if fact.spec["source"] == "b.txt" else 5
+        fact.life.fire_den = 10
+    stage.save(dst.mech_dir)
+    dst.store.write("injection.json", {"rendered": "# native\n- native fact\n"})
+    start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "budget", "cwd": repo}
+
+    def start_with(settings, **payload):
+        return json.dumps(call(settings, dict(start, **payload), host=host))
+
+    def read(name, settings=enabled, sid="budget"):
+        return json.dumps(_read(settings, repo, sid, name, host=host, name=tool, key="path",
+                                call_id=name))
+
+    startup = start_with(enabled, timestamp=0)
+    assert "native fact" in startup and "card for b.txt" in startup and "card for a.txt" not in startup
+    assert start_with(enabled, timestamp=0) == "{}"  # repeated delivery of the same start
+    assert "card for b.txt" not in read("b.txt")
+    assert "card for a.txt" in read("a.txt")
+    resumed = start_with(enabled, source="resume", timestamp=1)
+    assert ("card for b.txt" in resumed) == ("native fact" in resumed) == (host == "copilot")
+    assert start_with(enabled, source="resume", timestamp=1) == "{}"
+    assert "card for c.txt" in read("c.txt")    # the unused startup budget is still available
+    assert "card for d.txt" not in read("d.txt")
+    assert [e["trigger"] for e in dst.store.read_lines("events.jsonl") if e["kind"] == "knowledge"] == [
+        "startup", "read", "read"]
+    if host == "pi":
+        # Pi retains its startup section and can keep recent read messages after compaction.
+        assert start_with(enabled, source="compact", retained_knowledge_reads=["a.txt"]) == "{}"
+        assert "card for a.txt" not in read("a.txt")
+        assert "card for b.txt" not in read("b.txt")
+        assert "card for c.txt" in read("c.txt")
+    assert "card for b.txt" in start_with(enabled, source="compact")
+    assert "card for d.txt" in read("d.txt")
+
+    control = dict(enabled, TE_KNOWLEDGE_STARTUP_SHARE="0")
+    assert "card for" not in start_with(control, session_id="control")
+    assert "card for" not in json.dumps(_prompt(control, repo, "control", "Read b.txt", host=host))
+    assert "card for b.txt" in read("b.txt", control, "control")
+
+    # A fitting card has about 39 tokens. Startup gets only 30 tokens here.
+    tight = dict(enabled, TE_KNOWLEDGE_MAX_TOKENS="61")
+    assert "card for" not in start_with(tight, session_id="tokens")
+    assert "card for a.txt" in read("a.txt", tight, "tokens")
+    assert "card for b.txt" not in read("b.txt", tight, "tokens")
 
 
 def test_a_host_not_verified_and_every_other_case_inject_nothing(tmp_path, env, repo, monkeypatch):

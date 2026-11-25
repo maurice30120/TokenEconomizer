@@ -238,6 +238,20 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
     }
   });
 
+  pi.on("session_compact", async (event, ctx) => {
+    const entries = ctx.sessionManager.getBranch();
+    const boundary = entries.findIndex((entry) => entry.id === event.compactionEntry.firstKeptEntryId);
+    if (boundary === -1) return;
+    const retained = entries.slice(boundary).flatMap((entry) => {
+      if (entry.type !== "message" || entry.message.role !== "custom"
+          || entry.message.customType !== SECTION) return [];
+      const id = (entry.message.details as { teReadId?: string } | undefined)?.teReadId;
+      return id ? [id] : [];
+    });
+    await hook({ ...base(ctx), hook_event_name: "SessionStart", source: "compact",
+                 retained_knowledge_reads: retained }, ctx.mode);
+  });
+
   pi.on("tool_result", async (event, ctx) => {
     const content = (event.content ?? [])
       .filter((c: any) => c?.type === "text")
@@ -258,7 +272,8 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
     );
     const redirect = out?.hookSpecificOutput?.additionalContext;
     if (redirect) {
-      pi.sendMessage({ customType: SECTION, content: redirect, display: true }, { deliverAs: "steer" });
+      pi.sendMessage({ customType: SECTION, content: redirect, display: true,
+                       details: { teReadId: event.toolCallId } }, { deliverAs: "steer" });
     }
     notify(ctx, out?.systemMessage);
   });
