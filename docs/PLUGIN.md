@@ -836,7 +836,11 @@ A learned fact is text injected into your agent's context, derived from your ses
 output — which a repository controls. The free layer only fills fixed templates with observed
 command forms and hosts, and lints out completion advice; the proposer's facts are
 open-vocabulary. On a repository you do not trust, leave micro-skills off (the default) or use
-`microskills=envfacts`, and read what it learned with `te microskills`.
+`microskills=envfacts`, and read what it learned with `te microskills`. The two layers share one
+**block budget** (`microskills_max_facts`, `microskills_max_tokens`): the free layer renders
+first, the proposer fills what is left, and a line that does not fit is left out whole, so
+`te microskills` marks a fact `INJECTED` only when the block the next session receives carries
+it.
 
 ## 5. Known limitations
 

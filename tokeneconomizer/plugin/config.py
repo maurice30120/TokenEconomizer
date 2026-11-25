@@ -33,7 +33,10 @@ The defaults:
 Each mechanism also takes a plain `on` / `off` (`on` = the value above), and has settings a
 person can tune by hand:
 
-  * microskills_max_facts, microskills_max_tokens -- caps on the injected block;
+  * microskills_max_facts, microskills_max_tokens -- caps on the injected block, over every
+                                   layer that composes it (environment facts and the paid
+                                   manual share one allowance; a line that does not fit is
+                                   left out whole);
   * knowledge_max_cards, knowledge_max_tokens -- total Knowledge allowance per conversation;
   * knowledge_startup_share    -- fraction of both Knowledge limits available at startup (0–1);
   * microskills_propose_every   -- sessions between proposer runs;

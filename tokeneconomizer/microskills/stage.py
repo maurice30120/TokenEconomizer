@@ -15,45 +15,96 @@ from .distiller import Distiller
 
 # ---- composition: the free environment layer under the paid manual -------------------
 class ComposedDistiller:
-    """`envfacts` first, the paid manual on top, driven as one distiller.
+    """`envfacts` first, the paid manual on top, driven as one distiller under one budget.
 
-    The environment layer renders first (its block is what the proposer is told not to
-    restate); both fold every finished task; each persists in its own state dir. Overhead is
-    the proposer's alone -- the environment layer is LLM-free by construction."""
-    def __init__(self, env, dist):
+    The block is what the agent receives, so the caps `config` documents apply to the block
+    and not to a layer: the environment layer renders first within the same allowance, the
+    manual fills what is left one line at a time -- a line that does not fit is left out
+    whole, and the next one is still tried. Both layers say which facts made the block, so
+    the fold can credit the sessions those facts were given. Either layer may be absent:
+    `envfacts` alone, or the manual alone, runs through this same path and budget. Each
+    layer folds every finished task and persists in its own state dir. Overhead is the
+    proposer's alone -- the environment layer is LLM-free by construction."""
+    def __init__(self, env, dist, max_facts=None, max_tokens=None):
         self.env, self.dist = env, dist
+        self.max_facts = max_facts
+        self.max_tokens = max_tokens
+        self.last_injected = set()
 
     @property
     def opt_tokens(self):
-        return self.dist.opt_tokens
+        return self.dist.opt_tokens if self.dist is not None else 0.0
 
     @property
     def now(self):
-        return self.dist.now
+        layer = self.dist if self.dist is not None else self.env
+        return layer.now if layer is not None else 0
+
+    def _fits(self, head, body):
+        """Whether the block `head` + `body` stays inside both caps. A token is counted as
+        four characters, the same estimate the environment layer budgets with."""
+        if self.max_facts and len(body) > self.max_facts:
+            return False
+        if self.max_tokens is not None:
+            text = head + "\n" + "\n".join(f"- {line}" for line in body) + "\n"
+            if len(text) > self.max_tokens * 4:
+                return False
+        return True
 
     def render(self, task=None):
-        a = self.env.render(task)
-        b = self.dist.render(task)
-        return (a + ("\n" if a and b else "") + b) if (a or b) else ""
+        if self.dist is None:
+            # The environment layer budgets itself (`EnvFactsDistiller._select`), and its own
+            # ids must stay attached to the lines it chose: nothing to re-budget here.
+            block = self.env.render(task) if self.env is not None else ""
+            self.last_injected = set(self.env.injected_ids()) if block and self.env else set()
+            return block
+        env_block = self.env.render(task) if self.env is not None else ""
+        body = [line[2:] for line in env_block.splitlines() if line.startswith("- ")]
+        ids = set(self.env.injected_ids()) if body and self.env is not None else set()
+        head = env_block.splitlines()[0] if body else self.dist.header
+        kept = []
+        for fid, line in self.dist.injectable_items():
+            if self._fits(head, body + [line]):
+                body.append(line)
+                kept.append(fid)
+        self.dist.seed_injected(kept)
+        ids |= set(kept)
+        self.last_injected = ids
+        if not body:
+            return ""
+        return head + "\n" + "\n".join(f"- {line}" for line in body) + "\n"
 
     def injected_ids(self):
-        return self.env.injected_ids()
+        """The ids of the facts the last `render` chose, both layers: what the session gets."""
+        return sorted(self.last_injected)
 
     def seed_injected(self, ids):
-        self.env.seed_injected(ids)
+        ids = list(ids or ())
+        if self.env is not None:
+            self.env.seed_injected(ids)
+        if self.dist is not None:
+            self.dist.seed_injected(ids)
+        self.last_injected = set(ids)
 
     def update(self, transcript_path, iid="", resolved=None, edited=None):
-        self.env.update(transcript_path, iid=iid, resolved=resolved, edited=edited)
-        self.dist.update(transcript_path, iid=iid, resolved=resolved, edited=edited)
+        if self.env is not None:
+            self.env.update(transcript_path, iid=iid, resolved=resolved, edited=edited)
+        if self.dist is not None:
+            self.dist.update(transcript_path, iid=iid, resolved=resolved, edited=edited)
 
     def save(self, root):
-        self.env.save(root)
-        self.dist.save(root)
+        if self.env is not None:
+            self.env.save(root)
+        if self.dist is not None:
+            self.dist.save(root)
 
     def debug_row(self):
-        row = dict(self.dist.debug_row())
-        row.update(self.env.debug_row())
-        row["_profile"] = "envfacts+distiller"
+        row = dict(self.dist.debug_row()) if self.dist is not None else {}
+        if self.env is not None:
+            row.update(self.env.debug_row())
+            row["_profile"] = ("envfacts+distiller" if self.dist is not None else "envfacts")
+        elif self.dist is not None:
+            row["_profile"] = "distiller"
         return row
 
 
@@ -79,18 +130,21 @@ class PrefixStage(Stage):
         # The environment-fact layer reads intents through a domain vocabulary; the adapter
         # supplies it when it has one (SWE-bench: Python/git; Web-Bench: Node/npm).
         vocab = adapter.env_vocabulary() if hasattr(adapter, "env_vocabulary") else None
+        # The caps apply to the block the agent receives, whatever layers compose it. 0 keeps
+        # the environment layer's own defaults, so the block's fallback is the same one.
+        from .envfacts import MAX_FACTS, MAX_TOKENS
+        caps = {"max_facts": getattr(cfg, "max_facts", 0) or MAX_FACTS,
+                "max_tokens": getattr(cfg, "max_tokens", 0) or MAX_TOKENS}
         env = None
         if "envfacts" in profile:
             from .envfacts import EnvFactsDistiller
-            caps = {"max_facts": getattr(cfg, "max_facts", 0) or None,
-                    "max_tokens": getattr(cfg, "max_tokens", 0) or None}
             env = (EnvFactsDistiller(repo, vocab=vocab, **caps) if fresh
                    else EnvFactsDistiller.load(repo, results_root, vocab=vocab, **caps))
         if profile == "envfacts":
             # LLM-free environment facts alone. Same render/update/save interface, no
             # runner, opt_tokens stays 0 -- the ledger sees no overhead.
             self.reason = "envfacts"
-            self.distiller = env
+            self.distiller = ComposedDistiller(env, None, **caps)
         else:
             # The paid proposer; with `envfacts+distiller` it is told which claims the free
             # layer already injects, so it authors only facts beyond them.
@@ -103,10 +157,10 @@ class PrefixStage(Stage):
             dist.shared_propose = shared_propose
             if env is not None:
                 self.reason = "envfacts+manual-distill"
-                self.distiller = ComposedDistiller(env, dist)
+                self.distiller = ComposedDistiller(env, dist, **caps)
             else:
                 self.reason = "manual-distill"
-                self.distiller = dist
+                self.distiller = ComposedDistiller(None, dist, **caps)
 
     def render(self, task=None):
         """The firing-gated repo manual injected into the NEXT task's prefix."""

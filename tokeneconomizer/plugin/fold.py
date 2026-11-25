@@ -65,7 +65,7 @@ def _run_dir(workdir, trace_path):
     return run
 
 
-def _microskills_config(ctx, profile):
+def microskills_config(ctx, profile):
     from tokeneconomizer.config import InjectionConfig
     return InjectionConfig(enabled=True, profile=profile,
                            propose_every=ctx.config.microskills_propose_every,
@@ -78,7 +78,7 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
     if profile == "off":
         return None
     from tokeneconomizer.microskills import PrefixStage
-    icfg = _microskills_config(ctx, profile)
+    icfg = microskills_config(ctx, profile)
     # Paused once the host's CLI said it is not signed in (`sidecall.paused`): the free layer
     # still learns. A session read from the agent's history never calls a model: the free
     # layer learns from it, and the proposer waits for sessions the plugin sees end.
@@ -206,7 +206,7 @@ def forget_microskills(ctx, ids, undo=False):
                    else (prior or {}).get("profile"))
         if not any(changed for _, changed, _ in out) or prior is None or not profile:
             return out
-        stage = PrefixStage(_microskills_config(ctx, profile), ctx.repo.label, ctx.mech_dir,
+        stage = PrefixStage(microskills_config(ctx, profile), ctx.repo.label, ctx.mech_dir,
                             False, adapter=adapter, agent=ctx.host.name)
         rendered = stage.render() or ""
         facts = dict(stage.distiller.debug_row()) if stage.distiller else {}

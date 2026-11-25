@@ -320,14 +320,33 @@ def cmd_microskills(args):
         if not inj and not os.path.exists(knowledge_path):
             return 0
     text = inj.get("rendered") or ""
-    print(text.rstrip() or "(nothing injected yet: no fact has cleared its firing gate)")
+    ids = set(inj.get("rendered_ids") or ())
+    if ctx.config.microskills != "off":
+        # What the next session actually gets, ids included. The stored block and its ids are
+        # the last fold's render, and state written before the ids were recorded has none:
+        # re-rendering here reads the same facts and the same caps without touching the store.
+        try:
+            from .adapter import LiveAdapter
+            from tokeneconomizer.microskills import PrefixStage
+            adapter = LiveAdapter(ctx.host, ctx.repo.root, vocabulary=ctx.config.vocabulary,
+                                  catalog={}, protect=ctx.config.toolprune_protect)
+            block = PrefixStage(fold.microskills_config(ctx, ctx.config.microskills),
+                                ctx.repo.label, mechanism_dir, fresh=False, adapter=adapter)
+            rendered = block.render() or ""
+        except Exception:
+            rendered = ""
+        if rendered:
+            text, ids = rendered, set(block.injected_ids())
+    print(text.rstrip() or "(nothing injected: no fact cleared its firing gate within the "
+                          "block budget)")
     facts = inj.get("facts") or {}
     rows = [(k, v) for k, v in facts.items() if isinstance(v, dict) and "state" in v]
     if rows:
         print("\nfacts tracked:")
         for k, v in sorted(rows):
+            mark = "INJECTED" if k in ids else ("gate ok" if v.get("inject") else "")
             print(f"  {v.get('state', '?'):9s} fire={v.get('fire', '?'):>5s} "
-                  f"{'INJECTED' if v.get('inject') else '        '} {k}")
+                  f"{mark:9s} {k}")
     stage = Knowledge.load(key, mechanism_dir) if os.path.exists(knowledge_path) else None
     if stage:
         stage.workspace = ctx.repo.root

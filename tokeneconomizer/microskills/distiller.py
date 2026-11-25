@@ -398,11 +398,16 @@ class Fact:
     def firing_rate(self):
         return self.life.firing_rate()
 
-    def observe(self, now, dg, files):
+    def observe(self, now, dg, files, injected=False):
         """Fold one finished-task digest into this fact's lifecycle. The detector is
-        rebuilt per task against that task's authored features."""
+        rebuilt per task against that task's authored features. A fact the session was
+        actually given, whose waste never occurred, counts as having fired: the block did
+        the work, and without that credit a useful fact would see its rate fall for
+        succeeding (the environment layer's FormRepair facts already work this way)."""
         det = DetectorV3Scope(self.spec.get("detector", {}), dg.get("features", {}))
         verdict, fired, exercised = det.verdict(dg)
+        if injected and exercised and not fired:
+            fired = True
         self.life.update(now, verdict, fired, exercised, files)
         return verdict, fired, exercised
 
@@ -606,10 +611,11 @@ class Distiller(Forgetting):
         self.extractors = {}            # name -> Extractor
         self.raw_window = []            # bounded recent [(cmd,out)] per task
         self.forgotten = {}             # id -> {claim, record}: never admitted again
+        self.last_injected = set()      # ids the last `render` chose: what the session got
 
     # ---- featurization -----------------------------------------------------
     def _observe_fact(self, fact, now, dg, files):
-        return fact.observe(now, dg, files)
+        return fact.observe(now, dg, files, injected=fact.id in self.last_injected)
 
     def _featurize(self, dg, cmds):
         feats = {}
@@ -804,15 +810,32 @@ class Distiller(Forgetting):
         return True, "revised-contradict"
 
     # ---- the two operations the Stage calls --------------------------------
-    def render(self, task=None):
-        """Firing-gated manual for the NEXT task. '' if nothing qualifies yet."""
-        lines = [f.injection for f in self.facts.values() if f.injectable()]
-        if not lines:
-            return ""
-        head = (f"# repo operating manual ({self.repo.split('/')[-1]}) "
+    def injectable_items(self):
+        """The [(id, line)] the manual would carry, in render order, before any budget."""
+        return [(fid, f.injection) for fid, f in self.facts.items() if f.injectable()]
+
+    @property
+    def header(self):
+        return (f"# repo operating manual ({self.repo.split('/')[-1]}) "
                 + ("— learned from earlier sessions in this repository" if self.generic
                    else "— learned from prior tasks in this repo"))
-        return head + "\n" + "\n".join(f"- {l}" for l in lines) + "\n"
+
+    def render(self, task=None):
+        """Firing-gated manual for the NEXT task. '' if nothing qualifies yet."""
+        items = self.injectable_items()
+        self.last_injected = {fid for fid, _ in items}
+        if not items:
+            return ""
+        return self.header + "\n" + "\n".join(f"- {line}" for _, line in items) + "\n"
+
+    def injected_ids(self):
+        """The ids of the facts the last `render` chose: what the next session is given."""
+        return sorted(self.last_injected)
+
+    def seed_injected(self, ids):
+        """Say which facts the session about to be folded was actually given, as the
+        environment layer does (`EnvFactsDistiller.seed_injected`)."""
+        self.last_injected = {i for i in ids or () if i in self.facts}
 
     def update(self, transcript_path, iid="", resolved=None, edited=None):
         """Fold in the finished task, then advance the clock (may trigger a paid tick)."""

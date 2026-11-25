@@ -32,8 +32,12 @@ class InjectionConfig:
     #   envfacts+distiller  -- both, the free layer first and its claims handed to the
     #                          proposer as already-stated. Paid (the proposer).
     profile: str = "distiller"
-    # Caps on the environment-fact block (`envfacts`): at most this many facts, and this many
-    # tokens (~4 characters each) for the whole block. 0 keeps envfacts.MAX_FACTS / MAX_TOKENS.
+    # Caps on the injected block, whichever layers compose it: at most this many lines (a
+    # fact, or the line several environment facts merged into), and this many tokens (~4
+    # characters each) for the whole block, header included. The environment layer applies
+    # them first, then `ComposedDistiller` fills the remainder of the same allowance from the
+    # paid manual, leaving out whole any line that does not fit. 0 keeps
+    # envfacts.MAX_FACTS / MAX_TOKENS.
     max_facts: int = 0
     max_tokens: int = 0
 
