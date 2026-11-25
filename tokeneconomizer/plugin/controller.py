@@ -7,7 +7,8 @@
                       (`history`), in the background; with `repomap` on, refresh a stale map
                       in the background
     UserPromptSubmit  open a prompt-turn for the loop guard; on a session's first prompt, add
-                      the repository map (`repomap=on`)
+                      the repository map (`repomap=on`); with `knowledge=on`, add the
+                      Knowledge whose symbol or file the prompt names (never at session start)
     PostToolUse       with `knowledge=on`, after a read, add the Knowledge covering the file
                       (once per session, after the result: no host accepts context before);
                       fold the call into the turn's guard; keep the bytes a Pi `read`
@@ -131,7 +132,7 @@ class LiveController:
         s["source"] = source
         if source in ("startup", "new", "clear", "compact"):
             # What a cleared, compacted or new conversation was given is gone. A resumed one
-            # keeps the Knowledge: it came as tool context, which stays in the history,
+            # keeps the Knowledge: it came as prompt or tool context, which stays in the history,
             # unlike the start context a host may rebuild without.
             s.pop("knowledge_given", None)
             s.pop("files_read", None)
@@ -315,8 +316,14 @@ class LiveController:
         s["turn"] = None
         return summary
 
+    def knowledge_on_prompt(self):
+        """Does this prompt hook bring Knowledge? Only where its output reaches the model and
+        can follow the conversation without rewriting its cached prefix."""
+        return bool(self.cfg.knowledge and not self.cfg.shadow
+                    and self.host.prompt_context and self.host.prompt_knowledge)
+
     def _inject_knowledge(self, s, trigger, extra=None, **match):
-        """The Knowledge block for the file read, within what the
+        """The Knowledge block for `match` (a prompt `task`, or the file `read`), within what the
         native facts injected this session left of the shared budget, which applies to this one
         injection and not to the session as a whole; "" when none fits. Each Knowledge chosen is
         logged with `trigger` and `extra(fact)`. Mutates the session `s`: the ids chosen join
@@ -325,7 +332,7 @@ class LiveController:
         native = s.get("injected_text") or ""
         with self.ctx.store.locked("mechanisms") as got:
             if not got:
-                raise RuntimeError("knowledge state busy")
+                raise fold.Busy("a fold of this repository's sessions holds its state")
             stage = Knowledge.load(workspace_id(self.ctx.repo.label, self.ctx.repo.root),
                                    self.ctx.mech_dir)
             stage.workspace = self.ctx.repo.root
@@ -342,8 +349,24 @@ class LiveController:
                 s["knowledge_given"] = given
             return text
 
+    def _knowledge_from_prompt(self, s, prompt):
+        """The Knowledge block for a prompt that names a Knowledge's symbol or file; "" when none
+        is relevant. A Knowledge whose own file was read earlier in the session is logged with
+        `read_before`. A failure leaves the hook's output as it would be without Knowledge."""
+        if self.replaying or not prompt:     # a replayed hook's answer reaches no one
+            return ""
+        read = s.get("files_read") or []
+        try:
+            return self._inject_knowledge(
+                s, "prompt", task=prompt,
+                extra=lambda stage, fact: {
+                    "read_before": any(f in read for f in stage.files(fact))})
+        except Exception:
+            self._record_error()
+            return ""
+
     def user_prompt(self):
-        if self.cfg.loopguard == "off" and not (
+        if self.cfg.loopguard == "off" and not self.knowledge_on_prompt() and not (
                 self.cfg.repomap == "on" and self.host.prompt_context):
             return {}
         s = self._session()
@@ -356,6 +379,10 @@ class LiveController:
             outputs = self._inject_map(s, seen, block, "UserPromptSubmit", how)
             if outputs:
                 self.store.write("notices.json", seen)
+        block = self._knowledge_from_prompt(s, self.p.get("prompt") or "") \
+            if self.knowledge_on_prompt() else ""
+        if block:
+            outputs.append(self.host.prompt_message("UserPromptSubmit", block))
         if self.cfg.loopguard != "off":
             # A turn still open here never reached Stop -- the person interrupted it. Its
             # outcome is unknown, so it is recorded but does not feed the envelope.
@@ -463,9 +490,7 @@ class LiveController:
     def knowledge_on_read(self):
         """Does this tool hook bring Knowledge? Only after a read, on a host verified to put
         its context after the result without rewriting the cached prefix."""
-        return bool(self.cfg.knowledge and not self.cfg.shadow and self.host.tool_context
-                    and self.p.get("hook_event_name") == "PostToolUse"
-                    and self.host.read_path(self.p))
+        return bool(not self.cfg.shadow and self.host.tool_context and self._reports_read())
 
     def _workspace_path(self, path):
         """A read's path relative to the workspace, "" when it lies outside."""
@@ -481,7 +506,7 @@ class LiveController:
         return bool(self.cfg.knowledge and self.p.get("hook_event_name") == "PostToolUse"
                     and self.host.read_path(self.p))
 
-    def _knowledge_on_read(self):
+    def _knowledge_from_read(self):
         """Remember the file just read (`files_read`), and where the host allows it give the
         Knowledge covering it, logged with the file as its signal, `after_read` and whether the
         file had been read earlier in the session. {} when none is given; a failure leaves the
@@ -509,7 +534,7 @@ class LiveController:
     def post_tool(self):
         if self.host.is_subagent(self.p):
             return {}
-        out = self._knowledge_on_read() if self._reports_read() else {}
+        out = self._knowledge_from_read() if self._reports_read() else {}
         return merge_outputs(out, self._guard_tool()) if out else self._guard_tool()
 
     def _guard_tool(self):

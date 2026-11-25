@@ -287,7 +287,7 @@ def test_a_knowledge_about_several_files_holds_while_all_of_them_do(tmp_path, mo
     stage = Knowledge.load("repo", tmp_path)
     stage.workspace = tmp_path
     fact = next(iter(stage.facts.values()))
-    assert {s for s, _ in stage.signals(fact)} == {"a.txt", "b.txt"}
+    assert set(stage.signals(fact)) == {"a.txt", "b.txt"}
     assert [source["source_session"] for source in fact.spec["sources"]] == ["s0", "s1"]
     assert "a and b agree" in stage.render("look at b.txt")
     assert [f.id for f, _ in stage.covering("a.txt")] == [fact.id] == [f.id for f, _ in stage.covering("b.txt")]
@@ -366,7 +366,7 @@ def test_two_observed_symbols_in_distinct_files_are_admitted(tmp_path):
     assert stage._admit(candidate) == (True, "admitted")
     fact = next(iter(stage.facts.values()))
     assert [(p["path"], p["symbol"]) for p in fact.spec["proof"]] == [("a.py", "alpha"), ("b.py", "beta")]
-    assert set(stage.signals(fact)) == {("alpha", "a.py"), ("beta", "b.py")}
+    assert set(stage.signals(fact)) == {"alpha", "beta"}
     fact.life.state, fact.life.fire_num, fact.life.fire_den = "ACTIVE", 4, 4
     fact.spec["flow"] = "alpha calls beta"
     fact.spec["sources"][0]["role"] = "caller"
@@ -715,3 +715,49 @@ def test_read_budget_prioritizes_the_highest_firing_card(tmp_path, env, repo, mo
                "tool_response": {"content": "support"}}
     text = json.dumps(call(dict(enabled, TE_MICROSKILLS_MAX_FACTS="1"), payload))
     assert "second card" in text and "first card" not in text
+
+
+def test_a_small_budget_keeps_the_stronger_match_then_the_higher_firing_rate(
+        tmp_path, env, repo, monkeypatch):
+    """Story 9: with a budget too small for every match, the strongest match is injected first,
+    then the one with the higher firing rate, and registration order only breaks a tie."""
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    body = "observed\n"
+    names = ["pkg/deep.txt", "lib/full.txt", "lib/twin.txt", "lib/rare.txt"]
+    enabled = learn_knowledge(
+        tmp_path, env, repo, monkeypatch, {n: body for n in names},
+        [{"id": n.split("/")[1][:4], "claim": f"{n} is observed", "source": n} for n in names])
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    one = dict(TE_MICROSKILLS_MAX_FACTS="1")
+    # Registration order puts the file-name match first; the full path is the stronger match.
+    assert "lib/full.txt is observed" in prompt(enabled, repo, "b", "read deep.txt and lib/full.txt", **one)
+    assert "lib/full.txt is observed" in prompt(enabled, repo, "c", "lib/full.txt then deep.txt", **one)
+    # Equal matches: the higher firing rate first, registration order when rates tie.
+    both = "lib/twin.txt and lib/rare.txt"
+    assert "lib/twin.txt is observed" in prompt(enabled, repo, "d", both, **one)
+    stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+    by_source = {f.spec["source"]: f for f in stage.facts.values()}
+    rare, twin = by_source["lib/rare.txt"].life, by_source["lib/twin.txt"].life
+    rare.fire_num, rare.fire_den, twin.fire_num, twin.fire_den = 9, 10, 5, 10
+    stage.save(ctx.mech_dir)
+    assert "lib/rare.txt is observed" in prompt(enabled, repo, "e", both, **one)
+    # The shared budget with native facts is still respected.
+    ctx.store.write("injection.json", {"rendered": "# native\n- A\n- B\n"})
+    together = dict(enabled, TE_MICROSKILLS="envfacts")
+    start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "n", "cwd": repo}
+    assert "- B" in json.dumps(call(dict(together, TE_MICROSKILLS_MAX_FACTS="3"), start))
+    text = prompt(together, repo, "n", "deep.txt lib/full.txt lib/twin.txt", TE_MICROSKILLS_MAX_FACTS="3")
+    assert text.count("is observed") == 1 and "lib/full.txt is observed" in text
+
+
+def test_a_symbol_named_in_the_prompt_outranks_a_file_match(tmp_path, env, repo, monkeypatch):
+    """A symbol source is a Knowledge Signal on its own: naming it needs no file named."""
+    pytest.importorskip("tree_sitter_language_pack")
+    code = "def target():\n    return 1\n"
+    enabled = learn_knowledge(
+        tmp_path, env, repo, monkeypatch, {"first.txt": "observed\n", "second.py": code},
+        [{"id": "file", "claim": "first.txt is observed", "source": "first.txt"},
+         {"id": "sym", "claim": "target returns one", "source": "second.py", "symbol": "target"}])
+    text = prompt(enabled, repo, "a", "in first.txt look at target", TE_MICROSKILLS_MAX_FACTS="1")
+    assert "target returns one" in text and "first.txt is observed" not in text

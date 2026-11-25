@@ -655,8 +655,10 @@ console.log(JSON.stringify([
     assert json.loads(run.stdout) == ["", facts, facts, "", "", facts]
 
 
-def test_pi_keeps_native_section_and_does_not_send_prompt_knowledge(tmp_path):
-    """Pi keeps its native section stable and delivers Knowledge only after a file read."""
+def test_pi_sends_prompt_knowledge_as_a_message_and_leaves_its_section_alone(tmp_path):
+    """Relevant Knowledge varies by prompt. The extension sets its system-prompt section again on
+    every prompt, so Knowledge there would rewrite the cached prefix: it is returned as a message
+    after the prompt, and the section is the same on a prompt with Knowledge and one without."""
     from tokeneconomizer.plugin.hosts import Pi
     node = shutil.which("node")
     if not node or os.name == "nt":
@@ -695,7 +697,7 @@ console.log(JSON.stringify([await prompt("with a file"), await prompt("nothing")
     assert run.returncode == 0, run.stderr
     with_knowledge, without = json.loads(run.stdout)
     assert with_knowledge["sections"] == without["sections"] == {"tokeneconomizer": "native facts"}
-    assert with_knowledge.get("result") is None
+    assert with_knowledge["result"]["message"]["content"] == "knowledge text"
     assert without.get("result") is None
 
 

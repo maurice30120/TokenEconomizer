@@ -36,6 +36,11 @@ def _read(enabled, repo, sid, path, host=None, event="PostToolUse", name="Read",
                           "tool_result": {"text_result_for_llm": "observed"}}, host)
 
 
+def _prompt(enabled, repo, sid, text, host=None):
+    return call(enabled, {"hook_event_name": "UserPromptSubmit", "session_id": sid,
+                          "cwd": repo, "prompt": text}, host)
+
+
 def _logged(enabled, repo):
     return [e for e in store_for(enabled, repo).read_lines("events.jsonl") if e["kind"] == "knowledge"]
 
@@ -66,14 +71,34 @@ def test_a_file_read_earlier_in_the_session_is_flagged(tmp_path, env, repo, monk
     assert _logged(enabled, repo)[-1]["read_before"] is True
 
 
-def test_a_prompt_does_not_inject_a_knowledge_before_a_covered_read(
+def test_a_prompt_naming_a_signal_injects_that_knowledge(
+        tmp_path, env, repo, monkeypatch):
+    """A request naming a Knowledge's file brings it, on a host whose prompt hook reaches the
+    model; a request that shares no signal, and a host without prompt context, bring nothing."""
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)   # loopguard is off
+    assert _prompt(enabled, repo, "n1", "rename the widget") == {}
+    out = _prompt(enabled, repo, "p1", "check source.txt")
+    assert CLAIM in json.dumps(out)
+    assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    (entry,) = _logged(enabled, repo)
+    assert (entry["signal"], entry["trigger"], entry["read_before"]) == (
+        "source.txt", "prompt", False)
+    with monkeypatch.context() as m:
+        m.setattr(ClaudeCode, "prompt_context", False)
+        assert _prompt(enabled, repo, "p2", "check source.txt") == {}
+    assert len(_logged(enabled, repo)) == 1
+
+
+def test_a_knowledge_given_by_the_prompt_is_not_given_again_by_the_read(
         tmp_path, env, repo, monkeypatch):
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
-    out = call(enabled, {"hook_event_name": "UserPromptSubmit", "session_id": "r3", "cwd": repo,
-                         "prompt": "check source.txt"})
-    assert CLAIM not in json.dumps(out)
-    assert CLAIM in json.dumps(_read(enabled, repo, "r3", str(Path(repo) / "source.txt")))
-    assert [e["trigger"] for e in _logged(enabled, repo)] == ["read"]
+    _prompt(enabled, repo, "r3", "check source.txt")
+    assert CLAIM not in json.dumps(_read(enabled, repo, "r3", str(Path(repo) / "source.txt")))
+    assert [e["trigger"] for e in _logged(enabled, repo)] == ["prompt"]
+    # and the other way round
+    _read(enabled, repo, "r4", str(Path(repo) / "source.txt"))
+    assert CLAIM not in json.dumps(_prompt(enabled, repo, "r4", "check source.txt"))
 
 
 def test_card_respects_budget_left_by_native_facts(tmp_path, env, repo, monkeypatch):
@@ -113,17 +138,17 @@ def test_a_read_after_a_clear_gives_the_knowledge_again(tmp_path, env, repo, mon
     assert _logged(enabled, repo)[-1]["read_before"] is False
 
 
-def test_a_later_read_flags_the_file_read_earlier_on_an_unverified_host(
+def test_a_prompt_flags_the_knowledge_files_read_earlier_in_the_session(
         tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin.hosts import ClaudeCode
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
     source = str(Path(repo) / "source.txt")
 
     def prompt(sid):
-        out = _read(enabled, repo, sid, source)
+        out = _prompt(enabled, repo, sid, "check source.txt")
         assert CLAIM in json.dumps(out)
         entry = _logged(enabled, repo)[-1]
-        assert entry["trigger"] == "read"
+        assert entry["trigger"] == "prompt"
         return entry["read_before"]
     assert prompt("p1") is False
     # A host whose read cannot inject still reports the read, and the flag follows it.
@@ -131,3 +156,23 @@ def test_a_later_read_flags_the_file_read_earlier_on_an_unverified_host(
         m.setattr(ClaudeCode, "tool_context", False, raising=False)
         assert _read(enabled, repo, "p2", source) == {}
     assert prompt("p2") is True
+
+
+def test_a_later_read_flags_the_file_read_earlier_on_an_unverified_host(
+        tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    source = str(Path(repo) / "source.txt")
+
+    def read_before(sid):
+        out = _read(enabled, repo, sid, source)
+        assert CLAIM in json.dumps(out)
+        entry = _logged(enabled, repo)[-1]
+        assert entry["trigger"] == "read"
+        return entry["read_before"]
+    assert read_before("p1") is False
+    # A host whose read cannot inject still reports the read, and the flag follows it.
+    with monkeypatch.context() as m:
+        m.setattr(ClaudeCode, "tool_context", False, raising=False)
+        assert _read(enabled, repo, "p2", source) == {}
+    assert read_before("p2") is True

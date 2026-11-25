@@ -2,8 +2,9 @@
 
 The defaults:
 
-  * knowledge   = False      -- optional file-backed Knowledge, injected after a covered file
-                                is read; independent of microskills;
+  * knowledge   = False      -- optional file-backed Knowledge, injected when a prompt names its
+                                symbol or file, or after a file a Knowledge covers is read;
+                                independent of microskills;
   * microskills = "off"      -- nothing is learned or injected. `on` is "envfacts+distiller":
                                 the LLM-free facts plus the proposer, which reads digests of
                                 finished sessions every `microskills_propose_every` sessions and

@@ -5,7 +5,8 @@ This context describes reusable knowledge derived from sessions in a workspace.
 ## Language
 
 **Knowledge**:
-A reusable understanding of a coherent mechanism spanning at least two distinct files, supported by evidence. Knowledge is distinct from a native Fact.
+A reusable understanding of a coherent mechanism and the relationships between its parts across at least two distinct files, supported by evidence. Knowledge is distinct from a native Fact and from a collection of separate file summaries.
+Several Knowledge entries can cover the same file when they describe different mechanisms.
 
 **Multi-source Knowledge**:
 Knowledge supported by evidence for each of its source files or symbols.
@@ -20,10 +21,10 @@ What a session actually read of a source: the whole file for a complete read, th
 The bytes of a file kept by the hook as a Pi `read` returned them, so a partial read can be proved against the version it observed. Bounded per session, discarded once the session is folded, and never shown to the model as reading.
 
 **Knowledge Signal**:
-A file covered by a Knowledge, optionally with a symbol in that file.
+The symbol a Knowledge is about or, failing that, the file it is about, taken from its contract. A user request shares a signal when it names that symbol (as a whole identifier) or that file (by path or by file name). A Knowledge with several sources has one signal per source.
 
 **Relevant Knowledge**:
-Knowledge whose mechanism includes a file the agent has read.
+Knowledge that shares a Knowledge Signal with the user's current request, or that covers a file the agent has read. Only Relevant Knowledge is ever given to the agent, and never at session start; when none is relevant, none is given.
 
 **Knowledge Revision**:
 A marker identifying a particular revision of a Knowledge entry, separate from its stable identity.

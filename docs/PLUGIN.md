@@ -14,7 +14,7 @@ the hooks run) and `plugin/` (the packaging for each agent). To install and use 
 | Hook | What the plugin does | Mechanism it drives |
 |---|---|---|
 | `SessionStart` | Injects the repository's micro-skills (a cached render) as `additionalContext`, at a new start, and on a Copilot resume the text that session started with (§3); announces changed facts, tools the deny list newly left out, or, under `toolprune=propose` (or when `auto` could not write the file), a proposal still waiting, each in one `systemMessage` line; folds any earlier session whose end was never seen; on Claude Code with `history_import` on, the first time in a repository with nothing folded, starts a detached `te history import` of its sessions from before the plugin, and says once when that is done | microskills |
-| `UserPromptSubmit` | Opens a prompt-turn for the loop guard; Knowledge is not injected on the prompt — see the [Knowledge README](../tokeneconomizer/knowledge/README.md) | loopguard |
+| `UserPromptSubmit` | Opens a prompt-turn for the loop guard; with `knowledge=on`, on a host whose prompt context reaches the model, injects the Knowledge whose symbol or file the prompt names (Relevant Knowledge; none at session start; none on Codex, Cursor, Antigravity, Grok or opencode; on Pi as a message, not in the system-prompt section) — see the [Knowledge README](../tokeneconomizer/knowledge/README.md) | loopguard, Knowledge |
 | `PostToolUse` | With `knowledge=on`, after a file read on Claude Code, Copilot or Pi, injects the Knowledge covering the file, once per session and also with the loop guard off (never before the read: see the 2026-11-24 probe below); folds the call into the turn's guard; delivers a redirect as `additionalContext`, then, if the turn is still stuck, a one-line notice to the person (on Claude Code, also as context asking the model to repeat it); never stops the turn | loopguard |
 | `PostToolUseFailure` | The same, for a call that failed (Claude Code and Copilot report a failed call only here); the answer names this event, as Claude Code requires | loopguard |
 | `Stop` | Closes the turn; a turn that *ended green* feeds the per-repository envelope | loopguard |
@@ -75,7 +75,8 @@ One session's hooks run one at a time (`plugin/hookqueue.py`): an agent that cal
 parallel starts their hooks together, and each one rewrites the session document. A hook that gets
 no lock within a few seconds saves its event to the session's queue and answers nothing, and
 whoever holds the lock applies the queue. `SessionStart`, and `UserPromptSubmit` under
-`repomap=on`, answer with context, so they are not queued: they wait, and then run without the
+`repomap=on` or with `knowledge=on` on a host whose prompt context reaches the model, answer
+with context, so they are not queued: they wait, and then run without the
 lock. A decision the guard reaches on a queued call has no answer to go in, so it waits on the turn
 and the turn's next call acts on it, a call late. A turn that ends first drops it (an `undelivered`
 event): no nudge is counted, and there is no one left to redirect.
@@ -325,7 +326,11 @@ isolated `PI_CODING_AGENT_DIR`):
   from Pi's own session file.
 * The section is re-applied on every prompt: Pi diffs prompt sections between runs and records
   the change, so one left out would be recorded as removed. Unchanged, it adds nothing after
-  the first prompt. Knowledge is instead delivered after a covered file is read.
+  the first prompt. Relevant Knowledge varies by prompt, so it never goes into the section:
+  `before_agent_start` returns it as a message after the prompt (`message` in Pi's
+  `BeforeAgentStartEventResult`, which Pi 1.5.2's `agent-session` appends after the user message),
+  leaving the section and the cached prefix as they were. Checked offline by a Node test of the
+  extension; not run against a live Pi session.
 * Pi's bash result carries a real exit code (`structuredContent.exit_code`), which the
   ended-green proxy uses (unless another command's status replaced it: 2026-10-26, below); its
   session file is a tree, and only the active branch is read.

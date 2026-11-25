@@ -46,32 +46,66 @@ saved lifecycle; injection still requires a valid proof and the usual lifecycle 
 
 ## When Knowledge is injected
 
-Knowledge arrives after a covered file is read, never at session start or on the prompt alone.
+Knowledge is injected only when it is Relevant Knowledge, and never at session start: the user
+prompt hook adds it when the request shares a Knowledge Signal, and the tool hook adds it when
+the agent reads a file a Knowledge covers (the [read trigger](#the-read-trigger) below). A
+Knowledge Signal is the symbol the Knowledge's contract names or, failing that, its file; a
+Knowledge with several sources has one signal per source. A request that shares no signal
+injects nothing. Stored Knowledge needs no migration: its signals come from its current
+contract.
+
 An eligible structured Knowledge is a short map: a claim, a flow, and the role of each source
 file, optionally including its symbol. The source proofs are not included in the injected map.
 Native facts still arrive at session start. A selection error leaves the hook's output empty.
 
 A Knowledge is injected once per session: its id is kept in the session state
-(`knowledge_given`, separate from the native `injected_ids`), and later reads inject nothing new.
+(`knowledge_given`, separate from the native `injected_ids`), and later prompts naming the same
+signal, and later reads, inject nothing new.
 A clear, a compact or a new session drops the context and empties
 that memory, so the Knowledge can be injected again. A resumed session keeps it, on every host:
-the Knowledge arrives as tool context, which stays in the resumed history (unlike the
+the Knowledge arrives as prompt or tool context, which stays in the resumed history (unlike the
 start context, which Copilot rebuilds), so it is not injected twice.
 The shared budget (the native facts' share of `microskills_max_facts` and
-`microskills_max_tokens`) applies to each injection, not cumulatively
+`microskills_max_tokens`) applies to each injection, a prompt's or a read's, not cumulatively
 over the session: Knowledge already given does not use it up.
-If a complete map does not fit, it is skipped rather than truncated. Matches are ordered by
-firing rate, then registration order, and selection makes no model call.
+If a complete map does not fit, it is skipped rather than truncated.
+
+### The prompt trigger
+
+The user prompt hook injects a Knowledge when the request names its signal: the symbol as a
+whole identifier (`target` matches, `retarget` does not), or its file by path or by file name,
+in any case (`source.txt` is not matched inside `resource.txt` or `source.txt.bak`). It runs on
+`UserPromptSubmit`, with `knowledge=on`, also when the loop guard is off, and only on a host
+whose prompt output reaches the model (`prompt_context`) and can carry a text that varies by
+prompt without rewriting the cached prefix (`prompt_knowledge`). That is Claude Code, Copilot,
+Droid and Hermes, plus Pi as a message after the prompt; opencode gets none, because its plugin
+can only write the system prompt; Codex, Cursor, Antigravity and Grok get none, because their
+prompt hook's output reaches no model. A shadow run and a replayed (queued) hook inject
+nothing from this trigger.
+
+When more Knowledge matches a prompt than the shared budget holds, the strongest match is kept
+first: a symbol named as a whole identifier (3), then a file named by its full path (2), then a
+file named by its bare file name (1); a Knowledge with several sources counts its strongest
+matching signal. Equal matches are ordered by firing rate, highest first, and what still ties
+keeps registration order, so the choice is deterministic and makes no model call.
+
+Delivery is the host's own prompt context, after what the cached prefix holds. On Pi, whose
+extension re-sends a system-prompt section on every prompt, it is instead a message after the
+prompt (`promptMessage` in the dispatcher's answer), leaving that section as it was: checked
+offline against Pi 1.5.2's `agent-session` source and by a Node test of the extension, not in a
+live Pi session. The prompt delivery of the other hosts was not re-run against a live session
+for this trigger.
 
 ### The read trigger
 
-The trigger is the agent reading a file a Knowledge covers (any of the
+The second trigger is the agent reading a file a Knowledge covers (any of the
 files it is about), even when the request never named it. It
 runs on `PostToolUse` after a file-reading tool (`Read`, `read`, `view`) succeeds, with
 `knowledge=on`, also when the loop guard is off, and only on a host verified to put that
 context after the tool's result at the end of the conversation (`tool_context`: Claude Code,
 Copilot, Pi). A host not verified gets nothing from this trigger. The same once-per-session
-memory (`knowledge_given`) and the same budget, proof, lifecycle and forgotten gates apply. The file must lie
+memory (`knowledge_given`) and the same budget, proof, lifecycle and forgotten gates apply, so a
+Knowledge given by the prompt is not given again by the read, nor the reverse. The file must lie
 inside the workspace. Every match is an exact path, so covering Knowledge is ordered by firing rate, then
 registration order. A subagent's read, a failed
 read, a shadow run and a replayed (queued) hook inject nothing.
@@ -112,10 +146,12 @@ file-reading tool), Cursor, Antigravity, Grok, Droid, opencode, Hermes.
 
 Each Knowledge actually injected is logged, one line per Knowledge, in the repository's
 `events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
-`knowledge_id`, `signal` (the file read), `trigger` (`"read"`), `when` (`"after_read"`),
-`read_before` (the file was read earlier in the session), and the usual `at`, `session_id`
-and `shadow`. Nothing is logged when nothing is injected; forgotten, stale-proof or
-budget-dropped Knowledge never appears.
+`knowledge_id`, `signal` (the symbol or file the prompt named, or the file that was read),
+`trigger` (`"prompt"` or `"read"`), plus the usual `at`, `session_id` and `shadow`. A read
+adds `when` (`"after_read"`). Both triggers add `read_before`: on a read, the file had been read
+earlier in the session; on a prompt, one of the Knowledge's own files had been. Nothing is logged when nothing is injected, and
+forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind; the ledger has no
+`injection` field for Knowledge, which belongs to the paid optimizer.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores

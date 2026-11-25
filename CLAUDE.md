@@ -11,6 +11,8 @@ agent behavior, and `docs/ARCHITECTURE.md` for how the package fits together.
   - `microskills/` — learn repository facts from finished sessions; render the injected block
   - `toolprune/` — unused-tool evidence and the deny-list proposal; Codex capability packages
   - `loopguard/` — the per-call failure-loop guard and its per-repository envelope
+  - `knowledge/` — Knowledge: what sessions read, the evidence-backed maps proposed from it,
+    and the injection of Relevant Knowledge (symbol or file contracts)
   - `trace/` — each agent's session-log format (Claude Code, Codex, Copilot CLI, Pi, opencode,
     Cursor, Grok Build, Hermes Agent, Antigravity CLI, Factory Droid)
   - `plugin/` — the runtime: hook dispatch, per-repository state, settings, the `te` CLI
@@ -31,7 +33,7 @@ agent behavior, and `docs/ARCHITECTURE.md` for how the package fits together.
 - `tests/` — offline tests for the package and the plugin
 
 ## Conventions
-- The mechanisms (`microskills`, `toolprune`, `loopguard`, `trace`) never import
+- The mechanisms (`microskills`, `toolprune`, `loopguard`, `knowledge`, `trace`) never import
   `tokeneconomizer.plugin`, and nothing under `tokeneconomizer/` imports `experiments/`; both
   are pinned by `tests/test_plugin_package.py`.
 - Python >= 3.10; standard library only except the Tree-sitter dependencies used for Knowledge symbol proofs; proof falls back to file-level when the parser is unavailable. A hook must start fast and fail open: any exception in

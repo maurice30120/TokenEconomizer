@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 import time
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -147,19 +147,37 @@ def test_session_start_answers_itself(env, repo, short_waits):
     assert waiting(env) == 0 and doc(env, repo)["source"] == "startup"
 
 
-def test_a_prompt_that_may_carry_the_map_is_not_queued():
-    def ctrl(repomap, knowledge=False, read=False):
-        return SimpleNamespace(cfg=SimpleNamespace(repomap=repomap),
-                               knowledge_on_prompt=lambda: knowledge,
-                               knowledge_on_read=lambda: read)
-    assert hookqueue._queues(ctrl("off", knowledge=True), "UserPromptSubmit")
-    assert hookqueue._queues(ctrl("off", knowledge=True), "PostToolUse")
-    assert not hookqueue._queues(ctrl("off", read=True), "PostToolUse")
-    assert hookqueue._queues(ctrl("off", read=True), "Stop")
+def test_a_prompt_that_may_carry_context_is_not_queued():
+    def ctrl(repomap, knowledge=False, prompt_context=True, prompt_knowledge=True,
+             tool_context=False, shadow=False):
+        """A controller enough for `_queues`: the real predicates, over the host's flags."""
+        host = SimpleNamespace(prompt_context=prompt_context, prompt_knowledge=prompt_knowledge,
+                               tool_context=tool_context, read_path=lambda p: "/r/a.py")
+        c = SimpleNamespace(cfg=SimpleNamespace(repomap=repomap, knowledge=knowledge,
+                                               shadow=shadow),
+                            host=host, p={"hook_event_name": "PostToolUse"})
+        c.knowledge_on_prompt = MethodType(LiveController.knowledge_on_prompt, c)
+        c.knowledge_on_read = MethodType(LiveController.knowledge_on_read, c)
+        c._reports_read = MethodType(LiveController._reports_read, c)
+        return c
     assert hookqueue._queues(ctrl("off"), "UserPromptSubmit")
     assert hookqueue._queues(ctrl("start"), "UserPromptSubmit")
     assert not hookqueue._queues(ctrl("on"), "UserPromptSubmit")
+    # A prompt that may carry the Relevant Knowledge waits for the lock, and then runs.
+    assert not hookqueue._queues(ctrl("off", knowledge=True), "UserPromptSubmit")
+    assert not hookqueue._queues(ctrl("start", knowledge=True), "UserPromptSubmit")
+    # On a host whose prompt output reaches no model, or only its system prompt, there is
+    # nothing to wait for.
+    assert hookqueue._queues(ctrl("off", knowledge=True, prompt_context=False),
+                             "UserPromptSubmit")
+    assert hookqueue._queues(ctrl("off", knowledge=True, prompt_knowledge=False),
+                             "UserPromptSubmit")
+    assert hookqueue._queues(ctrl("off", knowledge=True, shadow=True), "UserPromptSubmit")
+    # A read that may carry the Knowledge covering the file is not queued either.
     assert hookqueue._queues(ctrl("on"), "PostToolUse")
+    assert not hookqueue._queues(ctrl("on", knowledge=True, tool_context=True), "PostToolUse")
+    assert hookqueue._queues(ctrl("on", knowledge=True), "PostToolUse")
+    assert hookqueue._queues(ctrl("off", knowledge=True, tool_context=True), "Stop")
     assert not hookqueue._queues(ctrl("off"), "SessionStart")
 
 

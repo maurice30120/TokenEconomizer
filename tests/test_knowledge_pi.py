@@ -78,7 +78,10 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     assert "Pi observation" not in json.dumps(call(env, start, host="pi"))
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
     out = call(env, payload, host="pi")
-    assert "Pi observation" not in json.dumps(out)
+    # A message after the prompt, never the system prompt section the extension re-sends and
+    # whose rewrite would change the cached prefix.
+    assert "Pi observation" in out["hookSpecificOutput"]["promptMessage"]
+    assert "additionalContext" not in out["hookSpecificOutput"]
     assert call(env, dict(payload, session_id="other", prompt="rename widget"), host="pi") == {}
     # A read of the covered file: the extension sends it as a steering message after the result.
     read = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": str(repo), "tool_name": "read",

@@ -19,18 +19,15 @@ def workspace_id(repo, workspace):
 SYMBOL, PATH, FILE_NAME = 3, 2, 1      # strength of a match; 0 means the request does not name it
 
 
-def match_strength(text, signal, path=None):
-    """How strongly a request names this symbol or file: a symbol (a whole identifier) beats a
-    file named by its full path, which beats a bare file name; never as a piece of a longer name.
-    A symbol counts only when the request also names the file it lives in (`path`, by path or by
-    file name): a bare name such as `run` does not say which declaration is meant."""
+def match_strength(text, signal):
+    """How strongly a request names this symbol or file: a symbol named as a whole identifier
+    beats the file named by its full path, which beats its bare file name; never a piece of a
+    longer name."""
     if signal in ("", None):
         return 0
     text = text.replace("\\", "/")
     if "/" not in signal and "." not in signal:
-        if not re.search(rf"(?<!\w){re.escape(signal)}(?!\w)", text):
-            return 0
-        return SYMBOL if not path or match_strength(text, path) else 0
+        return SYMBOL if re.search(rf"(?<!\w){re.escape(signal)}(?!\w)", text) else 0
     path = signal.replace("\\", "/")
     for name, strength in ((path, PATH), (path.rsplit("/", 1)[-1], FILE_NAME)):
         if re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-]|\.\w)", text, re.IGNORECASE):
@@ -267,18 +264,15 @@ class Knowledge(Distiller):
         return bool(proofs) and all(verify_proof(self.workspace, proof) for proof in proofs)
 
     def signals(self, fact):
-        """A Knowledge's signals as `(signal, file)` pairs, one per source: the symbol its
-        contract names, with the file it lives in, else its file alone."""
+        """A Knowledge's signals, one per source: the symbol its contract names, else its
+        file."""
         out = []
         for proof in proofs_of(fact.spec) or [{}]:
             path = proof.get("path") or fact.spec.get("source")
             symbol = proof.get("symbol") if proof.get("kind") == "symbol" else None
             signal = symbol or path
-            if not isinstance(signal, str) or not signal:
-                continue
-            pair = (signal, path if symbol and isinstance(path, str) else None)
-            if pair not in out:
-                out.append(pair)
+            if isinstance(signal, str) and signal and signal not in out:
+                out.append(signal)
         return out
 
     def relevant(self, task):
@@ -292,8 +286,7 @@ class Knowledge(Distiller):
             if task is None:
                 signal, strength = "", 0
             else:
-                signal, strength = max(((s, match_strength(task, s, path))
-                                        for s, path in self.signals(fact)),
+                signal, strength = max(((s, match_strength(task, s)) for s in self.signals(fact)),
                                        key=lambda m: m[1], default=(None, 0))
                 if not strength:
                     continue
