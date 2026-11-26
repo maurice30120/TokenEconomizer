@@ -21,6 +21,7 @@ KNOWLEDGE_HEADER = (
 _ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _CARD_FIELDS = {"id", "claim", "injection", "detector"}   # what a persisted card holds
 _STOCK_SWEPT = ".swept"      # in `knowledge_state/`: the stock is on this layout, and swept
+_RETIRED_STOCK = re.compile(r"--[0-9a-f]{64}\.json$")   # `<label>--<sha256(checkout)>.json`
 
 # The mission is spec #329's English sentence, verbatim; the format and the admission rules are
 # separate so that what the engine checks and what the model is told cannot drift apart. Nothing
@@ -105,6 +106,13 @@ def _is_card(record):
     return isinstance(record, dict) and _CARD_FIELDS <= set(record)
 
 
+def retired_stock_name(name):
+    """Whether a stock file carries the name the retired per-checkout layout gave it: the
+    repository's label, then `--`, then the SHA-256 of the checkout it was learned in. One
+    repository's stock is one file on this layout, whatever checkout reads it."""
+    return bool(_RETIRED_STOCK.search(name))
+
+
 def _unreadable(state):
     """Whether a stock file holds a record this layout cannot read: the retired multi-file
     cards were `{spec, life}` records, and the window and the command history beside them
@@ -120,10 +128,12 @@ def reset_stock(root):
     retired multi-file cards, and the window and command history that indexed them -- is not
     data of this one, and loading it would carry an old index into the new stock: the fold
     removes the file before it reads anything. A file of four-field cards is this layout's own
-    and stays. Nothing outside `<root>/knowledge_state` is touched: the micro-skills state, the
-    sessions, the ledger and `knowledge_log.jsonl` keep every line. A marker beside the files
-    records the sweep, so a store pays for it once and every later fold only looks. Returns the
-    names removed.
+    and stays, unless its name is the one the retired layout gave a single checkout's stock
+    (`retired_stock_name`): that name is another layout's, whatever the file holds. Nothing
+    outside `<root>/knowledge_state` is touched: the micro-skills state, the sessions, the
+    ledger and `knowledge_log.jsonl` keep every line. A marker beside the files records the
+    sweep, so a store pays for it once and every later fold only looks. Returns the names
+    removed.
     """
     directory = os.path.join(root, "knowledge_state")
     marker = os.path.join(directory, _STOCK_SWEPT)
@@ -136,11 +146,14 @@ def reset_stock(root):
     removed = []
     for name in names:
         path = os.path.join(directory, name)
-        try:
-            with open(path, encoding="utf-8") as stream:
-                state = json.load(stream)
-        except (OSError, ValueError):
-            state = None                 # a file this layout cannot read at all
+        if retired_stock_name(name):
+            state = None             # unreadable by its name alone: this layout reads no such file
+        else:
+            try:
+                with open(path, encoding="utf-8") as stream:
+                    state = json.load(stream)
+            except (OSError, ValueError):
+                state = None         # a file this layout cannot read at all
         if not _unreadable(state):
             continue
         try:

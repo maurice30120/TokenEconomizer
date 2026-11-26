@@ -8,7 +8,9 @@ four-field stock without touching the other memories or the logs.
 The flows run through the plugin's hooks, as a session does, and read the store beside them the
 way `te microskills` does.
 """
+import hashlib
 import json
+import os
 from pathlib import Path
 
 from tokeneconomizer.knowledge.stage import Knowledge, reset_stock
@@ -194,6 +196,24 @@ def test_a_stock_the_layout_cannot_read_is_discarded_and_the_other_memories_stay
                TE_KNOWLEDGE="on", TE_MICROSKILLS="envfacts", TE_MICROSKILLS_PROPOSE_EVERY="1")
     assert sorted(Knowledge.load(ctx.repo.label, ctx.mech_dir).facts) == ["source-observed"]
     assert "form_repair:run_tests:pytest" in envfacts_state(ctx)["facts"]
+
+
+def test_the_sweep_retires_the_per_checkout_name_the_retired_layout_used(tmp_path):
+    """Criterion 4: the layout this branch replaces filed one stock per checkout, as
+    `<label>--<sha256 of the checkout>.json`. That name is not this layout's, so the file goes
+    whatever it holds -- here four-field cards this layout could read. Another repository's
+    stock beside it is its own, and stays as it was."""
+    stock = Path(tmp_path, "knowledge_state")
+    stock.mkdir()
+    retired = ("acme__widget--"
+               + hashlib.sha256(os.fsencode(str(tmp_path))).hexdigest() + ".json")
+    (stock / retired).write_text(json.dumps({"repo": "acme/widget",
+                                             "facts": {"source-observed": CARD}}))
+    other = {"repo": "gitlab/widget", "facts": {"other-observed": CARD}}
+    (stock / "gitlab__widget.json").write_text(json.dumps(other))
+    assert reset_stock(tmp_path) == [retired]
+    assert [path.name for path in stock.glob("*.json")] == ["gitlab__widget.json"]
+    assert json.loads((stock / "gitlab__widget.json").read_text()) == other
 
 
 def test_the_sweep_removes_only_what_the_layout_cannot_read(tmp_path):
