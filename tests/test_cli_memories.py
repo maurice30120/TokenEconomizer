@@ -145,6 +145,25 @@ def test_the_listing_shows_the_forgotten_entries_of_both_memories(both, te):
     assert "proof=valid" in knowledge and KNOWLEDGE_CLAIM in knowledge
 
 
+# ---- one stock path for the stage, the lister and the CLI --------------------------------
+def test_the_stock_sits_at_the_one_path_the_stage_the_lister_and_the_cli_name(both, te, env, repo):  # noqa: F811
+    """The layout (`knowledge_state/<repo>.json`) is written down once, in
+    `knowledge.stage.stock_path`, and the CLI's existence check, `saved_layers` and the stage
+    that writes the stock all read it from there: a rename in one of the three would otherwise
+    make `te microskills` list no Knowledge while the fold kept writing it."""
+    from tokeneconomizer.knowledge.stage import Knowledge as Stage, stock_path
+    from tokeneconomizer.microskills import saved_layers
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    ctx = LiveContext.build(ClaudeCode(), repo, env)
+    path = stock_path(ctx.mech_dir, ctx.repo.label)
+    assert path == Stage._path(ctx.mech_dir, ctx.repo.label)
+    assert os.path.exists(path)                      # where the five sessions' fold wrote it
+    assert [layer for layer in saved_layers(ctx.repo.label, ctx.mech_dir)
+            if isinstance(layer, Stage)]                   # and where the listing reads it
+    assert KNOWLEDGE_ID in te("microskills", "--type", "knowledge")[1]
+
+
 # ---- #332/3: a shared id is ambiguous, and the filter picks one ---------------------------
 def test_a_shared_id_is_refused_without_changing_either_memory(both, env, repo, te):  # noqa: F811
     share_the_id(env, repo)

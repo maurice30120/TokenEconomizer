@@ -115,6 +115,17 @@ def retired_stock_name(name):
     return bool(_RETIRED_STOCK.search(name))
 
 
+def stock_path(root, repo):
+    """`<root>/knowledge_state/<repo>.json`: one repository's stock on this host.
+
+    The one place the layout is written down. `Knowledge._path` makes the directory and writes
+    the file, `microskills.saved_layers` looks for it, and the CLI checks it exists; three
+    modules spelling `knowledge_state` and `repo_filename` themselves is how a rename in one of
+    them silently stops the listing from seeing what the fold keeps writing.
+    """
+    return os.path.join(root, "knowledge_state", repo_filename(repo) + ".json")
+
+
 def _unreadable(state):
     """Whether a stock file holds a record this layout cannot read: the retired multi-file
     cards were `{spec, life}` records, and the window and the command history beside them
@@ -323,13 +334,13 @@ class Knowledge(Distiller):
 
     @staticmethod
     def _path(root, repo):
-        """`<root>/knowledge_state/<repo>.json`: one repository's stock on this host, filed by
-        its name as the other mechanism state is. `root` is the store a context built for the
-        repository and the host, so every clone and worktree of the repository reads it, and the
-        checkout a card is verified against is `workspace`, never part of the key."""
-        directory = os.path.join(root, "knowledge_state")
-        os.makedirs(directory, exist_ok=True)
-        return os.path.join(directory, repo_filename(repo) + ".json")
+        """The stock's path, with its directory made (`stock_path` names it): `root` is the store
+        a context built for the repository and the host, so every clone and worktree of the
+        repository reads it, and the checkout a card is verified against is `workspace`, never
+        part of the key."""
+        path = stock_path(root, repo)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
 
     def update(self, transcript_path, iid="", resolved=None, edited=None, observed_transcript=None,
                captures=None):

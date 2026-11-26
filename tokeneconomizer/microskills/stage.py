@@ -209,15 +209,14 @@ def saved_layers(repo, root, vocab=None, workspace=None, memory=None):
     paid proposer, then Knowledge. `workspace` is the checkout a Knowledge contract is verified
     against; `memory` loads one memory only, so a listing of it reads no state of the other."""
     from . import envfacts
-    from ..knowledge.stage import Knowledge
+    from ..knowledge.stage import Knowledge, stock_path
     out = []
     if memory in (None, MEMORY_MICROSKILLS):
         for cls, sub in ((envfacts.EnvFactsDistiller, envfacts.STATE_SUBDIR),
                          (Distiller, _distiller.STATE_SUBDIR)):
             if os.path.exists(os.path.join(root, sub, repo_filename(repo) + ".json")):
                 out.append(cls.load(repo, root, vocab=vocab))
-    if memory in (None, MEMORY_KNOWLEDGE) and os.path.exists(
-            os.path.join(root, "knowledge_state", repo_filename(repo) + ".json")):
+    if memory in (None, MEMORY_KNOWLEDGE) and os.path.exists(stock_path(root, repo)):
         knowledge = Knowledge.load(repo, root, vocab=vocab)
         if workspace is not None:
             knowledge.workspace = workspace

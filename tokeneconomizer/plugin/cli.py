@@ -311,14 +311,13 @@ def cmd_microskills(args):
         print(f"`microskills {args.action}` takes no ids; did you mean `microskills forget "
               f"{' '.join(args.ids)}`?")
         return 2
+    from tokeneconomizer.knowledge.stage import stock_path
     from tokeneconomizer.microskills import MEMORY_KNOWLEDGE, memory_of, saved_layers
-    from tokeneconomizer.names import repo_filename
     ctx = _ctx(args)
     memory = args.type
     inj = ctx.store.read("injection.json") or {}
     mechanism_dir = os.path.join(ctx.store.base, "mechanisms")
-    knowledge_path = os.path.join(mechanism_dir, "knowledge_state",
-                                  repo_filename(ctx.repo.label) + ".json")
+    knowledge_path = stock_path(mechanism_dir, ctx.repo.label)
     asks_microskills = memory != MEMORY_KNOWLEDGE
     if asks_microskills and ctx.config.microskills == "off":
         print(f"micro-skills is off here (the default). `config set microskills=on` turns it on: "
