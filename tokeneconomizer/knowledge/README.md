@@ -76,8 +76,7 @@ and `unforget` change nothing and ask for `te microskills forget --type microski
 ## When Knowledge is injected
 
 Knowledge never arrives at a session start: it arrives after a successful read of a file it
-covers. Hosts that support the earlier prompt trigger keep it; Pi and Copilot use the read
-trigger for this experiment.
+covers, or at a user prompt that names it.
 
 An eligible Knowledge is rendered as its `injection` text and nothing else: the contract and the
 internal block stay out of the injected map. Knowledge has a total budget for the conversation
@@ -85,7 +84,8 @@ context. Set `knowledge_max_cards` (default 4) and `knowledge_max_tokens` (defau
 tokens) via the regular `te config` settings; both bound the whole conversation, over every turn
 and trigger. The two ceilings are separate: a session that has used its cards gets no more,
 however many tokens are left, and the other way round. Native facts use their own budget. A map
-must fit in full.
+must fit in full. A trigger whose budget is already spent searches nothing: the ceilings are read
+before any card is ranked, so an exhausted conversation pays for no search.
 
 An already delivered card consumes its allowance only once while it remains in context.
 Duplicate start hooks for the same event are ignored for both native facts and Knowledge.
@@ -93,7 +93,12 @@ Copilot rebuilds start context on resume, so TE gives back a block it recorded, 
 cards' contracts hold, without charging or logging it again. A block that disappears -- a clear,
 or a compaction that drops it -- does not give its capacity back: the session's cards and tokens
 stay spent, and the cards it held are not given again. Pi compaction keeps the steer messages
-still in the retained history.
+still in the retained history. A card costs the same however it arrived: the triggers share one
+ledger (`knowledge_given`, `knowledge_tokens`), and only a block delivered after a read is
+recorded under that read's `tool_use_id` (`knowledge_read_blocks`), because that is the only one
+Pi's compaction can recognize in the branch it keeps. A prompted card is not recorded there -- the
+message it arrived in carries no read id -- and must not be: both triggers keep their charge when
+a block disappears, so neither may be refunded and neither needs the record.
 
 ### The prompt trigger
 
@@ -102,19 +107,69 @@ whole identifier (`target` matches, `retarget` does not), or its file by path or
 in any case (`source.txt` is not matched inside `resource.txt` or `source.txt.bak`). It runs on
 `UserPromptSubmit`, with `knowledge=on`, also when the loop guard is off, and only on a host
 whose prompt output reaches the model (`prompt_context`) and can carry a text that varies by
-prompt without rewriting the cached prefix (`prompt_knowledge`). That is Claude Code,
-Droid and Hermes; opencode gets none, because its plugin
+prompt without rewriting the cached prefix (`prompt_knowledge`). That is Claude Code, Copilot
+CLI, Pi, Droid and Hermes; opencode gets none, because its plugin
 can only write the system prompt; Codex, Cursor, Antigravity and Grok get none, because their
 prompt hook's output reaches no model. A shadow run and a replayed (queued) hook inject
 nothing from this trigger.
+
+Pi and Copilot used to be left out of that list, because the Knowledge they were given at a
+session start was their delivery and one conversation must not receive a card twice. Nothing is
+given at a start any more (#333), so that reason went with it (#334) and the host's own two
+flags are again all that decide. On Pi the block comes back as `promptMessage`, which the
+extension sends as a message after the user's prompt: its `additionalContext` would go into the
+`tokeneconomizer` system-prompt section the extension sets again on every prompt, and a text
+that varies by prompt must not rewrite that section or the cached prefix it belongs to.
 
 When more Knowledge matches a prompt than the remaining Knowledge budget holds, the strongest match is kept
 first: a symbol named as a whole identifier (3), then a file named by its full path (2), then a
 file named by its bare file name (1); a Knowledge with several sources counts its strongest
 matching signal. Equal matches keep registration order, so the choice is deterministic and
-makes no model call.
+makes no model call. The cards that share no signal with the request come after those that do,
+nearest first, when an index is configured (§ The local index).
 
 Delivery is the host's own prompt context, after what the cached prefix holds.
+
+### The local index (a seam, not a model)
+
+Two rules meet here: `CLAUDE.md` allows the standard library and Tree-sitter only, and spec #329
+leaves the choice of an embedding model -- and of the similarity at which a request counts as
+being about a card -- to #335's campaign. So what this repository holds is the seam and not the
+model: a search that takes an embedder from its caller, and a local index prepared from the
+stock. **No embedding model ships with the plugin, and no number here was measured:** the
+default backend is today's exact-signal ranking, and the model and the threshold are #335's
+decision.
+
+The index is `<store>/mechanisms/knowledge_index/<repo>.json`, beside `knowledge_state/` and
+never inside it, so the stock's own sweep never reads it and deleting it loses no card. It holds
+one entry per card: `id` (the key), `claim`, `injection` (the text the vector was made from),
+`paths` and `signals` (what the contract covers) and `vector`, plus the `repo` it was filed for,
+the `embedder` that made the vectors, and the `digest` of the cards it describes. Treat that name
+and shape as a compatibility surface, as the stock's. It carries no validity and no status: which
+cards may be delivered is decided by `Knowledge.contract_valid` at each search, against the
+checkout as it is then, so a local edit or a branch change shows from the next search, an invalid
+card stays in the stock and becomes eligible again when the code it proves comes back, and no
+re-embedding is needed for any of it. The index is rebuilt -- every vector again -- when the cards
+change (a card admitted, forgotten, edited or removed: `digest`) or when another embedder is
+configured. A search that cannot rank -- no embedder, an embedder that fails, vectors of the
+wrong shape -- delivers exactly what the exact signals deliver, and loses no card they gave.
+
+An embedder is an object with a `name` and an `embed(texts)` method returning one vector per
+text; the plugin configures none yet (`Knowledge.embedder`), and a test injects a fake one. What
+the fake proves is the seam -- ranking by nearness, the rebuild, a French request reaching an
+English claim -- and not the quality of any model: its "learning" is a hand-written table of
+topics. The similarity a card must reach (`NEAR_SIMILARITY`) is a placeholder for the campaign to
+measure. A card delivered because the request is near it is logged with an empty `signal`, since
+the request named none of its signals.
+
+### The campaign's selectors (temporary)
+
+`knowledge_variant` (`TE_KNOWLEDGE_VARIANT`) exists only for spec #329's campaign, which runs one
+environment under four arms, and **#336 removes it**: `a` runs the prompt trigger alone, `b` the
+read trigger alone, `c` both (the default, and what the triggers above describe) and `d` neither
+-- the control arm, which delivers no Knowledge at all while the micro-skills stay native. Every
+arm keeps the same global ceilings (`knowledge_max_cards`, `knowledge_max_tokens`) and the same
+ledger, so an arm differs in which triggers run and in nothing else.
 
 ### The read trigger
 
@@ -166,7 +221,8 @@ file-reading tool), Cursor, Antigravity, Grok, Droid, opencode, Hermes.
 
 Each Knowledge actually injected is logged, one line per Knowledge, in the repository's
 `events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
-`knowledge_id`, `signal` (the symbol or file the prompt named, or the file that was read),
+`knowledge_id`, `signal` (the symbol or file the prompt named, or the file that was read; empty
+when an index ranked the card by nearness and the request named none of its signals),
 `trigger` (`"prompt"` or `"read"`), `type` (`"knowledge"`, the field that tells the two
 memories' volumes apart), that line's own `chars` and `tokens`, plus the usual `at`,
 `session_id` and `shadow`. A read adds `when` (`"after_read"`). Both triggers add `read_before`:
@@ -247,6 +303,13 @@ budget, native coexistence, the activation matrix, the shared proposal call and 
 `tests/test_knowledge_stock.py` covers the stock itself: two checkouts of one repository
 sharing it, validity computed against each checkout's own code, the other repository and host
 kept out of it, the layout reset and a restart of an installation holding both memories.
+`tests/test_knowledge_index.py` covers the index and the nearness ranking over a fake embedder:
+ranking by nearness, the rebuild when a card is admitted, the on-disk name and shape, a search
+that cannot rank, and criterion 2's contract rules at search time; the fake proves the seam and
+measures no model. `tests/test_knowledge_variants.py` covers #334's delivery: the prompt
+reaching Pi as `promptMessage` with its section untouched, the one ledger and dedup of the two
+triggers, the four temporary arms, a spent budget searching nothing, and a prompted and a
+read-delivered card costing the same across a Pi compaction.
 
 This is a deterministic integration scenario, not a representative yield estimate:
 the same read is replayed, confirmations are synthetic and the candidate is supplied
