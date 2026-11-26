@@ -396,7 +396,7 @@ class LiveController:
                     if not got:
                         raise fold.Busy("a fold of this repository's sessions holds its state")
                     stage = self._knowledge_stage()
-                    block, _kept = stage.restore_startup(cards)
+                    block = stage.restore_startup(cards)[0]
                     gone = {fid for fid in cards if fid not in stage.facts}
                     s["knowledge_given"] = [fid for fid in s.get("knowledge_given") or []
                                              if fid not in gone]
