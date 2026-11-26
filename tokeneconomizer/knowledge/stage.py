@@ -534,7 +534,7 @@ class Knowledge(Distiller):
                 break
             if given is not None and card.id in given:
                 continue
-            line = self._card_line(card)
+            line = self.card_line(card)
             if knowledge_tokens(knowledge_block([*lines, line])) > max_tokens:
                 continue
             lines.append(line)
@@ -549,12 +549,14 @@ class Knowledge(Distiller):
         for card_id in cards:
             card = self.facts.get(card_id)
             if card is not None and self.contract_valid(card):
-                lines.append(self._card_line(card))
+                lines.append(self.card_line(card))
                 kept.append(card_id)
         return knowledge_block(lines), kept
 
     @staticmethod
-    def _card_line(card):
+    def card_line(card):
+        """The line one card renders as: its injection alone, as JSON so that a text with a
+        newline stays one line."""
         return "- " + json.dumps(card.injection, ensure_ascii=False)
 
     def render(self, task=None, max_facts=4, max_tokens=150, given=None):

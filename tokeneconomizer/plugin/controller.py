@@ -425,12 +425,21 @@ class LiveController:
             text, chosen = stage.selection(max_facts=facts, max_tokens=tokens, given=given,
                                            **match)
             for fact, signal in chosen:
+                line = stage.card_line(fact)
                 self._log("knowledge", knowledge_id=fact.id, signal=signal, trigger=trigger,
+                          type="knowledge", chars=len(line), tokens=knowledge_tokens(line),
                           **(extra(stage, fact) if extra else {}))
             if text:
                 cost = knowledge_tokens(text)
                 s["knowledge_given"] = given
                 s["knowledge_tokens"] = tokens_used + cost
+                # The volume this session was given, by type, for the ledger: descriptive. The
+                # block is already inside the requests the trace prices, so this is never added
+                # to the effective tokens nor to the mechanism overhead.
+                volumes = dict(s.get("knowledge_injected") or {"chars": 0, "tokens": 0})
+                volumes["chars"] = int(volumes.get("chars", 0)) + len(text)
+                volumes["tokens"] = int(volumes.get("tokens", 0)) + cost
+                s["knowledge_injected"] = volumes
                 if trigger == "read" and self.host.name == "pi" and self.p.get("tool_use_id"):
                     s.setdefault("knowledge_read_blocks", {})[self.p["tool_use_id"]] = {
                         "cards": [fact.id for fact, _ in chosen], "tokens": cost,

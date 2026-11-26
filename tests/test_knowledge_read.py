@@ -302,6 +302,45 @@ def test_a_compaction_deduplicates_what_it_keeps_and_credits_nothing_back(
     assert not read("c.txt")      # and its place was not given back
 
 
+def test_the_delivery_and_its_volume_are_logged_without_being_counted_twice(
+        tmp_path, env, repo, monkeypatch):
+    """Criterion 5 (#333): the delivery is logged with its type and its volume, and the volume is
+    descriptive -- the block is already inside the requests the trace priced, so it reaches
+    neither the effective tokens nor the mechanism overhead."""
+    from tokeneconomizer.knowledge.stage import knowledge_tokens
+    from tokeneconomizer.plugin import accounting
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    source = str(Path(repo) / "source.txt")
+
+    def session(sid, delivers):
+        transcript = write_session(tmp_path / f"{sid}.jsonl",
+                                  [("check source.txt", [("Read", {"file_path": source},
+                                                          "observed", False)])])
+        base = {"session_id": sid, "transcript_path": str(transcript), "cwd": repo}
+        call(enabled, dict(base, hook_event_name="SessionStart", source="startup"))
+        if delivers:
+            _read(enabled, repo, sid, source)
+        call(enabled, dict(base, hook_event_name="SessionEnd", reason="other"))
+    session("counted", True)
+    session("control", False)
+    store = store_for(enabled, repo)
+    rows = {r["session_id"]: r for r in store.read_lines("ledger.jsonl")}
+    counted, control = rows["counted"], rows["control"]
+    (entry,) = [e for e in store.read_lines("events.jsonl")
+                if e["kind"] == "knowledge" and e["session_id"] == "counted"]
+    line = '- "Source is observed"'
+    assert (entry["type"], entry["trigger"], entry["chars"], entry["tokens"]) == (
+        "knowledge", "read", len(line), knowledge_tokens(line))
+    assert counted["knowledge_injected"]["tokens"] >= entry["tokens"] > 0
+    assert counted["knowledge_injected"]["chars"] > entry["chars"]
+    assert control["knowledge_injected"] == {"chars": 0, "tokens": 0}
+    # The same transcript, with and without the delivery: the cost the ledger charges is the
+    # same, and so is the overhead. Only the descriptive volumes differ.
+    assert (counted["effective_tokens"], counted["overhead"]) == (
+        control["effective_tokens"], control["overhead"])
+    assert accounting.summarize(list(rows.values()))["overhead_tokens"] == 0
+
+
 def test_a_host_not_verified_and_every_other_case_inject_nothing(tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin.hosts import ClaudeCode
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
