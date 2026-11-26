@@ -80,7 +80,7 @@ and `unforget` change nothing and ask for `te microskills forget --type microski
 ## When Knowledge is injected
 
 Knowledge never arrives at a session start: it arrives after a successful read of a file it
-covers, or at a user prompt that names it.
+covers, or at a user prompt that names it or is near it.
 
 An eligible Knowledge is rendered as its `injection` text and nothing else: the contract and the
 internal block stay out of the injected map. Knowledge has a total budget for the conversation
@@ -93,8 +93,12 @@ before any card is ranked, so an exhausted conversation pays for no search.
 
 An already delivered card consumes its allowance only once while it remains in context.
 Duplicate start hooks for the same event are ignored for both native facts and Knowledge.
-Copilot rebuilds start context on resume, so TE gives back a block it recorded, by id, while its
-cards' contracts hold, without charging or logging it again. A block that disappears -- a clear,
+Copilot rebuilds start context on resume, so TE gives back a block an earlier start of this
+conversation recorded, by id, while its cards' contracts hold, without charging or logging it
+again. Only session state written before #333 retired the start delivery holds such a block:
+nothing records one at a start any more, so a conversation that began since has nothing to be
+given back, and Pi never restores anything -- its `keeps_start_context` is true, so a resumed
+conversation still carries what its start added. A block that disappears -- a clear,
 or a compaction that drops it -- does not give its capacity back: the session's cards and tokens
 stay spent, and the cards it held are not given again. Pi compaction keeps the steer messages
 still in the retained history. A card costs the same however it arrived: the triggers share one
