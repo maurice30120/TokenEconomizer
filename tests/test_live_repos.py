@@ -255,6 +255,8 @@ def test_an_old_remote_carries_its_learned_state_under_the_new_name(tmp_path, en
     learned(st, "aaron-jx-li/te")
     st.write(os.path.join("mechanisms", "knowledge_state", "aaron__jx-li__te.json"),
              {"repo": "aaron-jx-li/te", "facts": {}})
+    st.write(os.path.join("mechanisms", "knowledge_index", "aaron__jx-li__te.json"),
+             {"repo": "aaron-jx-li/te", "embedder": "", "digest": "", "cards": {}})
     root = env["TOKENECONOMIZER_HOME"]
     assert repos.needs_migration(root)
     repos.run_migration(root, env)
@@ -262,6 +264,8 @@ def test_an_old_remote_carries_its_learned_state_under_the_new_name(tmp_path, en
     path = new.path("mechanisms", "envfacts_state", "microsoft__te.json")
     assert json.load(open(path))["repo"] == "microsoft/te"
     path = new.path("mechanisms", "knowledge_state", "microsoft__te.json")
+    assert json.load(open(path))["repo"] == "microsoft/te"
+    path = new.path("mechanisms", "knowledge_index", "microsoft__te.json")
     assert json.load(open(path))["repo"] == "microsoft/te"
     assert not repos.needs_migration(root)
 
