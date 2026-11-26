@@ -25,6 +25,7 @@ KNOWLEDGE_HEADER = (
     "Use as guidance; read code when needed."
 )
 _ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_CARD_FIELDS = {"id", "claim", "injection", "detector"}   # what a persisted card holds
 
 # The mission is spec #329's English sentence, verbatim; the format and the admission rules are
 # separate so that what the engine checks and what the model is told cannot drift apart. Nothing
@@ -511,7 +512,14 @@ class Knowledge(Distiller):
         self.now = state.get("now", 0)
         self.opt_tokens = state.get("opt_tokens", 0.0)
         self.last_propose = state.get("last_propose", -1)
-        self.facts = {k: cls.FACT_CLS.from_dict(v) for k, v in state.get("facts", {}).items()}
+        self.facts = {}
+        for key, record in (state.get("facts") or {}).items():
+            # A stock left by the retired multi-file format holds `{spec, life}` records. Spec
+            # #329 starts from a blank Knowledge stock and its old blocks are not restored as
+            # data of this one, so a record that is not a card is skipped and the rest of the
+            # stock still loads: a legacy state file never fails a fold.
+            if isinstance(record, dict) and _CARD_FIELDS <= set(record):
+                self.facts[key] = cls.FACT_CLS.from_dict(record)
         self.window = list(state.get("window") or [])[-WINDOW:]
         self.raw_window = [[(c, "") for c in cmds] for cmds in state.get("raw_cmds") or []]
         self.forgotten = dict(state.get("forgotten") or {})

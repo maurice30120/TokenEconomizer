@@ -199,6 +199,31 @@ def test_a_knowledge_persists_only_its_four_business_fields(tmp_path):
     assert restored.contract_valid(card)
 
 
+def test_a_stock_from_the_retired_format_does_not_break_the_fold(tmp_path, env, repo,
+                                                                monkeypatch):
+    """Spec #329 starts from a blank Knowledge stock: the records its retired format wrote are
+    not data of this one, so they are skipped -- never raised -- and the fold still learns."""
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    ctx = LiveContext.build(ClaudeCode(), repo, dict(env, TE_KNOWLEDGE="on"))
+    repo_id = workspace_id(ctx.repo.label, ctx.repo.root)
+    Path(Knowledge._path(ctx.mech_dir, repo_id)).write_text(json.dumps({
+        "repo": ctx.repo.label, "now": 9, "opt_tokens": 0.0, "last_propose": 0,
+        "facts": {"old-mechanism": {
+            "spec": {"id": "old-mechanism", "claim": "an old mechanism",
+                     "flow": "old", "sources": [{"source": "source.txt"}]},
+            "life": {"state": "live", "confirm": 2}}},
+        "forgotten": {},
+        "window": [{"iid": "old", "edited_files": [], "n_cmds": 0,
+                    "cmd_templates": [], "test_invocations": []}],
+        "raw_cmds": [["pytest", "passed"]]}))
+    assert Knowledge.load(repo_id, ctx.mech_dir).facts == {}
+    _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    assert sorted(Knowledge.load(repo_id, ctx.mech_dir).facts) == ["source-observed"]
+    assert not any((row.get("knowledge") or {}).get("error")
+                   for row in ctx.store.read_lines("ledger.jsonl"))
+
+
 def test_the_rendered_card_is_its_injection_alone(tmp_path):
     stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
     assert stage._admit(proposal(injection="source.txt is the observed input")) == (True, "admitted")
