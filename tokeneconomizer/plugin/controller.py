@@ -136,9 +136,13 @@ class LiveController:
     # ---- SessionStart -----------------------------------------------------------------
     def session_start(self):
         source = self.p.get("source") or "startup"
-        retained = self.p.get("retained_knowledge_reads")
-        if source == "compact" and self.host.name == "pi" and isinstance(retained, list):
-            return self._compact_pi_knowledge(retained)
+        if source == "compact" and self.host.name == "pi":
+            # Pi's compaction is not a fresh start for Knowledge (#333): the retained branch keeps
+            # what it kept, the cards' ids and their charge stay spent whether or not the block
+            # survived, and a block it dropped gives no place back. So nothing is reset, pruned or
+            # restored here -- and the ids the extension reports are not read (they only ever
+            # served the refund #333 deleted).
+            return {}
         fresh = source in ("startup", "new", "clear", "compact")
         s = self._session()
         # A host can aggregate multiple hooks for the same start. Share the delivery guard
@@ -153,7 +157,6 @@ class LiveController:
             s.pop("knowledge_given", None)
             s.pop("knowledge_tokens", None)
             s.pop("knowledge_startup", None)
-            s.pop("knowledge_read_blocks", None)
             s.pop("files_read", None)
         s.setdefault("cwd", self.host.cwd(self.p, self.ctx.env))
         outputs = []
@@ -361,19 +364,6 @@ class LiveController:
         stage.workspace = root
         return stage
 
-    def _compact_pi_knowledge(self, retained):
-        """Pi keeps the messages after the compaction boundary: a block whose steering message
-        it dropped is gone from the conversation. Its ids and its charge stay (#333: a block
-        that disappears does not give the session's budget back), so the cards it held are not
-        given again and their place is not available to new ones."""
-        s = self._session()
-        blocks = s.get("knowledge_read_blocks") or {}
-        kept = {call_id: block for call_id, block in blocks.items() if call_id in retained}
-        if len(kept) != len(blocks):
-            s["knowledge_read_blocks"] = kept
-            self._save(s)
-        return {}
-
     def _restore_knowledge(self, s, fresh):
         """The one block `SessionStart` can still carry: Knowledge an earlier start of this
         conversation recorded, given back by id to a host that rebuilt that start away.
@@ -448,10 +438,6 @@ class LiveController:
                 volumes["chars"] = int(volumes.get("chars", 0)) + len(text)
                 volumes["tokens"] = int(volumes.get("tokens", 0)) + cost
                 s["knowledge_injected"] = volumes
-                if trigger == "read" and self.host.name == "pi" and self.p.get("tool_use_id"):
-                    s.setdefault("knowledge_read_blocks", {})[self.p["tool_use_id"]] = {
-                        "cards": [fact.id for fact, _ in chosen], "tokens": cost,
-                    }
             return text
 
     def _knowledge_from_prompt(self, s, prompt):

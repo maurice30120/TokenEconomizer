@@ -101,12 +101,10 @@ given back, and Pi never restores anything -- its `keeps_start_context` is true,
 conversation still carries what its start added. A block that disappears -- a clear,
 or a compaction that drops it -- does not give its capacity back: the session's cards and tokens
 stay spent, and the cards it held are not given again. Pi compaction keeps the steer messages
-still in the retained history. A card costs the same however it arrived: the triggers share one
-ledger (`knowledge_given`, `knowledge_tokens`), and only a block delivered after a read is
-recorded under that read's `tool_use_id` (`knowledge_read_blocks`), because that is the only one
-Pi's compaction can recognize in the branch it keeps. A prompted card is not recorded there -- the
-message it arrived in carries no read id -- and must not be: both triggers keep their charge when
-a block disappears, so neither may be refunded and neither needs the record.
+still in the retained history, and it is not a fresh start: it resets no card and no token. A
+card costs the same however it arrived: the triggers share one ledger (`knowledge_given`,
+`knowledge_tokens`), and both keep their charge when a block disappears, so neither is ever
+refunded -- and nothing has to record which read delivered what, so nothing does.
 
 ### The prompt trigger
 

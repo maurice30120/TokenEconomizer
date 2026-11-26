@@ -155,10 +155,9 @@ def test_a_budget_spent_before_the_prompt_ranks_nothing(tmp_path, env, repo, mon
 
 def test_a_compaction_charges_a_prompted_card_and_a_read_card_the_same(
         tmp_path, env, repo, monkeypatch):
-    """Criterion 4 (#334): Pi's compaction reports which steering messages the branch still
-    keeps, by the `details.teReadId` they carry -- an id the message a prompted card arrived in
-    does not have. Both triggers therefore keep the same bookkeeping: the ids and the charge stay
-    spent, and only the read block's record goes."""
+    """Criterion 4 (#334): a card costs the same however it arrived. Pi's compaction is not a
+    fresh start, so both triggers keep the ids and the charge spent -- nothing is refunded, and
+    nothing records which read delivered what any more."""
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
     _stock_for("pi", enabled, repo)
     store = store_for(enabled, repo, host="pi")
@@ -168,12 +167,11 @@ def test_a_compaction_charges_a_prompted_card_and_a_read_card_the_same(
     spent = {sid: (list(store.read(f"sessions/{sid}.json")["knowledge_given"]),
                    store.read(f"sessions/{sid}.json")["knowledge_tokens"]) for sid in ("p", "r")}
     for sid in ("p", "r"):
-        assert _start(enabled, repo, sid, "compact", "pi", retained_knowledge_reads=[]) == {}
+        assert _start(enabled, repo, sid, "compact", "pi") == {}
         state = store.read(f"sessions/{sid}.json")
         assert (state["knowledge_given"], state["knowledge_tokens"]) == spent[sid]
-    # Only the read trigger had a block to record, and the compaction kept none of it.
-    assert store.read("sessions/r.json")["knowledge_read_blocks"] == {}
-    assert "knowledge_read_blocks" not in store.read("sessions/p.json")
+        # Nothing records the read block the compaction dropped: no refund exists to need it.
+        assert "knowledge_read_blocks" not in state
     # Neither card is given again: the charge is still the conversation's.
     assert CLAIM not in json.dumps(_prompt(enabled, repo, "p", "check source.txt", host="pi"))
     assert CLAIM not in json.dumps(_read(enabled, repo, "r", "source.txt", host="pi", name="read",

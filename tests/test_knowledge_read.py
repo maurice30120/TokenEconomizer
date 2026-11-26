@@ -269,7 +269,9 @@ def test_a_resume_restores_a_recorded_block_only_while_its_contract_holds(
 def test_a_compaction_deduplicates_what_it_keeps_and_credits_nothing_back(
         tmp_path, env, repo, monkeypatch):
     """Criterion 4 (#333): Pi's compaction leaves the session's budget spent. What the branch
-    still carries is deduplicated; a block it dropped is gone, and its place is not given back."""
+    still carries is deduplicated; a block it dropped is gone, and its place is not given back.
+    Nothing records which block a read delivered any more, and nothing needs to: no trigger is
+    refunded, so the record #333 no longer reads is not written either."""
     names = ["a.txt", "b.txt", "c.txt"]
     enabled = learn_knowledge(tmp_path, env, repo, monkeypatch,
                               dict.fromkeys(names, "observed\n"),
@@ -284,19 +286,16 @@ def test_a_compaction_deduplicates_what_it_keeps_and_credits_nothing_back(
                   call_id=name))
     assert [read(n) for n in names] == [True, True, False]     # two cards, the ceiling spent
     state = dst.store.read("sessions/pi1.json")
-    assert sorted(state["knowledge_read_blocks"]) == ["a.txt", "b.txt"]
+    assert "knowledge_read_blocks" not in state
     spent = (list(state["knowledge_given"]), state["knowledge_tokens"])
     # The block the branch kept is deduplicated: nothing is given or spent again.
-    assert _start(enabled, repo, "pi1", "compact", "pi",
-                  retained_knowledge_reads=["a.txt"]) == {}
+    assert _start(enabled, repo, "pi1", "compact", "pi") == {}
     state = dst.store.read("sessions/pi1.json")
     assert (state["knowledge_given"], state["knowledge_tokens"]) == spent
-    assert sorted(state["knowledge_read_blocks"]) == ["a.txt"]
     assert not read("a.txt")
     # The blocks it dropped are gone from the conversation, and their place stays spent.
-    assert _start(enabled, repo, "pi1", "compact", "pi", retained_knowledge_reads=[]) == {}
+    assert _start(enabled, repo, "pi1", "compact", "pi") == {}
     state = dst.store.read("sessions/pi1.json")
-    assert state["knowledge_read_blocks"] == {}
     assert (state["knowledge_given"], state["knowledge_tokens"]) == spent
     assert not read("b.txt")      # its id is still the session's: no new card
     assert not read("c.txt")      # and its place was not given back
