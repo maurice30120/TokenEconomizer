@@ -200,6 +200,28 @@ def test_a_stock_the_layout_cannot_read_is_discarded_and_the_other_memories_stay
     assert "form_repair:run_tests:pytest" in envfacts_state(ctx)["facts"]
 
 
+def test_a_swept_stock_says_so_in_the_log_the_fold_writes(tmp_path, env, repo, monkeypatch):
+    """Criterion 4, and what a person needs from it: an upgraded store's old Knowledge is
+discarded once, deliberately, and the fold logs the file it discarded -- the store's
+`knowledge_log.jsonl`, the record of what the Knowledge memory took and turned away -- so that
+cards that vanished from `te microskills` have an explanation the user can find."""
+    enabled = fold_mixed(tmp_path, env, repo, monkeypatch, [CARD], sessions=1,
+                         TE_KNOWLEDGE="off", TE_MICROSKILLS="envfacts")
+    ctx = context_in(dict(enabled, TE_KNOWLEDGE="on"), repo)
+    old = Path(Knowledge._path(ctx.mech_dir, ctx.repo.label))
+    old.write_text(json.dumps(OLD_STOCK))
+    fold_mixed(tmp_path, env, repo, monkeypatch, [CARD], sessions=1,
+               TE_KNOWLEDGE="on", TE_MICROSKILLS="envfacts", TE_MICROSKILLS_PROPOSE_EVERY="1")
+    (swept,) = [line for line in ctx.store.read_lines("knowledge_log.jsonl")
+                if line.get("event") == "stock-swept"]
+    assert swept["removed"] == [old.name] and swept["repo"] == ctx.repo.label
+    # Once: the next fold finds the marker and nothing to say.
+    fold_mixed(tmp_path, env, repo, monkeypatch, [CARD], sessions=1,
+               TE_KNOWLEDGE="on", TE_MICROSKILLS="envfacts", TE_MICROSKILLS_PROPOSE_EVERY="1")
+    assert len([line for line in ctx.store.read_lines("knowledge_log.jsonl")
+                if line.get("event") == "stock-swept"]) == 1
+
+
 def test_the_sweep_retires_the_per_checkout_name_the_retired_layout_used(tmp_path):
     """Criterion 4: the layout this branch replaces filed one stock per checkout, as
     `<label>--<sha256 of the checkout>.json`. That name is not this layout's, so the file goes

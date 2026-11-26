@@ -122,8 +122,10 @@ def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_
                   if not sidecall.paused(ctx.host.name, ctx.root)
                   else sidecall.local_runner("proposer", ctx.config))
     # The first fold of a store resolves its stock: what an earlier layout wrote there is not
-    # data this one reads, so it goes before anything is loaded or admitted.
-    reset_stock(ctx.mech_dir)
+    # data this one reads, so it goes before anything is loaded or admitted -- and the fold says
+    # in its log which files it discarded, since nothing else would tell the person who missed
+    # the cards.
+    log_swept(ctx, reset_stock(ctx.mech_dir), session_id)
     stage = Knowledge.load(ctx.repo.label, ctx.mech_dir, runner=runner,
                            vocab=adapter.env_vocabulary())
     stage.workspace = ctx.repo.root
@@ -142,6 +144,21 @@ def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_
     else:
         log_proposals(ctx, stage.outcomes, session_id)
     return dict(proposal_counts(stage.outcomes), optimizer_tokens=stage.opt_tokens - before)
+
+
+def log_swept(ctx, removed, session_id):
+    """One line in `<store>/knowledge_log.jsonl` when the first fold of a store discarded stock
+    an earlier layout wrote, naming the files: an upgraded store's old Knowledge is thrown away
+    once, deliberately, and this is where a person finds out what became of it. A logging
+    failure must never fail the fold."""
+    if not removed:
+        return
+    try:
+        ctx.store.append("knowledge_log.jsonl", {
+            "at": time.time(), "session_id": session_id, "host": ctx.host.name,
+            "repo": ctx.repo.label, "event": "stock-swept", "removed": list(removed)})
+    except Exception:
+        return
 
 
 def log_proposals(ctx, outcomes, session_id):

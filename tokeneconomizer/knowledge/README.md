@@ -60,7 +60,11 @@ one repository's own on this host, filed by its name as the other mechanism stat
 clone and worktree of the repository -- with the same `origin`, or the same main checkout when
 it has none -- reads and writes the same cards. The first fold of a store discards a stock an
 earlier layout wrote, cards and index together, and leaves the micro-skills state, the
-sessions, the ledger and the log untouched.
+sessions, the ledger and the log untouched. An upgraded store's old Knowledge is therefore
+discarded once, deliberately: the fold marks the store with a `.swept` file in
+`knowledge_state/` so it happens once and never again, and when it removed anything it writes
+one `stock-swept` line naming the files to `knowledge_log.jsonl`, which is where a person whose
+cards disappeared finds out why.
 
 `te microskills` lists both memories in one pass -- the micro-skills, then the Knowledge -- each
 row saying which one it belongs to: a Knowledge's identity, claim, current proof status, the
