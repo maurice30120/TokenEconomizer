@@ -59,8 +59,10 @@ memories apart. Verification is local, against the checkout the card is read in.
 one repository's own on this host, filed by its name as the other mechanism state is, so every
 clone and worktree of the repository -- with the same `origin`, or the same main checkout when
 it has none -- reads and writes the same cards. The first fold of a store discards a stock an
-earlier layout wrote, cards and index together, and leaves the micro-skills state, the
-sessions, the ledger and the log untouched. An upgraded store's old Knowledge is therefore
+earlier layout wrote -- its cards, with the window and the command history that indexed them,
+together -- and leaves the micro-skills state, the sessions, the ledger and the log untouched.
+The index this layout keeps is not part of that: it lives beside `knowledge_state/`, never
+inside it, so the sweep never reads it. An upgraded store's old Knowledge is therefore
 discarded once, deliberately: the fold marks the store with a `.swept` file in
 `knowledge_state/` so it happens once and never again, and when it removed anything it writes
 one `stock-swept` line naming the files to `knowledge_log.jsonl`, which is where a person whose
