@@ -109,7 +109,9 @@ def test_another_repository_of_the_same_name_reads_its_own_stock(
 
 def test_another_host_reads_its_own_stock(tmp_path, env, repo, monkeypatch):
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
-    assert list(Path(store_for(enabled, repo).path("mechanisms", "knowledge_state")).iterdir())
+    stock = Path(store_for(enabled, repo).path("mechanisms", "knowledge_state"))
+    assert sorted(json.loads((stock / "acme__widget.json").read_text())["facts"]) == [
+        "source-observed"]
     assert not Path(store_for(enabled, repo, host="pi")
                     .path("mechanisms", "knowledge_state")).exists()
 
