@@ -672,7 +672,7 @@ def test_a_symbol_named_in_the_prompt_outranks_a_file_match(tmp_path, env, repo,
 DETECTOR = {"scope": "pytest", "confirm": "passed"}
 
 
-def session_events(repo, sid_index=0):
+def session_events(repo):
     """One Claude session: it reads source.txt and support.txt and passes a test run."""
     source, support = Path(repo) / "source.txt", Path(repo) / "support.txt"
     content = {"source.txt": "observed\n", "support.txt": "support\n"}
