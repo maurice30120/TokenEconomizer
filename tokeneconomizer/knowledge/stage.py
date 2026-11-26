@@ -21,6 +21,7 @@ KNOWLEDGE_HEADER = (
 _ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _CARD_FIELDS = {"id", "claim", "injection", "detector"}   # what a persisted card holds
 _STOCK_SWEPT = ".swept"      # in `knowledge_state/`: the stock is on this layout, and swept
+_RETIRED_STOCK = re.compile(r"--[0-9a-f]{64}\.json$")   # `<label>--<sha256(checkout)>.json`
 
 # The mission is spec #329's English sentence, verbatim; the format and the admission rules are
 # separate so that what the engine checks and what the model is told cannot drift apart. Nothing
@@ -105,22 +106,40 @@ def _is_card(record):
     return isinstance(record, dict) and _CARD_FIELDS <= set(record)
 
 
+def retired_stock_name(name):
+    """Whether a stock file carries the name the retired per-checkout layout gave it: the
+    repository's label, then `--`, then the SHA-256 of the checkout it was learned in. One
+    repository's stock is one file on this layout, whatever checkout reads it."""
+    return bool(_RETIRED_STOCK.search(name))
+
+
 def _unreadable(state):
     """Whether a stock file holds a record this layout cannot read: the retired multi-file
     cards were `{spec, life}` records, and the window and the command history beside them
-    indexed a stock this one does not have."""
-    return not isinstance(state, dict) or not all(
-        _is_card(record) for record in (state.get("facts") or {}).values())
+    indexed a stock this one does not have. Never raises: the sweep runs before anything is
+    loaded, and a shape it does not expect -- `facts` not an object, a record not a card -- is
+    unreadable state, not an error that would leave the file and every fold after it failing."""
+    if not isinstance(state, dict):
+        return True
+    facts = state.get("facts")
+    if facts is None:
+        return False                # no record: an empty stock of this layout, not a foreign one
+    return not isinstance(facts, dict) or not all(
+        _is_card(record) for record in facts.values())
 
 
 def reset_stock(root):
     """Discard the Knowledge state an earlier layout wrote, once, so the stock starts blank.
 
-    Spec #329's stock is a repository's four-field cards. A file holding anything else -- the
-    retired multi-file cards, and the window and command history that indexed them -- is not
-    data of this one, and loading it would carry an old index into the new stock: the fold
-    removes the file before it reads anything. A file of four-field cards is this layout's own
-    and stays. Nothing outside `<root>/knowledge_state` is touched: the micro-skills state, the
+    Spec #329's stock is a repository's four-field cards. A file is this layout's when it is an
+    object whose `facts` holds four-field cards, or no `facts` at all; anything else -- the
+    retired multi-file layout's `{spec, life}` records, a `facts` that is not an object -- is
+    state this one cannot read, and loading it would carry an old index into the new stock: the
+    fold removes the whole file before it reads anything, so the window and the command history
+    the retired layout kept in that same file go with it. A file of four-field cards is this
+    layout's own and stays, unless its name is the one the retired layout gave a single
+    checkout's stock (`retired_stock_name`): that name is another layout's, whatever the file
+    holds. Nothing outside `<root>/knowledge_state` is touched: the micro-skills state, the
     sessions, the ledger and `knowledge_log.jsonl` keep every line. A marker beside the files
     records the sweep, so a store pays for it once and every later fold only looks. Returns the
     names removed.
@@ -132,15 +151,18 @@ def reset_stock(root):
     try:
         names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
     except OSError:
-        names = []
+        return []                    # not listed, not swept: no marker, so the next fold tries again
     removed = []
     for name in names:
         path = os.path.join(directory, name)
-        try:
-            with open(path, encoding="utf-8") as stream:
-                state = json.load(stream)
-        except (OSError, ValueError):
-            state = None                 # a file this layout cannot read at all
+        if retired_stock_name(name):
+            state = None             # unreadable by its name alone: this layout reads no such file
+        else:
+            try:
+                with open(path, encoding="utf-8") as stream:
+                    state = json.load(stream)
+            except (OSError, ValueError):
+                state = None         # a file this layout cannot read at all
         if not _unreadable(state):
             continue
         try:

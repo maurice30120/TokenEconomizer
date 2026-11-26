@@ -274,6 +274,12 @@ def _rename_label(mech_dir, label):
             names = [n for n in os.listdir(d) if n.endswith(".json")]
         except OSError:
             continue
+        if sub == "knowledge_state":
+            # The stock this branch replaced was filed per checkout, and its files stay beside
+            # the live one until the sweep removes them: they are not what a move carries over.
+            # Imported here: a hook that never moves a repository pays for no Knowledge import.
+            from ..knowledge.stage import retired_stock_name
+            names = [n for n in names if not retired_stock_name(n)]
         if len(names) == 1 and names[0] != want + ".json" and \
                 not os.path.exists(os.path.join(d, want + ".json")):
             p = os.path.join(d, want + ".json")
