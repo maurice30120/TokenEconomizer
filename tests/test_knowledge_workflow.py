@@ -886,3 +886,72 @@ def test_knowledge_proposes_on_the_native_cadence(
     assert len(made) == calls
 
 
+
+
+# ---- criterion 7: admissions and refusals logged locally, per memory type ----------------
+def test_admissions_and_rejections_are_logged_with_their_reason(tmp_path, env, repo, monkeypatch):
+    knowledge = [{"id": "source-observed", "claim": "Source is observed",
+                  "injection": "Source is observed", "detector": [{"path": "source.txt"}]},
+                 {"id": "unsupported", "claim": "Nowhere works", "injection": "nowhere",
+                  "detector": [{"path": "missing.txt"}]},
+                 {"id": "incomplete", "claim": "No contract", "injection": "no contract",
+                  "detector": []}]
+    _calls, enabled = fold_sessions(
+        tmp_path, env, repo, monkeypatch,
+        lambda: (json.dumps({"knowledge": knowledge}), 0),
+        TE_KNOWLEDGE="on", TE_MICROSKILLS="off")
+    log = [line for line in store_for(enabled, repo).read_lines("knowledge_log.jsonl")
+           if line["type"] == "knowledge"]
+    assert [(line["id"], line["outcome"], line["reason"]) for line in log] == [
+        ("source-observed", "admitted", "admitted"),
+        ("unsupported", "rejected", "source-not-observed"),
+        ("incomplete", "rejected", "invalid-fields"),
+    ]
+    assert {line["session_id"] for line in log} == {"s1"}
+    assert {line["repo"] for line in log} == {"acme/widget"}
+
+
+def test_a_logging_failure_does_not_fail_the_fold(tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.plugin.store import Store
+    real = Store.append
+    def append(self, name, record):
+        if name == "knowledge_log.jsonl":
+            raise OSError("store unavailable")
+        return real(self, name, record)
+    monkeypatch.setattr(Store, "append", append)
+    card = {"id": "source-observed", "claim": "Source is observed",
+            "injection": "Source is observed", "detector": [{"path": "source.txt"}]}
+    _calls, enabled = fold_sessions(
+        tmp_path, env, repo, monkeypatch,
+        lambda: (json.dumps({"knowledge": [card]}), 0),
+        TE_KNOWLEDGE="on", TE_MICROSKILLS="off")
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    rows = list(ctx.store.read_lines("ledger.jsonl"))
+    assert rows and "error" not in (rows[-1].get("knowledge") or {})
+    assert "source-observed" in Knowledge.load(
+        workspace_id(ctx.repo.label, repo), ctx.mech_dir).facts
+
+
+def test_the_shared_call_logs_the_proposals_it_admits(tmp_path, env, repo, monkeypatch):
+    """With both missions active the Knowledge proposals come back on the native tick: their
+    outcomes are logged there, refusals with the reason that refused them."""
+    native = [{"id": "native", "claim": "native claim", "cite": ["s0", "s1"],
+               "detector": DETECTOR}]
+    knowledge = [{"id": f"k{i}", "claim": f"knowledge {i}", "injection": f"knowledge {i}",
+                  "detector": [{"path": "source.txt"}]} for i in range(7)]
+    knowledge.append({"id": "unsupported", "claim": "Nowhere works", "injection": "nowhere",
+                      "detector": [{"path": "missing.txt"}]})
+    _calls, enabled = fold_sessions(
+        tmp_path, env, repo, monkeypatch,
+        lambda: (json.dumps({"extractors": [], "facts": native, "knowledge": knowledge}), 5),
+        TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller")
+    log = [line for line in store_for(enabled, repo).read_lines("knowledge_log.jsonl")
+           if line["type"] == "knowledge"]
+    refused = next(line for line in log if line["id"] == "unsupported")
+    assert (refused["outcome"], refused["reason"], refused["session_id"], refused["host"],
+            refused["repo"]) == ("rejected", "source-not-observed", "s1", "claude",
+                                 "acme/widget")
+    assert [line["id"] for line in log if line["outcome"] == "admitted"] == [
+        f"k{i}" for i in range(7)]
