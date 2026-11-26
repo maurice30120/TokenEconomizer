@@ -245,18 +245,23 @@ def test_a_clone_under_another_folder_name_is_carried_over_whole(tmp_path, env):
 
 
 def test_an_old_remote_carries_its_learned_state_under_the_new_name(tmp_path, env):
-    """`aaron-jx-li/tokeneconomizer` moved to `microsoft/tokeneconomizer`: the micro-skill state
-    is filed by repository name, so it is renamed with the move."""
+    """`aaron-jx-li/tokeneconomizer` moved to `microsoft/tokeneconomizer`: the mechanism state
+    is filed by repository name, so it -- the Knowledge stock included -- is renamed with the
+    move."""
     clone = git_repo(str(tmp_path / "tokeneconomizer"), "https://github.com/microsoft/te")
     old = f"tokeneconomizer-{paths.digest('github.com/aaron-jx-li/te')}"
     st = state(env, old)
     legacy_session(st, "s1", transcript(tmp_path / "s1.jsonl", clone))
     learned(st, "aaron-jx-li/te")
+    st.write(os.path.join("mechanisms", "knowledge_state", "aaron__jx-li__te.json"),
+             {"repo": "aaron-jx-li/te", "facts": {}})
     root = env["TOKENECONOMIZER_HOME"]
     assert repos.needs_migration(root)
     repos.run_migration(root, env)
     new = state(env, paths.repo_identity(clone, env).key)
     path = new.path("mechanisms", "envfacts_state", "microsoft__te.json")
+    assert json.load(open(path))["repo"] == "microsoft/te"
+    path = new.path("mechanisms", "knowledge_state", "microsoft__te.json")
     assert json.load(open(path))["repo"] == "microsoft/te"
     assert not repos.needs_migration(root)
 

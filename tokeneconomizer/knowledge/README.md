@@ -55,7 +55,10 @@ observation block and one charge. The fold ledger records proposal and admission
 type under `injection.shared_proposals` and the cost once, on the native stage. Every proposal
 of a fold -- admitted or refused with its reason -- is appended to
 `knowledge_log.jsonl` in the store; `type: "knowledge"` is the field that will tell the two
-memories apart. Verification is local. State is isolated by workspace path.
+memories apart. Verification is local, against the checkout the card is read in. The stock is
+one repository's own on this host, filed by its name as the other mechanism state is, so every
+clone and worktree of the repository -- with the same `origin`, or the same main checkout when
+it has none -- reads and writes the same cards.
 
 `te microskills` lists Knowledge identity, claim, current proof status, the session it was
 learned in, its sources and the lines a partial read actually returned, including forgotten
@@ -218,8 +221,10 @@ lifecycle to earn, so it is usable on the fold that admitted it.
 The test also checks the hook output, forget/unforget, deletion and restoration.
 The separate Copilot recording test exercises a second host. Workflow tests cover
 file and symbol contracts, several sources, admission reasons, warm-cache revalidation,
-workspace isolation, budget, native coexistence, the activation matrix, the shared proposal call
-and user controls.
+budget, native coexistence, the activation matrix, the shared proposal call and user controls;
+`tests/test_knowledge_stock.py` covers the stock itself: two checkouts of one repository
+sharing it, validity computed against each checkout's own code, and the other repository, host
+and memory type kept out of it.
 
 This is a deterministic integration scenario, not a representative yield estimate:
 the same read is replayed, confirmations are synthetic and the candidate is supplied

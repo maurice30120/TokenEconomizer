@@ -308,9 +308,9 @@ def cmd_microskills(args):
         return 2
     ctx = _ctx(args)
     inj = ctx.store.read("injection.json") or {}
-    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.knowledge.stage import Knowledge
     from tokeneconomizer.names import repo_filename
-    key = workspace_id(ctx.repo.label, ctx.repo.root)
+    key = ctx.repo.label
     mechanism_dir = os.path.join(ctx.store.base, "mechanisms")
     knowledge_path = os.path.join(mechanism_dir, "knowledge_state", repo_filename(key) + ".json")
     if ctx.config.microskills == "off":
@@ -375,8 +375,7 @@ def cmd_microskills(args):
             if internal.get("observed_lines"):
                 print("    observed=" + json.dumps(internal["observed_lines"], sort_keys=True))
     from tokeneconomizer.microskills import forgotten_facts
-    gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"),
-                           workspace=ctx.repo.root)
+    gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"))
     if gone:
         print("\nforgotten (`microskills unforget ID` brings one back):")
         for k, claim in sorted(gone.items()):

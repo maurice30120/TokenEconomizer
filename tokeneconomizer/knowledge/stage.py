@@ -1,7 +1,6 @@
 """Knowledge learned in the fold: an atomic claim, the text to inject, and the contract that
 holds it against the version of the code a session actually observed."""
 import json
-import hashlib
 import os
 import re
 
@@ -10,11 +9,6 @@ from ..microskills.lifecycle import write_json_atomic
 from ..names import repo_filename
 from .observation import observations
 from .proof import symbol_proof, verify_proof
-
-
-def workspace_id(repo, workspace):
-    key = hashlib.sha256(os.fsencode(os.path.realpath(workspace))).hexdigest()
-    return repo + "--" + key
 
 
 SYMBOL, PATH, FILE_NAME = 3, 2, 1      # strength of a match; 0 means the request does not name it
@@ -236,6 +230,10 @@ class Knowledge(Distiller):
 
     @staticmethod
     def _path(root, repo):
+        """`<root>/knowledge_state/<repo>.json`: one repository's stock on this host, filed by
+        its name as the other mechanism state is. `root` is the store a context built for the
+        repository and the host, so every clone and worktree of the repository reads it, and the
+        checkout a card is verified against is `workspace`, never part of the key."""
         directory = os.path.join(root, "knowledge_state")
         os.makedirs(directory, exist_ok=True)
         return os.path.join(directory, repo_filename(repo) + ".json")

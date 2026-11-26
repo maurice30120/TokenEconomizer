@@ -61,7 +61,7 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     counts = []
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import Pi
-    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.knowledge.stage import Knowledge
     ctx = LiveContext.build(Pi(), str(repo), env)
     for i in range(5):
         transcript = tmp_path / f"s{i}.jsonl"
@@ -72,7 +72,7 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
             f.write("\n" + json.dumps({"type": "message", "id": "c", "parentId": "y", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "t", "name": "bash", "arguments": {"command": "pytest"}}]}}))
             f.write("\n" + json.dumps({"type": "message", "id": "d", "parentId": "c", "message": {"role": "toolResult", "toolCallId": "t", "toolName": "bash", "isError": False, "content": [{"type": "text", "text": "passed"}]}}))
         run_session(env, str(repo), f"s{i}", str(transcript), host="pi")
-        stage = Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir)
+        stage = Knowledge.load(ctx.repo.label, ctx.mech_dir)
         stage.workspace = repo
         counts.append((len(stage.facts), int("Pi observation" in stage.render())))
     # No lifecycle gate: the card is usable on the very fold that admitted it.
@@ -90,7 +90,7 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     assert "Pi observation" in call(env, read, host="pi")["hookSpecificOutput"]["additionalContext"]
     assert call(env, read, host="pi") == {}
     from tokeneconomizer.plugin import cli
-    fid = next(iter(Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir).facts))
+    fid = next(iter(Knowledge.load(ctx.repo.label, ctx.mech_dir).facts))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     def command(action):
@@ -279,7 +279,7 @@ def test_a_partial_read_that_covers_the_file_is_a_complete_observation(tmp_path)
 def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tmp_path, monkeypatch):
     from tests.test_live_hooks import call, run_session
     from tokeneconomizer.knowledge.capture import load, session_dir
-    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.knowledge.stage import Knowledge
     from tokeneconomizer.plugin import sidecall
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import Pi
@@ -310,7 +310,7 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
         assert load(captures)["r"]["bytes"] == SOURCE
         run_session(env, str(repo), f"s{i}", str(transcript), host="pi")
         assert load(captures) == {}, "the fold takes the capture and removes it"
-    stage = Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir)
+    stage = Knowledge.load(ctx.repo.label, ctx.mech_dir)
     stage.workspace, stage.host = repo, "pi"
     assert len(stage.facts) == 1
     assert next(iter(stage.facts.values())).detector[0]["kind"] == "symbol"

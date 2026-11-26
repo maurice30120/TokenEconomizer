@@ -268,7 +268,7 @@ def _rename_label(mech_dir, label):
     if not label:
         return
     want = repo_filename(label)
-    for sub in ("envfacts_state", "manual_state"):
+    for sub in ("envfacts_state", "manual_state", "knowledge_state"):
         d = os.path.join(mech_dir, sub)
         try:
             names = [n for n in os.listdir(d) if n.endswith(".json")]

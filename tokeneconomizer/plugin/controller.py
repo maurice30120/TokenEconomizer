@@ -345,9 +345,9 @@ class LiveController:
                     and self.host.prompt_context and self.host.prompt_knowledge)
 
     def _knowledge_stage(self):
-        from ..knowledge.stage import Knowledge, workspace_id
+        from ..knowledge.stage import Knowledge
         root = self.ctx.repo.root
-        stage = Knowledge.load(workspace_id(self.ctx.repo.label, root), self.ctx.mech_dir)
+        stage = Knowledge.load(self.ctx.repo.label, self.ctx.mech_dir)
         stage.workspace = root
         return stage
 

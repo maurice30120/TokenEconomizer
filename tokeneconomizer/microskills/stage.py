@@ -190,28 +190,26 @@ class PrefixStage(Stage):
 
 
 # ---- forgetting a fact by hand ---------------------------------------------
-def _saved_layers(repo, root, vocab=None, workspace=None):
+def _saved_layers(repo, root, vocab=None):
     """The distillers with state saved under `root`, loaded: the environment layer first."""
     from . import envfacts
-    from ..knowledge.stage import Knowledge, workspace_id
+    from ..knowledge.stage import Knowledge
     out = []
     for cls, sub in ((envfacts.EnvFactsDistiller, envfacts.STATE_SUBDIR),
                      (Distiller, _distiller.STATE_SUBDIR)):
         if os.path.exists(os.path.join(root, sub, repo_filename(repo) + ".json")):
             out.append(cls.load(repo, root, vocab=vocab))
-    if workspace:
-        key = workspace_id(repo, workspace)
-        if os.path.exists(os.path.join(root, "knowledge_state", repo_filename(key) + ".json")):
-            out.append(Knowledge.load(key, root, vocab=vocab))
+    if os.path.exists(os.path.join(root, "knowledge_state", repo_filename(repo) + ".json")):
+        out.append(Knowledge.load(repo, root, vocab=vocab))
     return out
 
 
-def forget_facts(repo, root, ids, vocab=None, undo=False, workspace=None):
+def forget_facts(repo, root, ids, vocab=None, undo=False):
     """Forget the facts `ids` (or, with `undo`, bring them back) in whichever saved layer holds
     each, and save the layers that changed. A forgotten fact is no longer rendered, and is not
     learned again under its id. Returns [(id, changed, claim)] in the order given. When an id
     is unknown to every layer nothing is changed, and KeyError carries the unknown ids."""
-    layers = _saved_layers(repo, root, vocab, workspace)
+    layers = _saved_layers(repo, root, vocab)
     owner = {}
     for layer in layers:
         for fid in layer.known_ids():
@@ -234,10 +232,10 @@ def forget_facts(repo, root, ids, vocab=None, undo=False, workspace=None):
     return out
 
 
-def forgotten_facts(repo, root, vocab=None, workspace=None):
+def forgotten_facts(repo, root, vocab=None):
     """{id: the claim it made} for every forgotten fact saved under `root`."""
     out = {}
-    for layer in _saved_layers(repo, root, vocab, workspace):
+    for layer in _saved_layers(repo, root, vocab):
         for fid, rec in layer.forgotten.items():
             out.setdefault(fid, rec.get("claim", ""))
     return out

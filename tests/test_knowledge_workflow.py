@@ -3,8 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from tokeneconomizer.knowledge.stage import (KNOWLEDGE_MAX_CANDS, Knowledge, KnowledgeCard,
-                                            workspace_id)
+from tokeneconomizer.knowledge.stage import KNOWLEDGE_MAX_CANDS, Knowledge, KnowledgeCard
 from tokeneconomizer.plugin.config import load_config
 from tests.test_knowledge_pi import SOURCE, capture_read, pi_read, reads_session
 from tests.test_live_hooks import call, env, repo, run_session, store_for  # noqa: F401
@@ -142,7 +141,7 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
         assert started.wait(2)
         worker.join(0.2)
         assert worker.is_alive()
-        stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+        stage = Knowledge.load(ctx.repo.label, ctx.mech_dir)
         stage.facts.clear()
         stage.save(ctx.mech_dir)
     worker.join(5)
@@ -233,7 +232,7 @@ def test_a_stock_from_the_retired_format_does_not_break_the_fold(tmp_path, env, 
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode
     ctx = LiveContext.build(ClaudeCode(), repo, dict(env, TE_KNOWLEDGE="on"))
-    repo_id = workspace_id(ctx.repo.label, ctx.repo.root)
+    repo_id = ctx.repo.label
     Path(Knowledge._path(ctx.mech_dir, repo_id)).write_text(json.dumps({
         "repo": ctx.repo.label, "now": 9, "opt_tokens": 0.0, "last_propose": 0,
         "facts": {"old-mechanism": {
@@ -597,7 +596,7 @@ def test_the_cli_shows_the_scope_a_partial_knowledge_really_read(tmp_path, env, 
     text = pi_read(SOURCE, 2, 1)
     captures = capture_read(root, args, text)
     ctx = LiveContext.build(ClaudeCode(), repo, env)
-    stage = Knowledge(workspace_id(ctx.repo.label, ctx.repo.root))
+    stage = Knowledge(ctx.repo.label)
     stage.workspace, stage.host = root, "pi"
     for i in range(2):
         pi, trace = tmp_path / f"cli{i}.jsonl", tmp_path / f"clitrace{i}.jsonl"
@@ -690,7 +689,7 @@ def test_a_read_budget_keeps_the_first_registered_covering_card(tmp_path, env, r
                               [{"id": "a", "claim": "first card", "source": "a.txt"},
                                {"id": "b", "claim": "second card", "source": "b.txt"}])
     ctx = LiveContext.build(ClaudeCode(), repo, enabled)
-    stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+    stage = Knowledge.load(ctx.repo.label, ctx.mech_dir)
     assert sorted(stage.facts) == ["a", "b"]
     payload = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": repo,
                "tool_name": "Read", "tool_input": {"file_path": "support.txt"},
@@ -829,7 +828,7 @@ def test_both_missions_share_one_call_one_observation_pass_and_one_charge(
     assert row["overhead"]["optimizer_tokens"] == 5
     native_cards = Distiller.load(ctx.repo.label, ctx.mech_dir)
     assert sorted(native_cards.facts) == ["n0", "n1", "n2", "n3"]
-    stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+    stage = Knowledge.load(ctx.repo.label, ctx.mech_dir)
     assert sorted(stage.facts) == [f"k{i}" for i in range(7)]
 
 
@@ -928,7 +927,7 @@ def test_the_activation_matrix_decides_which_missions_run(
     assert ("native" in Distiller.load(ctx.repo.label, ctx.mech_dir).facts) == paid_native
     # The Knowledge mission runs, and writes state, exactly where it is on.
     assert bool(fold["knowledge_state"]) == (knowledge == "on")
-    stage = (Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+    stage = (Knowledge.load(ctx.repo.label, ctx.mech_dir)
              if fold["knowledge_state"] else None)
     assert (stage is not None and "source-observed" in stage.facts) == (knowledge == "on")
     if not calls:
@@ -1004,7 +1003,7 @@ def test_a_logging_failure_does_not_fail_the_fold(tmp_path, env, repo, monkeypat
     rows = list(ctx.store.read_lines("ledger.jsonl"))
     assert rows and "error" not in (rows[-1].get("knowledge") or {})
     assert "source-observed" in Knowledge.load(
-        workspace_id(ctx.repo.label, repo), ctx.mech_dir).facts
+        ctx.repo.label, ctx.mech_dir).facts
 
 
 def test_the_shared_call_logs_the_proposals_it_admits(tmp_path, env, repo, monkeypatch):

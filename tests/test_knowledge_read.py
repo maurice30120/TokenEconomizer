@@ -12,12 +12,12 @@ CLAIM = "Source is observed"
 @pytest.mark.parametrize("host,name,key", [("pi", "read", "path"), ("copilot", "view", "path")])
 def test_a_card_reaches_each_host_after_read_and_stops_when_a_proof_changes(
         tmp_path, env, repo, monkeypatch, host, name, key):
-    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.knowledge.stage import Knowledge
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode, Copilot, Pi
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
     source_ctx = LiveContext.build(ClaudeCode(), repo, enabled)
-    stage = Knowledge.load(workspace_id(source_ctx.repo.label, repo), source_ctx.mech_dir)
+    stage = Knowledge.load(source_ctx.repo.label, source_ctx.mech_dir)
     dest_ctx = LiveContext.build(Pi() if host == "pi" else Copilot(), repo, enabled)
     stage.save(dest_ctx.mech_dir)
     path = str(Path(repo) / "source.txt")
@@ -112,7 +112,7 @@ def test_card_has_its_own_budget_even_when_native_facts_fill_theirs(tmp_path, en
 
 @pytest.mark.parametrize("host,tool", [("pi", "read"), ("copilot", "view")])
 def test_startup_reserves_budget_and_does_not_repeat_cards(tmp_path, env, repo, monkeypatch, host, tool):
-    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.knowledge.stage import Knowledge
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode, Copilot, Pi
     # Registration order is what picks the first card now that a card has no firing rate.
@@ -124,7 +124,7 @@ def test_startup_reserves_budget_and_does_not_repeat_cards(tmp_path, env, repo, 
                    TE_KNOWLEDGE_STARTUP_SHARE="0.5", TE_MICROSKILLS="envfacts")
     src = LiveContext.build(ClaudeCode(), repo, enabled)
     dst = LiveContext.build(Pi() if host == "pi" else Copilot(), repo, enabled)
-    stage = Knowledge.load(workspace_id(src.repo.label, repo), src.mech_dir)
+    stage = Knowledge.load(src.repo.label, src.mech_dir)
     stage.save(dst.mech_dir)
     dst.store.write("injection.json", {"rendered": "# native\n- native fact\n"})
     start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "budget", "cwd": repo}
