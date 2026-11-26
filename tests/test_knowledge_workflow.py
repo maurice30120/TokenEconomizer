@@ -311,6 +311,18 @@ def test_a_forgotten_knowledge_is_not_learned_again_under_another_id(tmp_path):
     assert stage.forgotten.keys() == {"source-observed"}
 
 
+def test_a_forgotten_knowledge_is_not_restated_by_a_differently_written_reference(tmp_path):
+    """The contract is what the references resolve to, not how they were written: `./source.txt`
+    and `source.txt` are one source, so the same claim on it is the same contract, and a
+    forgotten Knowledge restated that way is still refused."""
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal(detector=[{"path": "./source.txt"}])) == (True, "admitted")
+    stage.forget("source-observed")
+    assert stage._admit(proposal(id="again")) == (False, "restates-forgotten")
+    assert stage.facts == {}                    # nothing admitted again, under any id
+    assert stage.forgotten.keys() == {"source-observed"}
+
+
 def test_a_new_contract_or_a_new_claim_is_admitted_after_forgetting(tmp_path):
     """The same claim proven by other code is a new contract, and another claim on the same
     contract is a new claim: both follow normal admission, as the ticket asks."""

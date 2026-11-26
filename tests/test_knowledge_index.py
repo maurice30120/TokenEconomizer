@@ -11,6 +11,7 @@ similarity a request must reach, to #335.
 """
 import json
 import os
+import subprocess
 from pathlib import Path
 
 from tokeneconomizer.knowledge.stage import Knowledge
@@ -189,11 +190,11 @@ def test_a_ranking_that_cannot_run_leaves_the_exact_signals_as_the_whole_ranking
         assert stage.render("où sont les réglages ?") == ""
 
 
-def test_a_local_edit_or_another_branch_leaves_the_ranking_at_the_next_search(tmp_path):
+def test_a_local_edit_leaves_the_ranking_at_the_next_search(tmp_path):
     """Criterion 2 (#334): the cards ranked are those whose contract holds in the checkout as it
-    is now, checked at search time. An edit, and the other version a branch switch brings, drop
-    the card from the next search; the bytes its contract proves bring it back. The stock keeps
-    the card throughout, with no status written anywhere."""
+    is now, checked at search time. An edit drops the card from the next search; the bytes its
+    contract proves bring it back. The stock keeps the card throughout, with no status written
+    anywhere."""
     stage = two_cards(tmp_path)
     stage.embedder = FakeEmbedder()
     stock_file = tmp_path / "knowledge_state" / "repo.json"
@@ -205,6 +206,38 @@ def test_a_local_edit_or_another_branch_leaves_the_ranking_at_the_next_search(tm
     assert "settings" in stage.facts                         # still a card of the stock
     assert stock_file.read_bytes() == before                 # and nothing says it is invalid
     config.write_text("settings = 1\n")                     # the bytes the contract proves
+    assert "Settings live in config.json" in stage.render("où sont les réglages ?")
+
+
+def git(root, *argv):
+    """One git command in the test's own throwaway repository."""
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                    "-c", "commit.gpgsign=false", "-C", str(root), *argv],
+                   check=True, capture_output=True)
+
+
+def test_switching_branches_changes_the_ranking_at_the_next_search(tmp_path):
+    """Criterion 2 (#334), on a repository with two branches rather than a rewritten file: no
+    search consults git -- a card's contract is verified against the bytes in the checkout -- so
+    the other version a branch switch puts there drops the card at the next search, and
+    switching back restores it. The card is never removed from the stock."""
+    (tmp_path / "config.json").write_text("settings = 1\n")
+    (tmp_path / "tests.txt").write_text("pytest -q\n")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "checkout", "-q", "-b", "main")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "main")
+    git(tmp_path, "checkout", "-q", "-b", "other")
+    (tmp_path / "config.json").write_text("settings = 2\n")
+    git(tmp_path, "commit", "-qam", "other")
+    git(tmp_path, "checkout", "-q", "main")
+    stage = two_cards(tmp_path)                        # admitted against `main`'s bytes
+    stage.embedder = FakeEmbedder()
+    assert "Settings live in config.json" in stage.render("où sont les réglages ?")
+    git(tmp_path, "checkout", "-q", "other")
+    assert stage.render("où sont les réglages ?") == ""
+    assert "settings" in stage.facts                   # still a card of the stock
+    git(tmp_path, "checkout", "-q", "main")
     assert "Settings live in config.json" in stage.render("où sont les réglages ?")
 
 
