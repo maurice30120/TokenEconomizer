@@ -55,6 +55,12 @@ def _cosine(a, b):
     return dot / (left * right) if left and right else 0.0
 
 
+def _numbers(vector):
+    """Whether a stored vector is one a cosine can read: JSON of anything else is not."""
+    return isinstance(vector, list) and all(
+        isinstance(value, (int, float)) and not isinstance(value, bool) for value in vector)
+
+
 class KnowledgeIndex:
     """The stock's texts and vectors, on disk beside it, and the nearness they order.
 
@@ -102,19 +108,21 @@ class KnowledgeIndex:
 
         Empty when the index could not be built, when the request is empty, or when the embedder
         cannot answer this one: a search that cannot rank then delivers what the exact signals
-        deliver, and nothing more.
+        deliver, and nothing more. Scoring is inside the guard for that reason -- an answer, and
+        a stored vector, are the caller's data, and neither may raise out of a search.
         """
         if self.broken or not self.cards or not task:
             return []
         try:
             vectors = self.embedder.embed([task])
             query = [float(x) for x in vectors[0]]
-        except Exception:
+            scored = [(-_cosine(query, card["vector"]), order, card_id)
+                      for order, (card_id, card) in enumerate(self.cards.items())]
+            ordered = [card_id for score, _order, card_id in sorted(scored)
+                       if -score >= NEAR_SIMILARITY]
+        except Exception:            # a model, or a stored vector, the cosine cannot read
             return []
-        scored = [(-_cosine(query, card["vector"]), order, card_id)
-                  for order, (card_id, card) in enumerate(self.cards.items())]
-        return [card_id for score, _order, card_id in sorted(scored)
-                if -score >= NEAR_SIMILARITY]
+        return ordered
 
     def _build(self, entries, digest):
         """Embed every card's text and keep what the ranking and the inspection need."""
@@ -141,7 +149,7 @@ class KnowledgeIndex:
             return {}
         cards = doc.get("cards") if isinstance(doc, dict) else None
         if not isinstance(cards, dict) or not all(
-                isinstance(card, dict) and isinstance(card.get("vector"), list)
+                isinstance(card, dict) and _numbers(card.get("vector"))
                 for card in cards.values()):
             return {}
         return doc

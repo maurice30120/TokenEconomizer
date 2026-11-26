@@ -565,11 +565,14 @@ class Knowledge(Distiller):
 
     def near(self, task):
         """The eligible Knowledge a request is near without naming it, nearest first: what the
-        index adds to the exact signals. Nothing when no embedder is configured, when the
-        request is empty, or when the embedder cannot rank -- a search that cannot rank then
-        delivers exactly what it delivered before there was an index."""
+        index adds to the exact signals. Nothing when the request is empty -- before any index is
+        prepared, since a search that ranks nothing must not embed the stock or write the index
+        -- when no embedder is configured, or when the embedder cannot rank: a search that cannot
+        rank then delivers exactly what it delivered before there was an index."""
+        if not task:
+            return
         index = self.index()
-        if index is None or not task:
+        if index is None:
             return
         for card_id in index.near(task):
             card = self.facts.get(card_id)

@@ -11,6 +11,7 @@ similarity a request must reach, to #335.
 """
 import json
 import os
+from pathlib import Path
 
 from tokeneconomizer.knowledge.stage import Knowledge
 from tests.test_knowledge_workflow import observed_stage, proposal
@@ -217,3 +218,36 @@ def test_a_change_between_the_ranking_and_the_delivery_drops_the_card(tmp_path):
     stage.embedder = FakeEmbedder(before=edit)
     assert stage.index().near("où sont les réglages ?") == ["settings"]   # still ranked
     assert "Settings live in config.json" not in stage.render("où sont les réglages ?")
+
+
+def test_a_search_with_no_request_ranks_nothing_and_writes_no_index(tmp_path):
+    """A request-less search (the block a session with nothing to match gets) delivers every
+    eligible card through the exact path, so it has to rank, embed and write nothing: the index
+    is prepared for a request, not for a render."""
+    from tokeneconomizer.knowledge.index import index_path
+    stage = two_cards(tmp_path)
+    embedder = FakeEmbedder()
+    stage.embedder = embedder
+    block = stage.render(None)
+    assert "Settings live in config.json" in block and "Tests run with pytest" in block
+    assert embedder.batches == []
+    assert not os.path.exists(index_path(tmp_path, "repo"))
+
+
+def test_a_stored_vector_of_non_numbers_costs_the_nearness_and_no_card(tmp_path):
+    """A stored index is derived data, and a vector of anything but numbers is one no ranking can
+    read. It must not escape as an exception: the exact signals then deliver exactly what they
+    always did, the cards included."""
+    from tokeneconomizer.knowledge.index import index_path
+    stage = two_cards(tmp_path)
+    stage.embedder = FakeEmbedder()
+    assert "Settings live in config.json" in stage.render("où sont les réglages ?")
+    path = Path(index_path(tmp_path, "repo"))
+    doc = json.loads(path.read_text())
+    doc["cards"]["settings"]["vector"] = ["not a number"] * 3
+    path.write_text(json.dumps(doc))
+    reopened = Knowledge.load("repo", tmp_path)
+    reopened.workspace = tmp_path
+    reopened.embedder = FakeEmbedder()
+    assert "Tests run with pytest" in reopened.render("look at tests.txt")
+    assert "Settings live in config.json" in reopened.render("look at config.json")
