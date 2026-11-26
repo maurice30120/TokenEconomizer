@@ -8,7 +8,9 @@ four-field stock without touching the other memories or the logs.
 The flows run through the plugin's hooks, as a session does, and read the store beside them the
 way `te microskills` does.
 """
+import hashlib
 import json
+import os
 from pathlib import Path
 
 from tokeneconomizer.knowledge.stage import Knowledge, reset_stock
@@ -107,7 +109,9 @@ def test_another_repository_of_the_same_name_reads_its_own_stock(
 
 def test_another_host_reads_its_own_stock(tmp_path, env, repo, monkeypatch):
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
-    assert list(Path(store_for(enabled, repo).path("mechanisms", "knowledge_state")).iterdir())
+    stock = Path(store_for(enabled, repo).path("mechanisms", "knowledge_state"))
+    assert sorted(json.loads((stock / "acme__widget.json").read_text())["facts"]) == [
+        "source-observed"]
     assert not Path(store_for(enabled, repo, host="pi")
                     .path("mechanisms", "knowledge_state")).exists()
 
@@ -196,6 +200,64 @@ def test_a_stock_the_layout_cannot_read_is_discarded_and_the_other_memories_stay
     assert "form_repair:run_tests:pytest" in envfacts_state(ctx)["facts"]
 
 
+def test_the_sweep_retires_the_per_checkout_name_the_retired_layout_used(tmp_path):
+    """Criterion 4: the layout this branch replaces filed one stock per checkout, as
+    `<label>--<sha256 of the checkout>.json`. That name is not this layout's, so the file goes
+    whatever it holds -- here four-field cards this layout could read. Another repository's
+    stock beside it is its own, and stays as it was."""
+    stock = Path(tmp_path, "knowledge_state")
+    stock.mkdir()
+    retired = ("acme__widget--"
+               + hashlib.sha256(os.fsencode(str(tmp_path))).hexdigest() + ".json")
+    (stock / retired).write_text(json.dumps({"repo": "acme/widget",
+                                             "facts": {"source-observed": CARD}}))
+    other = {"repo": "gitlab/widget", "facts": {"other-observed": CARD}}
+    (stock / "gitlab__widget.json").write_text(json.dumps(other))
+    assert reset_stock(tmp_path) == [retired]
+    assert [path.name for path in stock.glob("*.json")] == ["gitlab__widget.json"]
+    assert json.loads((stock / "gitlab__widget.json").read_text()) == other
+
+
+def test_a_wrongly_shaped_stock_file_neither_breaks_the_fold_nor_survives_it(
+        tmp_path, env, repo, monkeypatch):
+    """Criterion 4: `facts` as a list is JSON this layout can read but not understand. It is
+    state it cannot use, so the sweep removes it -- raising instead would stop the sweep before
+    its marker, and every later fold would fail before learning anything."""
+    enabled = fold_mixed(tmp_path, env, repo, monkeypatch, [CARD], sessions=1,
+                         TE_KNOWLEDGE="off", TE_MICROSKILLS="envfacts")
+    ctx = context_in(dict(enabled, TE_KNOWLEDGE="on"), repo)
+    directory = Path(ctx.mech_dir, "knowledge_state")
+    Path(Knowledge._path(ctx.mech_dir, ctx.repo.label)).write_text(json.dumps({"facts": [CARD]}))
+    stray = directory / "stray.json"
+    stray.write_text(json.dumps({"facts": [CARD]}))
+    fold_mixed(tmp_path, env, repo, monkeypatch, [CARD], sessions=1,
+               TE_KNOWLEDGE="on", TE_MICROSKILLS="envfacts", TE_MICROSKILLS_PROPOSE_EVERY="1")
+    assert not stray.exists()
+    assert not any((row.get("knowledge") or {}).get("error")
+                   for row in ctx.store.read_lines("ledger.jsonl"))
+    assert sorted(Knowledge.load(ctx.repo.label, ctx.mech_dir).facts) == ["source-observed"]
+
+
+def test_a_sweep_that_could_not_list_the_stock_does_not_mark_it_swept(tmp_path, monkeypatch):
+    """Criterion 4: a transient error reading the directory means the sweep did not happen, so
+    it writes no marker: the store is swept by the next fold, not never."""
+    stock = Path(tmp_path, "knowledge_state")
+    stock.mkdir()
+    (stock / "old.json").write_text(json.dumps(OLD_STOCK))
+    listdir = os.listdir
+
+    def transient(path):
+        if str(path).endswith("knowledge_state"):
+            raise PermissionError("a momentary error")
+        return listdir(path)
+
+    monkeypatch.setattr(os, "listdir", transient)
+    assert reset_stock(tmp_path) == []
+    assert not (stock / ".swept").exists()
+    monkeypatch.undo()
+    assert reset_stock(tmp_path) == ["old.json"]
+
+
 def test_the_sweep_removes_only_what_the_layout_cannot_read(tmp_path):
     """Criterion 4: a stock of four-field cards is this layout's own and stays; a file holding
     anything else goes, and the store is swept once."""
@@ -208,6 +270,28 @@ def test_the_sweep_removes_only_what_the_layout_cannot_read(tmp_path):
     assert [path.name for path in stock.glob("*.json")] == ["card.json"]
     (stock / "old.json").write_text(json.dumps(OLD_STOCK))
     assert reset_stock(tmp_path) == []        # on this layout now: the sweep has run
+
+
+def test_a_remote_that_moved_keeps_the_stock_the_retired_layout_left_beside(tmp_path, env):
+    """Criterion 4, then criterion 1: a store upgraded but not yet swept still holds the retired
+    per-checkout file when its remote changes. That orphan is not the stock, and it must not
+    stand between the stock and the destination's name: the cards are read there after the
+    move, under the new label."""
+    from tokeneconomizer.plugin import paths, repos
+    from tests.test_live_repos import git_repo, legacy_session, state, transcript
+
+    clone = git_repo(str(tmp_path / "widget"), "https://github.com/microsoft/widget")
+    st = state(env, f"widget-{paths.digest('github.com/acme/widget')}")
+    legacy_session(st, "s1", transcript(tmp_path / "s1.jsonl", clone))
+    stock = os.path.join("mechanisms", "knowledge_state")
+    st.write(os.path.join(stock, "acme__widget.json"),
+             {"repo": "acme/widget", "facts": {"source-observed": CARD}})
+    st.write(os.path.join(stock, "acme__widget--" + "0" * 64 + ".json"),
+             {"repo": "acme/widget", "facts": {"retired-observed": CARD}})
+    root = env["TOKENECONOMIZER_HOME"]
+    repos.run_migration(root, env)
+    moved = state(env, paths.repo_identity(clone, env).key).path("mechanisms")
+    assert sorted(Knowledge.load("microsoft/widget", moved).facts) == ["source-observed"]
 
 
 def test_a_session_state_does_not_restore_a_block_the_stock_no_longer_holds(
