@@ -1,14 +1,16 @@
 """`LiveController`: what the plugin does at each hook.
 
-    SessionStart      inject the repository's micro-skills (cached by the last fold), and
-                      fold any earlier session that ended without its SessionEnd being seen;
-                      the first time in a repository (Claude Code, with `history_import`
-                      on), start the import of its sessions from before the plugin
-                      (`history`), in the background; with `repomap` on, refresh a stale map
-                      in the background
+    SessionStart      inject the repository's micro-skills (cached by the last fold); with
+                      `knowledge=on`, give back the Knowledge block this conversation was
+                      given, to a host that rebuilt its start away on a resume (never at a
+                      fresh start); fold any earlier session that ended without its SessionEnd
+                      being seen; the first time in a repository (Claude Code, with
+                      `history_import` on), start the import of its sessions from before the
+                      plugin (`history`), in the background; with `repomap` on, refresh a stale
+                      map in the background
     UserPromptSubmit  open a prompt-turn for the loop guard; on a session's first prompt, add
                       the repository map (`repomap=on`); with `knowledge=on`, add the
-                      Knowledge whose symbol or file the prompt names (never at session start)
+                      Knowledge whose symbol or file the prompt names
     PostToolUse       with `knowledge=on`, after a read, add the Knowledge covering the file
                       (once per session, after the result: no host accepts context before);
                       fold the call into the turn's guard; keep the bytes a Pi `read`
@@ -188,7 +190,7 @@ class LiveController:
                         seen["injection"] = digest
 
         if self.host.knowledge_start_context and not self.host.is_subagent(self.p):
-            block = self._knowledge_at_start(s, fresh)
+            block = self._restore_knowledge(s, fresh)
             if block:
                 outputs.append(self.host.context("SessionStart", block))
 
@@ -352,44 +354,54 @@ class LiveController:
         return stage
 
     def _compact_pi_knowledge(self, retained):
-        """Pi keeps its startup section and the messages after the compaction boundary."""
+        """Pi keeps the messages after the compaction boundary: a block whose steering message
+        it dropped is gone from the conversation. Its ids and its charge stay (#333: a block
+        that disappears does not give the session's budget back), so the cards it held are not
+        given again and their place is not available to new ones."""
         s = self._session()
         blocks = s.get("knowledge_read_blocks") or {}
-        dropped = [block for call_id, block in blocks.items() if call_id not in retained]
-        if dropped:
-            ids = {fid for block in dropped for fid in block["cards"]}
-            s["knowledge_given"] = [fid for fid in s["knowledge_given"] if fid not in ids]
-            s["knowledge_tokens"] -= sum(block["tokens"] for block in dropped)
-            s["knowledge_read_blocks"] = {call_id: block for call_id, block in blocks.items()
-                                          if call_id in retained}
+        kept = {call_id: block for call_id, block in blocks.items() if call_id in retained}
+        if len(kept) != len(blocks):
+            s["knowledge_read_blocks"] = kept
             self._save(s)
         return {}
 
-    def _knowledge_at_start(self, s, fresh):
+    def _restore_knowledge(self, s, fresh):
+        """The one block `SessionStart` can still carry: Knowledge an earlier start of this
+        conversation recorded, given back by id to a host that rebuilt that start away.
+
+        Nothing is delivered at a fresh start any more (#333): a session's cards arrive after a
+        read, and the host's own conversation keeps them. So the gate decides what is really a
+        restore -- `host.knowledge_start_context`, the hosts that take a Knowledge block at a
+        start; `not host.keeps_start_context`, the one that rebuilds that block on a resume and
+        therefore really lost it; `not fresh`, since a new conversation has no earlier block;
+        and `knowledge_startup`, the block an earlier start of this conversation recorded.
+        A restored block is charged nothing and logged nothing: it is the same cards in the
+        same order, not new ones. A card the stock no longer holds leaves the place it took;
+        one that is still stored but whose contract broke keeps it -- a block that vanished
+        does not re-credit the budget.
+        """
         if self.replaying:
             return ""
-        enabled = self.cfg.knowledge and not self.cfg.shadow
+        startup = s.get("knowledge_startup")
+        if fresh or self.host.keeps_start_context or not startup:
+            return ""
         try:
-            startup = s.get("knowledge_startup")
-            if self.host.keeps_start_context or not startup:
-                return ""
-            # Copilot rebuilds startup context. Restore only previously delivered cards whose
-            # contracts still hold, without charging or logging them again.
-            from ..knowledge.stage import knowledge_tokens
             # A session state written before the card list became a list of ids holds
             # `[id, rev]` pairs: read either form as the id it names.
             cards = [_card_id(entry) for entry in startup["cards"]]
-            block, kept = "", []
-            if enabled:
+            block = ""
+            if self.cfg.knowledge and not self.cfg.shadow:
                 with self.ctx.store.locked("mechanisms") as got:
                     if not got:
                         raise fold.Busy("a fold of this repository's sessions holds its state")
-                    block, kept = self._knowledge_stage().restore_startup(cards)
-            dropped = set(cards) - set(kept)
-            s["knowledge_given"] = [fid for fid in s["knowledge_given"] if fid not in dropped]
-            tokens = knowledge_tokens(block)
-            s["knowledge_tokens"] += tokens - startup["tokens"]
-            s["knowledge_startup"] = {"cards": kept, "tokens": tokens}
+                    stage = self._knowledge_stage()
+                    block, _kept = stage.restore_startup(cards)
+                    gone = {fid for fid in cards if fid not in stage.facts}
+                    s["knowledge_given"] = [fid for fid in s.get("knowledge_given") or []
+                                             if fid not in gone]
+                    s["knowledge_startup"] = {"cards": [fid for fid in cards
+                                                         if fid not in gone]}
             return block
         except Exception:
             self._record_error()

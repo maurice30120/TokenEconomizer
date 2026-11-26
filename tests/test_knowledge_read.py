@@ -225,6 +225,83 @@ def test_the_token_ceiling_is_a_ceiling_of_its_own(tmp_path, env, repo, monkeypa
     assert state["knowledge_given"] == ["a"]
 
 
+def test_a_resume_keeps_what_the_conversation_still_holds(tmp_path, env, repo, monkeypatch):
+    """Criterion 4 (#333): a block the conversation still carries is deduplicated at a resume --
+    neither given again nor counted again."""
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    dst = _stock_for("copilot", enabled, repo)
+    assert CLAIM in json.dumps(_read(enabled, repo, "r1", "source.txt", host="copilot",
+                                    name="view", key="path"))
+    state = dst.store.read("sessions/r1.json")
+    spent = (list(state["knowledge_given"]), state["knowledge_tokens"])
+    assert CLAIM not in json.dumps(_start(enabled, repo, "r1", "resume", "copilot"))
+    state = dst.store.read("sessions/r1.json")
+    assert (state["knowledge_given"], state["knowledge_tokens"]) == spent
+    assert CLAIM not in json.dumps(_read(enabled, repo, "r1", "source.txt", host="copilot",
+                                        name="view", key="path"))
+
+
+def test_a_resume_restores_a_recorded_block_only_while_its_contract_holds(
+        tmp_path, env, repo, monkeypatch):
+    """Criterion 4 (#333): a host that rebuilt its start context away gets the block it recorded
+    back, by id, charged nothing and counted as no new card; a card whose contract broke is not
+    restored, and does not give its place back."""
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    dst = _stock_for("copilot", enabled, repo)
+    dst.store.write("sessions/legacy.json", {
+        "session_id": "legacy", "cwd": repo, "knowledge_given": ["source-observed"],
+        "knowledge_tokens": 39, "knowledge_startup": {"cards": ["source-observed"]}})
+    assert CLAIM in json.dumps(_start(enabled, repo, "legacy", "resume", "copilot"))
+    state = dst.store.read("sessions/legacy.json")
+    assert (state["knowledge_given"], state["knowledge_tokens"]) == (["source-observed"], 39)
+    # An identical restore is not a new card: nothing was logged, and the card's place is still
+    # taken, so a read of its file gives nothing.
+    assert [e for e in dst.store.read_lines("events.jsonl") if e["kind"] == "knowledge"] == []
+    assert CLAIM not in json.dumps(_read(enabled, repo, "legacy", "source.txt", host="copilot",
+                                        name="view", key="path"))
+    # The contract no longer holds: nothing is restored, and what the block spent stays spent.
+    (Path(repo) / "support.txt").write_text("changed\n")
+    assert CLAIM not in json.dumps(_start(enabled, repo, "legacy", "resume", "copilot"))
+    state = dst.store.read("sessions/legacy.json")
+    assert (state["knowledge_given"], state["knowledge_tokens"]) == (["source-observed"], 39)
+
+
+def test_a_compaction_deduplicates_what_it_keeps_and_credits_nothing_back(
+        tmp_path, env, repo, monkeypatch):
+    """Criterion 4 (#333): Pi's compaction leaves the session's budget spent. What the branch
+    still carries is deduplicated; a block it dropped is gone, and its place is not given back."""
+    names = ["a.txt", "b.txt", "c.txt"]
+    enabled = learn_knowledge(tmp_path, env, repo, monkeypatch,
+                              dict.fromkeys(names, "observed\n"),
+                              [{"id": n[0], "claim": f"card for {n}", "source": n}
+                               for n in names])
+    enabled.update(TE_KNOWLEDGE_MAX_CARDS="2", TE_KNOWLEDGE_MAX_TOKENS="3000")
+    dst = _stock_for("pi", enabled, repo)
+
+    def read(name):
+        return f"card for {name}" in json.dumps(
+            _read(enabled, repo, "pi1", name, host="pi", name="read", key="path",
+                  call_id=name))
+    assert [read(n) for n in names] == [True, True, False]     # two cards, the ceiling spent
+    state = dst.store.read("sessions/pi1.json")
+    assert sorted(state["knowledge_read_blocks"]) == ["a.txt", "b.txt"]
+    spent = (list(state["knowledge_given"]), state["knowledge_tokens"])
+    # The block the branch kept is deduplicated: nothing is given or spent again.
+    assert _start(enabled, repo, "pi1", "compact", "pi",
+                  retained_knowledge_reads=["a.txt"]) == {}
+    state = dst.store.read("sessions/pi1.json")
+    assert (state["knowledge_given"], state["knowledge_tokens"]) == spent
+    assert sorted(state["knowledge_read_blocks"]) == ["a.txt"]
+    assert not read("a.txt")
+    # The blocks it dropped are gone from the conversation, and their place stays spent.
+    assert _start(enabled, repo, "pi1", "compact", "pi", retained_knowledge_reads=[]) == {}
+    state = dst.store.read("sessions/pi1.json")
+    assert state["knowledge_read_blocks"] == {}
+    assert (state["knowledge_given"], state["knowledge_tokens"]) == spent
+    assert not read("b.txt")      # its id is still the session's: no new card
+    assert not read("c.txt")      # and its place was not given back
+
+
 def test_a_host_not_verified_and_every_other_case_inject_nothing(tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin.hosts import ClaudeCode
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
