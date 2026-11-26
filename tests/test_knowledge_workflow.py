@@ -370,14 +370,6 @@ def test_a_changed_claim_under_a_new_id_is_admitted(tmp_path):
     assert sorted(stage.facts) == ["source-observed", "source-other"]
 
 
-def test_a_file_named_in_the_claim_must_be_covered_by_the_contract(tmp_path):
-    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
-    (tmp_path / "uncovered.txt").write_text("pass\n")
-    assert stage._admit(proposal(injection="source.txt feeds uncovered.txt")) == (
-        False, "uncovered-file")
-    assert not stage.facts
-
-
 # ---- criterion 5: a partial read proves only what it returned ----------------------------
 def claude_trace(path, command="pytest", output="passed"):
     """The digest's view of a session: one finished check (observations read the Pi log)."""
@@ -955,3 +947,96 @@ def test_the_shared_call_logs_the_proposals_it_admits(tmp_path, env, repo, monke
                                  "acme/widget")
     assert [line["id"] for line in log if line["outcome"] == "admitted"] == [
         f"k{i}" for i in range(7)]
+
+
+# ---- criteria 4/5: the refusal and fallback cases the four-field card keeps ---------------
+@pytest.mark.parametrize("parser_available", [True, False])
+def test_a_symbol_requested_in_the_session_survives_unrelated_edits_and_fails_closed(
+        tmp_path, monkeypatch, parser_available):
+    if not parser_available:
+        import tree_sitter_language_pack
+        def unavailable(*args):
+            raise LookupError("unavailable")
+        monkeypatch.setattr(tree_sitter_language_pack, "get_parser", unavailable)
+    content = "def target():\n    return 1\n\ndef other():\n    return 2\n"
+    stage = observed_stage(tmp_path, {"source.py": content}, sessions=1)
+    assert stage._admit(proposal(detector=[{"path": "source.py", "symbol": "target"}])) == (
+        True, "admitted")
+    card = stage.facts["source-observed"]
+    assert card.detector[0]["kind"] == ("symbol" if parser_available else "file")
+    if not parser_available:
+        # A complete read keeps its file proof and records why the symbol is not in it.
+        assert card.detector[0]["fallback"] == {"symbol": "target",
+                                                "reason": "symbol-unresolvable"}
+    assert stage.signals(card) == (["target"] if parser_available else ["source.py"])
+    assert "Source is observed" in stage.render()
+    # A change to another declaration leaves a symbol contract alone; a file contract sees it.
+    (tmp_path / "source.py").write_text(content.replace("return 2", "return 3"))
+    assert ("Source is observed" in stage.render()) == parser_available
+    # The declaration itself changed: the card is ineligible until the code comes back.
+    (tmp_path / "source.py").write_text(content.replace("return 1", "return 4"))
+    assert not stage.render()
+
+
+def test_two_symbols_in_distinct_files_are_admitted(tmp_path):
+    pytest.importorskip("tree_sitter_language_pack")
+    stage = observed_stage(tmp_path, {"a.py": "def alpha():\n    return 1\n",
+                                      "b.py": "def beta():\n    return 2\n"})
+    assert stage._admit(proposal(detector=[{"path": "a.py", "symbol": "alpha"},
+                                           {"path": "b.py", "symbol": "beta"}])) == (
+        True, "admitted")
+    card = stage.facts["source-observed"]
+    assert [(proof["path"], proof["symbol"]) for proof in card.detector] == [
+        ("a.py", "alpha"), ("b.py", "beta")]
+    assert stage.signals(card) == ["alpha", "beta"]
+
+
+@pytest.mark.parametrize("reference", ["uncovered.txt", "./uncovered.txt",
+                                       "It calls uncovered.txt.", r"dir\uncovered.txt",
+                                       ".github/workflows/test.yml", "dir/my.file.ts"])
+def test_a_file_named_in_the_map_must_be_covered_by_the_contract(tmp_path, reference):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    for name in ("uncovered.txt", "dir/uncovered.txt", ".github/workflows/test.yml",
+                 "dir/my.file.ts"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("pass\n")
+    assert stage._admit(proposal(injection="source.txt calls " + reference)) == (
+        False, "uncovered-file")
+    assert not stage.facts
+
+
+@pytest.mark.parametrize("failure", ["empty_window", "context_error", "admission_error"])
+def test_a_native_proposal_survives_an_unusable_knowledge_context(
+        tmp_path, env, repo, monkeypatch, failure):
+    """Knowledge is the optional half of the shared call: when its context or its admission
+    fails, the native tick still runs, still answers and is still charged once."""
+    from tokeneconomizer.microskills.distiller import Distiller
+    native = [{"id": "native", "claim": "native claim", "cite": ["s0", "s1"],
+               "detector": DETECTOR}]
+    card = {"id": "source-observed", "claim": "Source is observed",
+            "injection": "Source is observed", "detector": [{"path": "source.txt"}]}
+    if failure == "empty_window":
+        monkeypatch.setattr(Knowledge, "update", lambda *a, **kw: None)
+    else:
+        def fail(*args):
+            raise ValueError("invalid Knowledge context")
+        monkeypatch.setattr(Knowledge,
+                            "fixed_instructions" if failure == "context_error"
+                            else "_apply_proposals", fail)
+    calls, enabled = fold_sessions(
+        tmp_path, env, repo, monkeypatch,
+        lambda: (json.dumps({"extractors": [], "facts": native, "knowledge": [card]}), 5),
+        TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller")
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    assert "native" in Distiller.load(ctx.repo.label, ctx.mech_dir).facts
+    assert len(calls) == 1
+    row = max(ctx.store.read_lines("ledger.jsonl"),
+              key=lambda r: r["overhead"]["optimizer_tokens"])
+    assert row["overhead"]["optimizer_tokens"] == 5
+    if failure == "admission_error":
+        assert row["injection"]["shared_proposals"]["knowledge"]["error"] == "proposal not saved"
+    else:
+        assert "shared_proposals" not in row["injection"]
