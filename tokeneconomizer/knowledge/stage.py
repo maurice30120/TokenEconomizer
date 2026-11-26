@@ -131,16 +131,18 @@ def _unreadable(state):
 def reset_stock(root):
     """Discard the Knowledge state an earlier layout wrote, once, so the stock starts blank.
 
-    Spec #329's stock is a repository's four-field cards. A file holding anything else -- the
-    retired multi-file cards, and the window and command history that indexed them -- is not
-    data of this one, and loading it would carry an old index into the new stock: the fold
-    removes the file before it reads anything. A file of four-field cards is this layout's own
-    and stays, unless its name is the one the retired layout gave a single checkout's stock
-    (`retired_stock_name`): that name is another layout's, whatever the file holds. Nothing
-    outside `<root>/knowledge_state` is touched: the micro-skills state, the sessions, the
-    ledger and `knowledge_log.jsonl` keep every line. A marker beside the files records the
-    sweep, so a store pays for it once and every later fold only looks. Returns the names
-    removed.
+    Spec #329's stock is a repository's four-field cards. A file is this layout's when it is an
+    object whose `facts` holds four-field cards, or no `facts` at all; anything else -- the
+    retired multi-file layout's `{spec, life}` records, a `facts` that is not an object -- is
+    state this one cannot read, and loading it would carry an old index into the new stock: the
+    fold removes the whole file before it reads anything, so the window and the command history
+    the retired layout kept in that same file go with it. A file of four-field cards is this
+    layout's own and stays, unless its name is the one the retired layout gave a single
+    checkout's stock (`retired_stock_name`): that name is another layout's, whatever the file
+    holds. Nothing outside `<root>/knowledge_state` is touched: the micro-skills state, the
+    sessions, the ledger and `knowledge_log.jsonl` keep every line. A marker beside the files
+    records the sweep, so a store pays for it once and every later fold only looks. Returns the
+    names removed.
     """
     directory = os.path.join(root, "knowledge_state")
     marker = os.path.join(directory, _STOCK_SWEPT)
