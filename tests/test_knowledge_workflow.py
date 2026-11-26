@@ -7,7 +7,7 @@ from tokeneconomizer.knowledge.stage import (KNOWLEDGE_MAX_CANDS, Knowledge, Kno
                                             workspace_id)
 from tokeneconomizer.plugin.config import load_config
 from tests.test_knowledge_pi import SOURCE, capture_read, pi_read, reads_session
-from tests.test_live_hooks import call, env, repo, run_session  # noqa: F401
+from tests.test_live_hooks import call, env, repo, run_session, store_for  # noqa: F401
 
 
 def test_knowledge_is_independent_and_disabled_by_default(tmp_path):
@@ -668,3 +668,95 @@ def test_a_symbol_named_in_the_prompt_outranks_a_file_match(tmp_path, env, repo,
          {"id": "sym", "claim": "target returns one", "source": "second.py", "symbol": "target"}])
     text = prompt(enabled, repo, "a", "in first.txt look at target", TE_KNOWLEDGE_MAX_CARDS="1")
     assert "target returns one" in text and "first.txt is observed" not in text
+
+
+# ---- criterion 2: one call, one observation pass, two lists, one charge ------------------
+DETECTOR = {"scope": "pytest", "confirm": "passed"}
+
+
+def session_events(repo, sid_index=0):
+    """One Claude session: it reads source.txt and support.txt and passes a test run."""
+    source, support = Path(repo) / "source.txt", Path(repo) / "support.txt"
+    content = {"source.txt": "observed\n", "support.txt": "support\n"}
+    uses, results = [], []
+    for n, path in enumerate((source, support)):
+        text = content[path.name]
+        uses.append({"type": "tool_use", "id": f"r{n}", "name": "Read",
+                     "input": {"file_path": str(path)}})
+        results.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"r{n}", "content": text}]},
+            "toolUseResult": {"type": "text", "file": {
+                "filePath": str(path), "content": text, "startLine": 1,
+                "numLines": 1, "totalLines": 1}}})
+    uses.append({"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}})
+    return [{"type": "assistant", "message": {"content": uses}}, *results,
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}]
+
+
+def fold_sessions(tmp_path, env, repo, monkeypatch, runner, sessions=3, **settings):
+    """Fold `sessions` read-and-test sessions with `runner` as the proposer; returns the calls."""
+    from tokeneconomizer.plugin import sidecall
+    (Path(repo) / "source.txt").write_text("observed\n")
+    (Path(repo) / "support.txt").write_text("support\n")
+    calls = []
+
+    def stub(prompt, model):
+        calls.append(prompt)
+        return runner()
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: stub)
+    enabled = dict(env, TE_LOOPGUARD="off", TE_TOOLPRUNE="off", **settings)
+    for i in range(sessions):
+        path = tmp_path / f"session{i}.jsonl"
+        path.write_text("\n".join(map(json.dumps, session_events(repo))))
+        run_session(enabled, repo, f"s{i}", str(path))
+    return calls, enabled
+
+
+def test_both_missions_share_one_call_one_observation_pass_and_one_charge(
+        tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.knowledge import stage as knowledge_stage
+    from tokeneconomizer.plugin import sidecall  # noqa: F401
+    from tokeneconomizer.microskills.distiller import Distiller
+    prepared = []
+    real = knowledge_stage.observations
+    monkeypatch.setattr(knowledge_stage, "observations",
+                        lambda *a, **kw: (prepared.append(1) or real(*a, **kw)))
+    native = [{"id": f"n{i}", "claim": f"native {i}", "cite": ["s0", "s1"],
+               "detector": DETECTOR} for i in range(6)]
+    knowledge = [{"id": f"k{i}", "claim": f"knowledge {i}", "injection": f"knowledge {i}",
+                  "detector": [{"path": "source.txt"}]} for i in range(7)]
+    knowledge += [{"id": "unsupported", "claim": "nowhere works", "injection": "nowhere",
+                   "detector": [{"path": "missing.txt"}]},
+                  {"id": "over-the-cap", "claim": "dropped by the cap", "injection": "dropped",
+                   "detector": [{"path": "source.txt"}]}]
+    calls, enabled = fold_sessions(
+        tmp_path, env, repo, monkeypatch,
+        lambda: (json.dumps({"extractors": [], "facts": native, "knowledge": knowledge}), 5),
+        TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller")
+    # One proposal call for both missions, and one observation pass per fold.
+    assert len(calls) == 1
+    assert len(prepared) == 3
+    prompt = calls[0]
+    assert prompt.count(Knowledge.fixed_instructions()) == 1
+    assert "Observed sources" in prompt
+    assert "up to 4 facts and up to 8 Knowledge candidates" in prompt
+    assert "JSON list of <=4 such objects" in prompt      # the native cap is unchanged
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    rows = list(ctx.store.read_lines("ledger.jsonl"))
+    row = next(r for r in rows if (r.get("injection") or {}).get("shared_proposals"))
+    # Each mission keeps its own list, cap and validator; the cost is charged once.
+    assert row["injection"]["shared_proposals"] == {
+        "native": {"proposed": 4, "admitted": 4},
+        "knowledge": {"proposed": 8, "admitted": 7, "rejected": {"source-not-observed": 1}},
+    }
+    assert row["knowledge"]["optimizer_tokens"] == 0.0
+    assert row["overhead"]["optimizer_tokens"] == 5
+    native_cards = Distiller.load(ctx.repo.label, ctx.mech_dir)
+    assert sorted(native_cards.facts) == ["n0", "n1", "n2", "n3"]
+    stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+    assert sorted(stage.facts) == [f"k{i}" for i in range(7)]
+
+
