@@ -393,6 +393,9 @@ class LiveController:
             # `[id, rev]` pairs: read either form as the id it names.
             cards = [_card_id(entry) for entry in startup["cards"]]
             block = ""
+            # The temporary selector's third call site (`#336` deletes all three): here it is not
+            # a trigger but a gate on restoring, so a missed deletion stops every restore in
+            # silence instead of raising in a prompt hook.
             if self.cfg.knowledge and not self.cfg.shadow and self.cfg.knowledge_triggers:
                 with self.ctx.store.locked("mechanisms") as got:
                     if not got:
