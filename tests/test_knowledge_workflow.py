@@ -20,28 +20,33 @@ SOURCE_CARD = {"id": "source-observed", "claim": "Source is observed",
                "detector": [{"path": "source.txt"}, {"path": "support.txt"}]}
 
 
+def read_source_transcript(path, repo):
+    """A session's transcript that read `source.txt` and `support.txt` and passed a test run:
+    the one shape every Knowledge learned from these two files comes from."""
+    source, other = Path(repo) / "source.txt", Path(repo) / "support.txt"
+    events = [
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "r2", "name": "Read", "input": {"file_path": str(other)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "     1→observed"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r2", "content": "     1→support"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(other), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
+    ]
+    Path(path).write_text("\n".join(map(json.dumps, events)))
+    return str(path)
+
+
 def _learn_source_knowledge(tmp_path, env, repo, monkeypatch, card=None):
     """Five live sessions that read `source.txt` and `support.txt` and propose one Knowledge."""
     from tokeneconomizer.plugin import sidecall
-    source = Path(repo) / "source.txt"
-    source.write_text("observed\n")
-    other = Path(repo) / "support.txt"
-    other.write_text("support\n")
+    (Path(repo) / "source.txt").write_text("observed\n")
+    (Path(repo) / "support.txt").write_text("support\n")
     knowledge = [SOURCE_CARD if card is None else card]
     monkeypatch.setattr(sidecall, "runner_for",
                         lambda *a, **kw: lambda *a: (json.dumps({"knowledge": knowledge}), 0))
     enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="off", TE_LOOPGUARD="off",
                    TE_TOOLPRUNE="off")
     for i in range(5):
-        tp = tmp_path / f"hook{i}.jsonl"
-        events = [
-            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "r2", "name": "Read", "input": {"file_path": str(other)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "     1→observed"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r2", "content": "     1→support"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(other), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
-        ]
-        tp.write_text("\n".join(map(json.dumps, events)))
-        run_session(enabled, repo, f"s{i}", str(tp))
+        run_session(enabled, repo, f"s{i}",
+                    read_source_transcript(tmp_path / f"hook{i}.jsonl", repo))
     return enabled
 
 
@@ -275,7 +280,47 @@ def test_a_forgotten_knowledge_stays_forgotten(tmp_path):
     stage.forget("source-observed")
     assert "Source is observed" not in stage.render()
     assert stage._admit(proposal()) == (False, "forgotten")
-    assert stage._admit(proposal(id="another-id")) == (True, "admitted")
+    # Another id does not get around it either: see the claim-and-contract rule below.
+
+
+def test_a_forgotten_knowledge_is_not_learned_again_under_another_id(tmp_path):
+    """Criterion #332/4: forgetting a Knowledge blocks its relearning by the same id **and** by
+    the same exact claim on the same exact contract presented under a new id, which is a cause
+    of its own -- neither `forgotten` (another id) nor `duplicate` (another memory)."""
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    stage.forget("source-observed")
+    assert stage._admit(proposal(id="source-observed-again")) == (False, "restates-forgotten")
+    assert "source-observed-again" not in stage.facts
+    assert stage.forgotten.keys() == {"source-observed"}
+
+
+def test_a_new_contract_or_a_new_claim_is_admitted_after_forgetting(tmp_path):
+    """The same claim proven by other code is a new contract, and another claim on the same
+    contract is a new claim: both follow normal admission, as the ticket asks."""
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n", "support.txt": "support\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    stage.forget("source-observed")
+    assert stage._admit(proposal(id="elsewhere", detector=[{"path": "support.txt"}])) == (
+        True, "admitted")
+    assert stage._admit(proposal(id="another-claim", claim="Source is read twice")) == (
+        True, "admitted")
+
+
+def test_a_restored_knowledge_is_eligible_by_the_contract_it_holds_then(tmp_path):
+    """`unforget` restores eligibility, not a verdict: the card is back among the facts, and
+    whether it is injected is decided by its contract against the code as it stands."""
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    stage.forget("source-observed")
+    (tmp_path / "source.txt").write_text("changed\n")
+    assert stage.unforget("source-observed") is True
+    card = stage.facts["source-observed"]
+    assert not stage.contract_valid(card)
+    assert "Source is observed" not in stage.render()
+    (tmp_path / "source.txt").write_text("observed\n")
+    assert stage.contract_valid(card)
+    assert "Source is observed" in stage.render()
 
 
 # ---- criterion 4/5: admission from one source, several, or none --------------------------

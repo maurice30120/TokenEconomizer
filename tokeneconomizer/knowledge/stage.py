@@ -431,10 +431,18 @@ class Knowledge(Distiller):
         card = {"id": card_id, "claim": spec["claim"], "injection": spec["injection"],
                 "detector": detector,
                 "internal": {"session": session or "", "observed_lines": spans}}
+        contract = _contract_key(detector)
         if any(stored.claim == card["claim"]
-               and _contract_key(stored.detector) == _contract_key(detector)
+               and _contract_key(stored.detector) == contract
                for stored in self.facts.values()):
             return False, "duplicate"
+        # A forgotten Knowledge stays out: its id is refused above, and so is a new id that
+        # merely restates it -- the same claim on the same contract. Any other claim, or any
+        # other contract, is a new Knowledge, and follows the ordinary admission below.
+        if any(entry.get("claim") == card["claim"]
+               and _contract_key((entry.get("record") or {}).get("detector") or []) == contract
+               for entry in self.forgotten.values()):
+            return False, "restates-forgotten"
         if card_id in self.facts:
             return False, "id-conflict"
         if _uncovered_file(self.workspace, card,
