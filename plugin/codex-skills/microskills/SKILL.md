@@ -1,7 +1,7 @@
 ---
 name: "microskills"
 description: >
-  Show the repository facts (micro-skills) TokenEconomizer learned and injects at the start of each session here, and the ones still forming. Use when the user asks what TokenEconomizer learned or injects, or about its facts or micro-skills.
+  Show what TokenEconomizer learned in this repository: the micro-skills it injects at the start of each session and the Knowledge it verified, forgotten entries included. Use when the user asks what TokenEconomizer learned or injects, or about its facts, micro-skills or Knowledge.
 ---
 
 # TokenEconomizer: microskills

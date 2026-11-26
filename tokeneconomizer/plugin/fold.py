@@ -219,12 +219,13 @@ class Busy(RuntimeError):
     """Another fold holds this repository's learning state."""
 
 
-def forget_microskills(ctx, ids, undo=False):
+def forget_microskills(ctx, ids, undo=False, memory=None):
     """`te microskills forget` (`unforget` with `undo`): forget the facts `ids` in this
     repository's learning state, so that no later fold learns them again, and render the cached
-    block again without them (with them, for `unforget`). Returns [(id, changed, claim)];
-    raises KeyError with the unknown ids, changing nothing, and `Busy` when a fold holds the
-    state longer than the lock waits."""
+    block again without them (with them, for `unforget`). `memory` keeps to one of the two
+    memories. Returns [(id, changed, claim)]; raises KeyError with the unknown ids, changing
+    nothing, `AmbiguousId` when an id is in both memories and no `memory` says which, changing
+    nothing either, and `Busy` when a fold holds the state longer than the lock waits."""
     from tokeneconomizer.microskills import PrefixStage, forget_facts
     adapter = LiveAdapter(ctx.host, ctx.repo.root, vocabulary=ctx.config.vocabulary,
                           catalog={}, protect=ctx.config.toolprune_protect)
@@ -232,7 +233,8 @@ def forget_microskills(ctx, ids, undo=False):
     with ctx.store.locked("mechanisms") as got:
         if not got:
             raise Busy("a fold of this repository's sessions holds its state")
-        out = forget_facts(ctx.repo.label, ctx.mech_dir, ids, vocab=vocab, undo=undo)
+        out = forget_facts(ctx.repo.label, ctx.mech_dir, ids, vocab=vocab, undo=undo,
+                           memory=memory)
         prior = ctx.store.read("injection.json")
         profile = (ctx.config.microskills if ctx.config.microskills != "off"
                    else (prior or {}).get("profile"))

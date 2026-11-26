@@ -1,5 +1,5 @@
 ---
-description: Show the repository facts (micro-skills) TokenEconomizer learned and injects at session start
+description: Show what TokenEconomizer learned in this repository - the micro-skills it injects at session start and the Knowledge it verified
 ---
 Run the command for this shell, then show me its output verbatim in a code block, with no commentary.
 

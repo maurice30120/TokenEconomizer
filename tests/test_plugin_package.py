@@ -745,7 +745,8 @@ console.log(JSON.stringify({
     assert out["cases"] == [
         [f"{name} " for name in expected],
         ["microskills "],
-        ["microskills show ", "microskills forget ", "microskills unforget "],
+        ["microskills show ", "microskills forget ", "microskills unforget ",
+         "microskills --type "],
         ["microskills forget "],
         ["status --json ", "status --explain "],
         ["status --json --explain "],
@@ -754,6 +755,61 @@ console.log(JSON.stringify({
         None,
         None,
     ]
+
+
+MEMORY_DOCS = (("plugin", "slash-commands", "microskills.md"),
+               ("plugin", "slash-commands", "facts.md"),
+               ("plugin", "codex-skills", "microskills", "SKILL.md"),
+               ("plugin", "README.md"), ("docs", "PLUGIN.md"),
+               ("tokeneconomizer", "knowledge", "README.md"),
+               ("tokeneconomizer", "microskills", "README.md"))
+COMMAND_WORD = re.compile(r"[A-Za-z0-9_.:/+-]+")
+
+
+def _microskills_tails(path):
+    """The `microskills` commands a file shows, as the arguments after the subcommand: on every
+    line of its inline code and its fenced blocks, the command words that follow `microskills`.
+    Placeholders (`$(pwd)`, a quoted id, `…`) are dropped; an option is a command word."""
+    text = open(path, encoding="utf-8").read()
+    chunks = re.findall(r"`([^`\n]+)`", text) + re.findall(r"```[^\n]*\n(.*?)```", text, re.S)
+    tails = []
+    for chunk in chunks:
+        for line in chunk.splitlines():
+            words = line.split()
+            if "microskills" not in words:
+                continue
+            tails.append([w for w in words[words.index("microskills") + 1:]
+                          if COMMAND_WORD.fullmatch(w)])
+    return tails
+
+
+def test_the_exposed_instructions_agree_with_the_cli():
+    """A ticket criterion of its own: the commands the plugin exposes -- the slash commands, the
+    Codex skill, the plugin, design and Knowledge READMEs -- run only `microskills` commands
+    `build_parser()` accepts, and the README table documents every action and option the parser
+    declares. Each surface is a hand-written copy; this is what holds the copies to the CLI."""
+    import argparse
+    from tokeneconomizer.plugin.cli import build_parser
+
+    parser = build_parser()
+    docs = [os.path.join(REPO, *parts) for parts in MEMORY_DOCS]
+    commands = [(path, tail) for path in docs for tail in _microskills_tails(path)]
+    assert len(commands) >= 6, commands       # every surface shows at least one, or it moved
+    for path, tail in commands:
+        parser.parse_args(["microskills", *tail])          # SystemExit: the copy drifted
+
+    (sub,) = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    sub = sub.choices["microskills"]
+    actions = [c for a in sub._actions if a.dest == "action" for c in a.choices]
+    flags = [s for a in sub._actions
+             if a.option_strings and a.dest not in ("help", "cwd", "host")
+             for s in a.option_strings]
+    readme = open(os.path.join(PLUGIN, "README.md"), encoding="utf-8").read()
+    for action in actions:
+        assert action == "show" or f"microskills {action}" in readme     # `show` is the default
+    for flag in flags:
+        assert f"microskills {flag}" in readme
+    assert all(flag in parser.description for flag in flags)    # `te --help` names them too
 
 
 def test_the_plugin_directory_is_also_a_pi_package():
