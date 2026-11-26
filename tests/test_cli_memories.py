@@ -133,6 +133,14 @@ def test_a_knowledge_only_listing_shows_the_knowledge_and_nothing_of_the_micro_s
     assert KNOWLEDGE_ID in row(out, KNOWLEDGE_ID)
 
 
+def test_a_knowledge_only_listing_with_nothing_learned_says_so(te):
+    """The filter is a way to look at one memory, so an empty one says it is empty -- as the
+    micro-skills path does -- instead of printing nothing at all."""
+    code, out = te("microskills", "--type", "knowledge")
+    assert code == 0
+    assert "(nothing learned in this memory)" in out
+
+
 def test_the_listing_shows_the_forgotten_entries_of_both_memories(both, te):
     assert te("microskills", "forget", NATIVE_ID)[0] == 0
     assert te("microskills", "forget", "--type", "knowledge", KNOWLEDGE_ID)[0] == 0

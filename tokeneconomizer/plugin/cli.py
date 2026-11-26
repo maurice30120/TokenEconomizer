@@ -382,6 +382,10 @@ def _print_memories(layers, injected, memory):
         for fid in layer.forgotten:
             rows.append((memory_of(layer), fid, None, True, layer))
     if not rows:
+        # A filter is how a person looks at one memory: an empty Knowledge memory says it is
+        # empty, as the micro-skills path already does, instead of printing nothing at all.
+        if memory == MEMORY_KNOWLEDGE:
+            print("(nothing learned in this memory)")
         return
     rows.sort(key=lambda row: (MEMORIES.index(row[0]), row[1]))
     print(f"\nlearned here, {_memory_title(memory)} (`microskills forget ID` stops one, "
