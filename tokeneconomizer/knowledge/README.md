@@ -148,8 +148,9 @@ words and three-character word fragments hashed into a fixed-size vector and com
 request that reuses a card's words without naming any of its signals** -- `where are the
 settings stored?` reaches a card whose text is `Settings live in config.json` -- **and it joins
 nothing whose words differ.** It carries no meaning across languages: a French request reaches
-no English card. It is nearness of vocabulary, not a semantic model, and no number here was
-measured -- the model and the similarity behind it (`NEAR_SIMILARITY`) are #335's decision,
+no English card. It is nearness of vocabulary, not a semantic model, and nothing here measures
+how good the ranking is -- the model and the similarity behind it (`NEAR_SIMILARITY`, set only
+far enough to join a paraphrase and nothing else) are #335's decision,
 which replaces the backend at `Knowledge.embedder`; the embedder's name alone makes every
 stored vector be rebuilt. What a near card never does is take the place of one the exact
 signals named: those are ranked and delivered first, and the near ones only fill what the
