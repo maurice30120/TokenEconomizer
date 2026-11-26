@@ -370,8 +370,6 @@ class LiveController:
             return ""
         enabled = self.cfg.knowledge and not self.cfg.shadow
         try:
-            if fresh:
-                return self._inject_knowledge(s, "startup") if enabled else ""
             startup = s.get("knowledge_startup")
             if self.host.keeps_start_context or not startup:
                 return ""
@@ -404,9 +402,8 @@ class LiveController:
         # Old sessions recorded IDs but not the token cost. Keep their deduplication and
         # conservatively wait for a context reset before giving more cards.
         tokens_used = s.get("knowledge_tokens", self.cfg.knowledge_max_tokens if given else 0)
-        share = self.cfg.knowledge_startup_share if trigger == "startup" else 1
-        facts = int(self.cfg.knowledge_max_cards * share) - len(given)
-        tokens = int(self.cfg.knowledge_max_tokens * share) - tokens_used
+        facts = self.cfg.knowledge_max_cards - len(given)
+        tokens = self.cfg.knowledge_max_tokens - tokens_used
         if facts <= 0 or tokens <= 0:
             return ""
         with self.ctx.store.locked("mechanisms") as got:
@@ -422,9 +419,6 @@ class LiveController:
                 cost = knowledge_tokens(text)
                 s["knowledge_given"] = given
                 s["knowledge_tokens"] = tokens_used + cost
-                if trigger == "startup":
-                    s["knowledge_startup"] = {"cards": [card.id for card, _ in chosen],
-                                              "tokens": cost}
                 if trigger == "read" and self.host.name == "pi" and self.p.get("tool_use_id"):
                     s.setdefault("knowledge_read_blocks", {})[self.p["tool_use_id"]] = {
                         "cards": [fact.id for fact, _ in chosen], "tokens": cost,

@@ -93,13 +93,14 @@ def test_a_resumed_session_keeps_the_knowledge_it_was_given(tmp_path, env, repo,
     assert "Source is observed" in read()
 
 
-def test_a_startup_card_saved_as_an_id_and_revision_still_restores(
+def test_a_recorded_start_block_saved_as_an_id_and_revision_still_restores(
         tmp_path, env, repo, monkeypatch):
-    """A session state written when a startup card was an `[id, rev]` pair still restores the
+    """A session state written when a start block was an `[id, rev]` pair still restores the
     card: the id is read from either form, so a resume does not lose its block."""
     from tokeneconomizer.plugin.hosts import ClaudeCode
-    # The pair of host behaviours the restore path serves: a start block delivered at startup,
-    # and a host that rebuilds it on resume.
+    # The pair of host behaviours the restore path serves: a host that takes a block at a start,
+    # and one that rebuilds that block away on a resume. Nothing writes such a block at a fresh
+    # start any more (#333), so the state is the one such a start left behind.
     monkeypatch.setattr(ClaudeCode, "knowledge_start_context", True)
     monkeypatch.setattr(ClaudeCode, "keeps_start_context", False)
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
@@ -107,8 +108,8 @@ def test_a_startup_card_saved_as_an_id_and_revision_still_restores(
     call(enabled, dict(base, hook_event_name="SessionStart", source="startup"))
     store = store_for(enabled, repo)
     state = store.read("sessions/legacy.json")
-    assert state["knowledge_startup"]["cards"] == ["source-observed"]
-    state["knowledge_startup"]["cards"] = [["source-observed", 1]]
+    state.update({"knowledge_given": ["source-observed"], "knowledge_tokens": 39,
+                  "knowledge_startup": {"cards": [["source-observed", 1]], "tokens": 39}})
     store.write("sessions/legacy.json", state)
     resumed = call(enabled, dict(base, hook_event_name="SessionStart", source="resume"))
     assert "Source is observed" in json.dumps(resumed)

@@ -77,8 +77,9 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
         counts.append((len(stage.facts), int("Pi observation" in stage.render())))
     # No lifecycle gate: the card is usable on the very fold that admitted it.
     assert counts == [(0, 0), (1, 1), (1, 1), (1, 1), (1, 1)]
+    # Nothing is given at a session start (#333): the card arrives with the read.
     start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "next", "cwd": str(repo)}
-    assert "Pi observation" in call(env, start, host="pi")["hookSpecificOutput"]["additionalContext"]
+    assert call(env, start, host="pi") == {}
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
     assert call(env, payload, host="pi") == {}
     assert call(env, dict(payload, session_id="other", prompt="rename widget"), host="pi") == {}

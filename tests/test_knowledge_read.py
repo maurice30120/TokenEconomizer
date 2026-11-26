@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_knowledge_workflow import _learn_source_knowledge, learn_knowledge
-from tests.test_live_hooks import call, env, repo, store_for  # noqa: F401
+from tests.test_live_hooks import call, env, repo, store_for, write_session  # noqa: F401
 
 CLAIM = "Source is observed"
 
@@ -29,9 +29,10 @@ def test_a_card_reaches_each_host_after_read_and_stops_when_a_proof_changes(
 
 
 def _read(enabled, repo, sid, path, host=None, event="PostToolUse", name="Read", key="file_path",
-          call_id=None):
+          call_id=None, **inputs):
     return call(enabled, {"hook_event_name": event, "session_id": sid, "cwd": repo,
-                          "tool_name": name, "tool_input": {key: path}, "tool_use_id": call_id,
+                          "tool_name": name, "tool_input": dict(inputs, **{key: path}),
+                          "tool_use_id": call_id,
                           "tool_response": {"content": "observed"},
                           "tool_result": {"text_result_for_llm": "observed"}}, host)
 
@@ -39,6 +40,22 @@ def _read(enabled, repo, sid, path, host=None, event="PostToolUse", name="Read",
 def _prompt(enabled, repo, sid, text, host=None):
     return call(enabled, {"hook_event_name": "UserPromptSubmit", "session_id": sid,
                           "cwd": repo, "prompt": text}, host)
+
+
+def _start(enabled, repo, sid, source, host=None, **extra):
+    return call(enabled, dict({"hook_event_name": "SessionStart", "source": source,
+                               "session_id": sid, "cwd": repo}, **extra), host)
+
+
+def _stock_for(host, enabled, repo):
+    """The learned stock, filed where a session of `host` reads it."""
+    from tokeneconomizer.knowledge.stage import Knowledge
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode, Copilot, Pi
+    src = LiveContext.build(ClaudeCode(), repo, enabled)
+    dst = LiveContext.build(Pi() if host == "pi" else Copilot(), repo, enabled)
+    Knowledge.load(src.repo.label, src.mech_dir).save(dst.mech_dir)
+    return dst
 
 
 def _logged(enabled, repo):
@@ -111,62 +128,18 @@ def test_card_has_its_own_budget_even_when_native_facts_fill_theirs(tmp_path, en
 
 
 @pytest.mark.parametrize("host,tool", [("pi", "read"), ("copilot", "view")])
-def test_startup_reserves_budget_and_does_not_repeat_cards(tmp_path, env, repo, monkeypatch, host, tool):
-    from tokeneconomizer.knowledge.stage import Knowledge
-    from tokeneconomizer.plugin.context import LiveContext
-    from tokeneconomizer.plugin.hosts import ClaudeCode, Copilot, Pi
-    # Registration order is what picks the first card now that a card has no firing rate.
-    names = ["b.txt", "a.txt", "c.txt", "d.txt"]
-    enabled = learn_knowledge(tmp_path, env, repo, monkeypatch,
-                              dict.fromkeys(names, "observed\n"),
-                              [{"id": n[0], "claim": f"card for {n}", "source": n} for n in names])
-    enabled.update(TE_KNOWLEDGE_MAX_CARDS="3", TE_KNOWLEDGE_MAX_TOKENS="300",
-                   TE_KNOWLEDGE_STARTUP_SHARE="0.5", TE_MICROSKILLS="envfacts")
-    src = LiveContext.build(ClaudeCode(), repo, enabled)
-    dst = LiveContext.build(Pi() if host == "pi" else Copilot(), repo, enabled)
-    stage = Knowledge.load(src.repo.label, src.mech_dir)
-    stage.save(dst.mech_dir)
-    dst.store.write("injection.json", {"rendered": "# native\n- native fact\n"})
-    start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "budget", "cwd": repo}
-
-    def start_with(settings, **payload):
-        return json.dumps(call(settings, dict(start, **payload), host=host))
-
-    def read(name, settings=enabled, sid="budget"):
-        return json.dumps(_read(settings, repo, sid, name, host=host, name=tool, key="path",
-                                call_id=name))
-
-    startup = start_with(enabled, timestamp=0)
-    assert "native fact" in startup and "card for b.txt" in startup and "card for a.txt" not in startup
-    assert start_with(enabled, timestamp=0) == "{}"  # repeated delivery of the same start
-    assert "card for b.txt" not in read("b.txt")
-    assert "card for a.txt" in read("a.txt")
-    resumed = start_with(enabled, source="resume", timestamp=1)
-    assert ("card for b.txt" in resumed) == ("native fact" in resumed) == (host == "copilot")
-    assert start_with(enabled, source="resume", timestamp=1) == "{}"
-    assert "card for c.txt" in read("c.txt")    # the unused startup budget is still available
-    assert "card for d.txt" not in read("d.txt")
-    assert [e["trigger"] for e in dst.store.read_lines("events.jsonl") if e["kind"] == "knowledge"] == [
-        "startup", "read", "read"]
-    if host == "pi":
-        # Pi retains its startup section and can keep recent read messages after compaction.
-        assert start_with(enabled, source="compact", retained_knowledge_reads=["a.txt"]) == "{}"
-        assert "card for a.txt" not in read("a.txt")
-        assert "card for b.txt" not in read("b.txt")
-        assert "card for c.txt" in read("c.txt")
-    assert "card for b.txt" in start_with(enabled, source="compact")
-    assert "card for d.txt" in read("d.txt")
-
-    control = dict(enabled, TE_KNOWLEDGE_STARTUP_SHARE="0")
-    assert "card for" not in start_with(control, session_id="control")
-    assert "card for" not in json.dumps(_prompt(control, repo, "control", "Read b.txt", host=host))
-    assert "card for b.txt" in read("b.txt", control, "control")
-
-    # A fitting card has about 39 tokens. Startup gets only 30 tokens here.
-    tight = dict(enabled, TE_KNOWLEDGE_MAX_TOKENS="61")
-    assert "card for" not in start_with(tight, session_id="tokens")
-    assert "card for a.txt" in read("a.txt", tight, "tokens")
-    assert "card for b.txt" not in read("b.txt", tight, "tokens")
+def test_knowledge_never_arrives_at_a_start_and_the_read_still_delivers(
+        tmp_path, env, repo, monkeypatch, host, tool):
+    """Criterion 1 (#333): the startup delivery and `knowledge_startup_share` are gone. No start
+    -- fresh, resumed, cleared or compacted -- gives a card, and the session's whole allowance is
+    available to what it reads."""
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    dst = _stock_for(host, enabled, repo)
+    for source in ("startup", "resume", "clear", "compact"):
+        assert CLAIM not in json.dumps(_start(enabled, repo, "s1", source, host))
+    assert [e for e in dst.store.read_lines("events.jsonl") if e["kind"] == "knowledge"] == []
+    delivered = _read(enabled, repo, "s1", "source.txt", host=host, name=tool, key="path")
+    assert CLAIM in json.dumps(delivered)
 
 
 def test_a_host_not_verified_and_every_other_case_inject_nothing(tmp_path, env, repo, monkeypatch):
