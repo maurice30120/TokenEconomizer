@@ -32,29 +32,46 @@ their file paths and Pi system prompt were replaced, while the tool calls and re
 retained.
 
 The proposer sees bounded excerpts of observed reads -- complete ones, and partial ones with
-the lines they returned (`observed_lines`) -- and identifies a source and session. A partial
-read that crossed no declaration has nothing to prove, so it is not offered at all. It runs
-on the existing micro-skills proposal cadence and uses TE's grounding, confirmation,
-contradiction and firing thresholds. When the native proposer is active and enough sources are
-available, one model call proposes up to eight candidates in any mix. The fold ledger records
-proposal and admission counts by type under `injection.shared_proposals`. Verification is local.
-State is isolated by workspace path. `te microskills`
-lists Knowledge identity, revision, lifecycle, proof status, source session and path, and the
-lines a partial read actually returned, including forgotten records. Use
-`te microskills forget ID` to suppress one and `te microskills unforget ID` to restore its
-saved lifecycle; injection still requires a valid proof and the usual lifecycle gates.
+the lines they returned (`observed_lines`) -- and names the sources a claim stands on as
+`{path, symbol?}` references. A partial read that crossed no declaration has nothing to prove,
+so it is not offered at all. Learning runs on the existing micro-skills cadence
+(`microskills_propose_every`), on the observations the fold already prepared, with no
+lifecycle, no confirmation or firing thresholds of its own: a card is eligible exactly while
+its contract verifies.
+
+A model-proposed Knowledge has the same four business fields as a stored one: `id` (a stable
+kebab-case slug, kept as proposed), `claim`, `injection` and `detector`. The engine resolves
+every `detector` reference against the version of the code the session observed and replaces
+the reference with the proof, so the model never writes a hash or a session id. A persisted
+card is exactly those four fields plus one internal block (`internal`: the session it was
+learned in, and the lines a partial read returned) that is never injected and is not a business
+field. There is no `life`, no revision, no validity status, no `flow`, `role`, `sources`,
+`proof` or confirmation counter: validity is computed on demand, never stored.
+
+With both missions active, one model call proposes two lists: the native facts and the
+Knowledge candidates, each with its own candidate cap (`MAX_CANDS` natively,
+`KNOWLEDGE_MAX_CANDS` = 8 for Knowledge) and its own validator, sharing one prepared
+observation block and one charge. The fold ledger records proposal and admission counts by
+type under `injection.shared_proposals` and the cost once, on the native stage. Every proposal
+of a fold -- admitted or refused with its reason -- is appended to
+`knowledge_log.jsonl` in the store; `type: "knowledge"` is the field that will tell the two
+memories apart. Verification is local. State is isolated by workspace path.
+
+`te microskills` lists Knowledge identity, claim, current proof status, the session it was
+learned in, its sources and the lines a partial read actually returned, including forgotten
+records. Use `te microskills forget ID` to suppress one and `te microskills unforget ID` to
+restore it; injection still requires a contract that verifies.
 
 ## When Knowledge is injected
 
 On Pi and Copilot CLI, the session-start hook can give eligible Knowledge alongside native
-facts, ordered by firing rate and then registration order. Both hosts can also deliver Relevant
-Knowledge after a successful read of any covered file. Hosts that support the earlier prompt
-trigger keep it, while Pi and Copilot use startup and read triggers for this experiment.
-Stored Knowledge needs no migration: its signals come from its current contract.
+facts, in registration order. Both hosts can also deliver Relevant Knowledge after a successful
+read of any covered file. Hosts that support the earlier prompt trigger keep it, while Pi and
+Copilot use startup and read triggers for this experiment.
 
-An eligible structured Knowledge is a short map: a claim, a flow, and the role of each source
-file, optionally including its symbol. The source proofs are not included in the injected map.
-Knowledge has a total budget for the conversation context. Set `knowledge_max_cards` (default
+An eligible Knowledge is rendered as its `injection` text and nothing else: the contract and the
+internal block stay out of the injected map. Knowledge has a total budget for the conversation
+context. Set `knowledge_max_cards` (default
 4), `knowledge_max_tokens` (default 300 estimated tokens) and `knowledge_startup_share`
 (default 0.5, from 0 to 1) via the regular `te config` settings. The startup share applies to
 both limits, rounded down. At 0, Knowledge only arrives after a read on Pi and Copilot. Unused
@@ -62,8 +79,8 @@ startup capacity is available later. Native facts use their own budget. A map mu
 
 An already delivered card consumes its allowance only once while it remains in context.
 Duplicate start hooks for the same event are ignored for both native facts and Knowledge.
-Copilot rebuilds start context on resume, so TE restores the original eligible card revisions
-without charging again. A clear or a compaction that drops Knowledge frees its capacity. Pi
+Copilot rebuilds start context on resume, so TE restores the same cards, by id, while their
+contracts hold, without charging again. A clear or a compaction that drops Knowledge frees its capacity. Pi
 compaction keeps the startup section and the steer messages still in the retained history.
 
 ### The prompt trigger
@@ -82,8 +99,8 @@ nothing from this trigger.
 When more Knowledge matches a prompt than the remaining Knowledge budget holds, the strongest match is kept
 first: a symbol named as a whole identifier (3), then a file named by its full path (2), then a
 file named by its bare file name (1); a Knowledge with several sources counts its strongest
-matching signal. Equal matches are ordered by firing rate, highest first, and what still ties
-keeps registration order, so the choice is deterministic and makes no model call.
+matching signal. Equal matches keep registration order, so the choice is deterministic and
+makes no model call.
 
 Delivery is the host's own prompt context, after what the cached prefix holds.
 
@@ -95,9 +112,9 @@ runs on `PostToolUse` after a file-reading tool (`Read`, `read`, `view`) succeed
 `knowledge=on`, also when the loop guard is off, and only on a host verified to put that
 context after the tool's result at the end of the conversation (`tool_context`: Claude Code,
 Copilot, Pi). A host not verified gets nothing from this trigger. The same once-per-session
-memory (`knowledge_given`) and the same budget, proof, lifecycle and forgotten gates apply. A
+memory (`knowledge_given`) and the same budget, contract and forgotten gates apply. A
 Knowledge already given in the context is skipped. The file must lie
-inside the workspace. Every match is an exact path, so covering Knowledge is ordered by firing rate, then
+inside the workspace. Every match is an exact path, so covering Knowledge is ordered by
 registration order. A subagent's read, a failed
 read, a shadow run and a replayed (queued) hook inject nothing.
 
@@ -144,11 +161,11 @@ earlier in the session; on a prompt, one of the Knowledge's own files had been. 
 forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind; the ledger has no
 `injection` field for Knowledge, which belongs to the paid optimizer.
 
-Before each new injection TE hashes the current file and drops only Knowledge whose proof
-no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
-eligibility subject to the lifecycle. A revised Knowledge retains its identity but must earn
-new confirmations. Earlier context in a conversation cannot be removed retroactively. Knowledge is untrusted data: a matching hash does not establish that
-the explanation is correct.
+Before each new injection TE checks the stored contract against the checkout and drops only
+Knowledge whose proof no longer matches. Deletion and read errors fail closed; restoring the
+exact bytes restores eligibility, with nothing to earn back. Earlier context in a conversation
+cannot be removed retroactively. Knowledge is untrusted data: a matching hash does not establish
+that the explanation is correct.
 
 ## Symbol contracts
 
@@ -168,20 +185,26 @@ can currently load; supported declaration forms are limited to those recognized 
 Install the package dependencies to enable symbol parsing.
 
 
-A new or revised fact must describe a useful relationship, with a `flow` and `sources`: at
-least two `{source, role, symbol?, source_session}` entries for distinct files. Each source
-session must be cited and may differ from the others. A top-level `source_session` is accepted
-as a common fallback for entries without their own session.
-Two symbols in the same file do not meet this requirement. Each source is proven as a single one is
-(from the cited session's observation, a partial read only for a declaration it crossed), and the
-contract is the list of those proofs: the Knowledge is valid only while every one of them is.
-Inspection lists all its sources. Knowledge that synthesizes other Knowledge is not supported;
-a stored one of that kind has no proof, so it is never injected.
-Admission also rejects explicit workspace-relative file references in the map that resolve to
-existing files outside its sources. This check does not resolve every shorthand or implied
-reference and does not prove the explanation is correct.
-Existing single-source entries remain readable and eligible under their existing gates, but
-cannot be revised without supplying the required distinct sources.
+Admission resolves every reference once, against the window's observations: an exact observed
+path first, then the one observed path ending with the reference by whole segments (a bare file
+name is enough when it is unique; several matches refuse the proposal as `ambiguous-source`,
+never a guess). A reference is then proven as the observation proves it, and the contract is the
+list of those proofs: the Knowledge is valid only while every one of them is.
+
+One source is enough -- a file, or one declaration -- and several sources are right when together
+they explain one mechanism; there is no minimum number of files, and a claim may rest on a single
+session. An empty proposal list is a valid answer. A proposal is refused with a stable reason:
+`invalid-fields` (a missing or extra field, or a `detector` that is not a list of
+`{path, symbol?}`), `invalid-id` (not kebab-case), `forgotten`, `duplicate` (the same claim and
+the same resolved contract, whatever its id), `id-conflict` (an id already stored with other
+content, never overwritten), `source-not-observed`, `ambiguous-source`, `partial-needs-symbol`,
+`symbol-not-observed`, `stale-proof`, and `uncovered-file`.
+
+`uncovered-file` rejects explicit workspace-relative file references in `claim` or `injection`
+that resolve to existing files outside the contract. It does not resolve every shorthand or
+implied reference and does not prove the explanation is correct. Knowledge that synthesizes other
+Knowledge has no such field and is refused as `invalid-fields`; retired fields are never
+persisted.
 
 ## Recorded-session evaluation
 
@@ -190,11 +213,13 @@ replays the sanitized Pi complete-read recording five times through the live hoo
 with distinct session IDs, an added simulated successful `pytest` command, and a
 stub proposer returning one grounded file candidate. No lifecycle threshold or
 proposal cadence is overridden. The following counts are `(stored, eligible for
-rendering)` after each fold: `(0, 0), (1, 0), (1, 0), (1, 1), (1, 1)`.
+rendering)` after each fold: `(0, 0), (1, 1), (1, 1), (1, 1), (1, 1)` -- a Knowledge has no
+lifecycle to earn, so it is usable on the fold that admitted it.
 The test also checks the hook output, forget/unforget, deletion and restoration.
 The separate Copilot recording test exercises a second host. Workflow tests cover
-file and symbol contracts, several sources, revision, warm-cache revalidation,
-workspace isolation, budget, native coexistence and user controls.
+file and symbol contracts, several sources, admission reasons, warm-cache revalidation,
+workspace isolation, budget, native coexistence, the activation matrix, the shared proposal call
+and user controls.
 
 This is a deterministic integration scenario, not a representative yield estimate:
 the same read is replayed, confirmations are synthetic and the candidate is supplied

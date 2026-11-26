@@ -5,7 +5,7 @@ This context describes reusable knowledge derived from sessions in a workspace.
 ## Language
 
 **Knowledge**:
-A reusable understanding of a coherent mechanism and the relationships between its parts across at least two distinct files, supported by evidence. Knowledge is distinct from a native Fact and from a collection of separate file summaries.
+A durable understanding of how the code works, grounded in code a session actually observed: one file, one symbol, or several sources explaining one mechanism. Knowledge is distinct from a native Fact and from a collection of separate file summaries.
 Several Knowledge entries can cover the same file when they describe different mechanisms.
 
 **Multi-source Knowledge**:
@@ -13,6 +13,10 @@ Knowledge supported by evidence for each of its source files or symbols.
 
 **Knowledge Evidence**:
 An observation supporting Knowledge whose validity establishes that the relevant code still matches the observed version, but does not establish that the finding is correct.
+
+**Knowledge Contract**:
+The evidence that determines whether a **Knowledge** entry remains valid in the current checkout.
+Only entries with a valid **Knowledge Contract** qualify for search and injection.
 
 **Knowledge Observation**:
 What a session actually read of a source: the whole file for a complete read, the returned lines for a partial one. Its scope is recorded; the part that was not read is never presented as observed.
@@ -35,4 +39,4 @@ _Avoid_: knowledge budget, knowledge quota
 The fraction of the Knowledge Allowance a session may be given at session start. What the startup does not use stays available for Knowledge given after a read.
 
 **Knowledge Revision**:
-A marker identifying a particular revision of a Knowledge entry, separate from its stable identity.
+Retired: a Knowledge keeps one stable identity and one claim; a claim that changed is a new Knowledge.
