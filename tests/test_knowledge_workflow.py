@@ -775,3 +775,114 @@ def test_the_knowledge_instructions_fit_inside_the_native_fixed_instructions():
     assert "Observed sources (paths relative to the repository" not in instructions
 
 
+# ---- criterion 1: which missions a fold runs --------------------------------------------
+def trap_events(repo):
+    """One session that falls into the environment trap every time: bare `pytest` is missing."""
+    events = session_events(repo)
+    events[0]["message"]["content"] += [
+        {"type": "tool_use", "id": "sh1", "name": "Bash", "input": {"command": "pytest -q"}},
+        {"type": "tool_use", "id": "sh2", "name": "Bash",
+         "input": {"command": "python -m pytest -q"}}]
+    events += [
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "sh1",
+             "content": "bash: pytest: command not found", "is_error": True}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "sh2", "content": "1 passed in 0.1s"}]}},
+    ]
+    return events
+
+
+def fold_activation(tmp_path, env, repo, monkeypatch, microskills, knowledge, sessions=3):
+    """Fold `sessions` trap sessions under one activation cell; returns (calls, store, ledger)."""
+    import glob
+    import os
+    from tokeneconomizer.plugin import sidecall
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    (Path(repo) / "source.txt").write_text("observed\n")
+    (Path(repo) / "support.txt").write_text("support\n")
+    native = [{"id": "native", "claim": "native claim", "cite": ["s0", "s1"],
+               "detector": DETECTOR}]
+    card = {"id": "source-observed", "claim": "Source is observed",
+            "injection": "Source is observed", "detector": [{"path": "source.txt"}]}
+    calls = []
+
+    def stub(prompt, model):
+        calls.append(prompt)
+        return json.dumps({"extractors": [], "facts": native, "knowledge": [card]}), 5
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: stub)
+    enabled = dict(env, TE_LOOPGUARD="off", TE_TOOLPRUNE="off",
+                   TE_MICROSKILLS=microskills, TE_KNOWLEDGE=knowledge)
+    for i in range(sessions):
+        path = tmp_path / f"cell{i}.jsonl"
+        path.write_text("\n".join(map(json.dumps, trap_events(repo))))
+        run_session(enabled, repo, f"s{i}", str(path))
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+    state = glob.glob(os.path.join(ctx.mech_dir, "knowledge_state", "*.json"))
+    rows = list(ctx.store.read_lines("ledger.jsonl"))
+    return {"calls": calls, "rows": rows, "ctx": ctx, "knowledge_state": state,
+            "injection": ctx.store.read("injection.json") or {}}
+
+
+@pytest.mark.parametrize("microskills,knowledge,calls", [
+    ("off", "off", 0),
+    ("envfacts", "off", 0),
+    ("envfacts+distiller", "off", 1),
+    ("off", "on", 1),
+    ("envfacts", "on", 1),
+    ("envfacts+distiller", "on", 1),
+])
+def test_the_activation_matrix_decides_which_missions_run(
+        tmp_path, env, repo, monkeypatch, microskills, knowledge, calls):
+    """Every cell of the activation matrix: which missions call a model, which write state, and
+    what the free `envfacts` layer still does -- unchanged in all six cells."""
+    import glob
+    import os
+    from tokeneconomizer.microskills.distiller import Distiller
+    fold = fold_activation(tmp_path, env, repo, monkeypatch, microskills, knowledge)
+    ctx = fold["ctx"]
+    assert len(fold["calls"]) == calls and fold["rows"]
+    # The free layer learns wherever it is on, and nowhere else.
+    envfacts = glob.glob(os.path.join(ctx.mech_dir, "envfacts_state", "*.json"))
+    assert bool(envfacts) == ("envfacts" in microskills)
+    if envfacts:
+        assert "form_repair:run_tests:pytest" in json.loads(Path(envfacts[0]).read_text())["facts"]
+    if microskills != "off":
+        assert fold["injection"]["profile"] == microskills
+    # The paid native mission runs exactly where the profile pays for it.
+    paid_native = "distiller" in microskills
+    assert ("native" in Distiller.load(ctx.repo.label, ctx.mech_dir).facts) == paid_native
+    # The Knowledge mission runs, and writes state, exactly where it is on.
+    assert bool(fold["knowledge_state"]) == (knowledge == "on")
+    stage = (Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+             if fold["knowledge_state"] else None)
+    assert (stage is not None and "source-observed" in stage.facts) == (knowledge == "on")
+    if not calls:
+        assert all(row["overhead"]["optimizer_tokens"] == 0 for row in fold["rows"])
+        return
+    # The fold that ticked is the one whose work cost something.
+    row = max(fold["rows"], key=lambda r: r["overhead"]["optimizer_tokens"])
+    injection = row["injection"] or {}
+    if microskills != "off":
+        # No `envfacts` path starts a paid micro-skills mission: its layer learns for free.
+        assert injection["optimizer_tokens"] == (5 if paid_native else 0)
+    if knowledge == "on":
+        # One charge for the fold: Knowledge's own call, or the shared one on the native stage.
+        assert row["overhead"]["optimizer_tokens"] == 5
+        assert (row["knowledge"] or {})["optimizer_tokens"] == (0.0 if paid_native else 5.0)
+
+
+@pytest.mark.parametrize("propose_every,sessions,calls", [(2, 4, 2), (3, 4, 1)])
+def test_knowledge_proposes_on_the_native_cadence(
+        tmp_path, env, repo, monkeypatch, propose_every, sessions, calls):
+    card = {"id": "source-observed", "claim": "Source is observed",
+            "injection": "Source is observed", "detector": [{"path": "source.txt"}]}
+    made, _enabled = fold_sessions(
+        tmp_path, env, repo, monkeypatch,
+        lambda: (json.dumps({"knowledge": [card]}), 0), sessions=sessions,
+        TE_KNOWLEDGE="on", TE_MICROSKILLS="off",
+        TE_MICROSKILLS_PROPOSE_EVERY=str(propose_every))
+    assert len(made) == calls
+
+
