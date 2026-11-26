@@ -130,8 +130,10 @@ class Host:
     # the end of the conversation (verified per host, 2026-11-24: Claude Code, Copilot, Pi).
     # No host accepts it before the call: see "PreToolUse" in docs/PLUGIN.md.
     tool_context = False
-    # Whether a Knowledge block returned from SessionStart reaches the model: what a restore
-    # needs on a resume, and what keeps this host's Knowledge off the prompt trigger.
+    # Whether a Knowledge block returned from SessionStart reaches the model: what the restore of
+    # a block an earlier start recorded needs on a resume. It does not gate the prompt trigger:
+    # nothing is given at a start any more (#333), so the hosts that take a block there get the
+    # prompt trigger like the others (controller.py, `knowledge_on_prompt`).
     knowledge_start_context = False
 
     def session_id(self, p):

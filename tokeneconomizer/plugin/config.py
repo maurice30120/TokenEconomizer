@@ -38,6 +38,11 @@ person can tune by hand:
                                    manual share one allowance; a line that does not fit is
                                    left out whole);
   * knowledge_max_cards, knowledge_max_tokens -- total Knowledge allowance per conversation;
+  * knowledge_variant           -- TEMPORARY (#334): which Knowledge triggers run. `a` is the
+                                   prompt trigger alone, `b` the read trigger alone, `c` both
+                                   (the default) and `d` neither, which is the campaign's
+                                   control arm. Spec #329's campaign selects one per session;
+                                   #336 removes the setting and keeps `c`'s triggers;
   * microskills_propose_every   -- sessions between proposer runs;
   * toolprune_evidence          -- prompts a never-used tool must have stayed unused through,
                                    over at least toolprune_min_sessions sessions, before it is
@@ -122,6 +127,12 @@ LOOPGUARD = ("off", "nudge", "stop")
 REPOMAP = ("off", "on", "start")
 MODES = ("auto", "interactive", "headless")
 AGGR = ("conservative", "default", "aggressive")
+# Which Knowledge triggers each value of the temporary `knowledge_variant` selector runs (#334).
+# `d` is the campaign's control arm: no Knowledge at all, the micro-skills untouched. #336
+# removes the selector and this table with it.
+KNOWLEDGE_VARIANTS = ("a", "b", "c", "d")
+KNOWLEDGE_TRIGGERS = {"a": ("prompt",), "b": ("read",), "c": ("prompt", "read"),
+                      "d": ()}
 
 # What `on` turns each mechanism to, and the words read as on / off.
 ON_VALUE = {"microskills": "envfacts+distiller", "toolprune": "auto", "loopguard": "nudge",
@@ -200,6 +211,7 @@ class LiveConfig:
     knowledge: bool = False
     knowledge_max_cards: int = 4
     knowledge_max_tokens: int = 300
+    knowledge_variant: str = "c"
     mode: str = "auto"
     microskills: str = "off"
     microskills_max_facts: int = 4
@@ -249,7 +261,7 @@ class LiveConfig:
 
     _CHOICES = {"mode": MODES, "microskills": MICROSKILLS, "toolprune": TOOLPRUNE,
                 "loopguard": LOOPGUARD, "repomap": REPOMAP, "loopguard_aggr": AGGR,
-                "local_model": LOCAL_MODELS,
+                "local_model": LOCAL_MODELS, "knowledge_variant": KNOWLEDGE_VARIANTS,
                 "vocabulary": ("auto", "generic", "python-git", "node-web"),
                 # Each CLI's own words (Claude Code 2.1.319, Codex 0.167.0); whether a model
                 # takes one is the CLI's to say.
@@ -263,6 +275,15 @@ class LiveConfig:
         d = asdict(self)
         d.pop("warnings", None)
         return d
+
+    @property
+    def knowledge_triggers(self):
+        """The Knowledge triggers this session runs -- what variant `d` has none of.
+
+        Temporary (#334): the selector exists for spec #329's campaign, which runs the same Pi
+        environment under A, B, C and D, and #336 removes it once the campaign has decided.
+        """
+        return KNOWLEDGE_TRIGGERS.get(self.knowledge_variant, KNOWLEDGE_TRIGGERS["c"])
 
     def set(self, key, value, source="?"):
         """Apply one setting with type coercion and validation; False if rejected."""
@@ -366,6 +387,7 @@ class LiveConfig:
 _ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow", "TE_KNOWLEDGE": "knowledge",
         "TE_KNOWLEDGE_MAX_CARDS": "knowledge_max_cards",
         "TE_KNOWLEDGE_MAX_TOKENS": "knowledge_max_tokens",
+        "TE_KNOWLEDGE_VARIANT": "knowledge_variant",
         "TE_PAID_MODEL": "paid_model", "TE_VOCABULARY": "vocabulary",
         **{f"TE_{a.upper()}_PAID_MODEL": f"{a}_paid_model" for a in (
             "claude", "codex", "copilot", "pi", "opencode", "cursor", "grok", "hermes", "droid")},

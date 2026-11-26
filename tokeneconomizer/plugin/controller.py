@@ -341,9 +341,17 @@ class LiveController:
 
     def knowledge_on_prompt(self):
         """Does this prompt hook bring Knowledge? Only where its output reaches the model and
-        can follow the conversation without rewriting its cached prefix."""
+        can follow the conversation without rewriting its cached prefix, and only under a
+        selector that runs the prompt trigger (temporary, #334).
+
+        The gate used to exclude the hosts that took a Knowledge block at a session start, since
+        that block was their delivery. Nothing is given at a start any more (#333), so the
+        exclusion only turned the prompt trigger off on Pi and Copilot; what is left is what
+        always decided it: a prompt hook whose output reaches the model (`prompt_context`) and
+        can carry a text that varies by prompt (`prompt_knowledge`).
+        """
         return bool(self.cfg.knowledge and not self.cfg.shadow
-                    and not self.host.knowledge_start_context
+                    and "prompt" in self.cfg.knowledge_triggers
                     and self.host.prompt_context and self.host.prompt_knowledge)
 
     def _knowledge_stage(self):
@@ -391,7 +399,7 @@ class LiveController:
             # `[id, rev]` pairs: read either form as the id it names.
             cards = [_card_id(entry) for entry in startup["cards"]]
             block = ""
-            if self.cfg.knowledge and not self.cfg.shadow:
+            if self.cfg.knowledge and not self.cfg.shadow and self.cfg.knowledge_triggers:
                 with self.ctx.store.locked("mechanisms") as got:
                     if not got:
                         raise fold.Busy("a fold of this repository's sessions holds its state")
@@ -586,8 +594,10 @@ class LiveController:
 
     def knowledge_on_read(self):
         """Does this tool hook bring Knowledge? Only after a read, on a host verified to put
-        its context after the result without rewriting the cached prefix."""
-        return bool(not self.cfg.shadow and self.host.tool_context and self._reports_read())
+        its context after the result without rewriting the cached prefix, and only under a
+        selector that runs the read trigger (temporary, #334)."""
+        return bool("read" in self.cfg.knowledge_triggers and not self.cfg.shadow
+                    and self.host.tool_context and self._reports_read())
 
     def _workspace_path(self, path):
         """A read's path relative to the workspace, "" when it lies outside."""
