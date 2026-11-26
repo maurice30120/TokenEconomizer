@@ -176,10 +176,14 @@ def test_the_index_is_rebuilt_when_a_card_is_admitted(tmp_path):
 
 def test_a_ranking_that_cannot_run_leaves_the_exact_signals_as_the_whole_ranking(tmp_path):
     """A model that is down, or one whose vectors are the wrong shape, costs the search only what
-    it added: every card the exact signals gave is still delivered."""
+    it added: the seam is entered and declines (`broken`, no index written), and every card the
+    exact signals gave is still delivered."""
+    from tokeneconomizer.knowledge.index import index_path
     stage = two_cards(tmp_path)
     for embedder in (BrokenEmbedder(), ShortEmbedder()):
         stage.embedder = embedder
+        assert stage.index().broken is True
+        assert not os.path.exists(index_path(tmp_path, "repo"))
         assert "Settings live in config.json" in stage.render("read config.json")
         assert "Tests run with pytest" in stage.render("read tests.txt")
         assert stage.render("où sont les réglages ?") == ""

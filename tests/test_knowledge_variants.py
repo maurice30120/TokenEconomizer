@@ -37,16 +37,21 @@ def test_the_selector_is_a_setting_of_four_values_and_defaults_to_both_triggers(
     assert unknown.knowledge_variant == "c" and unknown.warnings
 
 
-def test_a_pi_prompt_answer_keeps_its_message_apart_from_its_section():
-    """Criterion 1 (#334): the first prompt of a session can carry the repository map through
-    Pi's section and a card as a message. The two channels stay separate, which is what leaves
-    the system prompt -- and the cached prefix -- untouched by a card."""
-    from tokeneconomizer.plugin.hosts import Pi, merge_outputs
-    merged = merge_outputs(Pi().context("UserPromptSubmit", "map"),
-                           Pi().prompt_message("UserPromptSubmit", "card"))
-    assert merged["hookSpecificOutput"] == {"hookEventName": "UserPromptSubmit",
-                                            "additionalContext": "map",
-                                            "promptMessage": "card"}
+def test_a_pi_prompt_answer_keeps_the_card_apart_from_the_section(
+        tmp_path, env, repo, monkeypatch):
+    """Criterion 1 (#334): one prompt can carry the repository map through Pi's
+    `additionalContext` -- the channel the extension writes its system-prompt section from -- and
+    a card as `promptMessage`, a message after the prompt. Driven through the hook, since what
+    must not happen is a card in the section: that would rewrite the cached prefix."""
+    from tests.test_live_repomap import _env
+    enabled = _env(_learn_source_knowledge(tmp_path, env, repo, monkeypatch), tmp_path)
+    _stock_for("pi", enabled, repo)
+    _start(enabled, repo, "p1", "startup", "pi")          # the map is refreshed, in this env
+    parts = _prompt(enabled, repo, "p1", "check `source` in source.txt", host="pi")[
+        "hookSpecificOutput"]
+    assert parts["additionalContext"].startswith("# Repository map")   # the map, in the section
+    assert CLAIM in parts["promptMessage"]                           # the card, as a message
+    assert CLAIM not in parts["additionalContext"]
 
 
 def test_pi_gets_the_knowledge_a_prompt_names_as_a_message_after_the_prompt(
