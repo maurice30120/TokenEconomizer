@@ -216,6 +216,26 @@ def test_the_sweep_retires_the_per_checkout_name_the_retired_layout_used(tmp_pat
     assert json.loads((stock / "gitlab__widget.json").read_text()) == other
 
 
+def test_a_wrongly_shaped_stock_file_neither_breaks_the_fold_nor_survives_it(
+        tmp_path, env, repo, monkeypatch):
+    """Criterion 4: `facts` as a list is JSON this layout can read but not understand. It is
+    state it cannot use, so the sweep removes it -- raising instead would stop the sweep before
+    its marker, and every later fold would fail before learning anything."""
+    enabled = fold_mixed(tmp_path, env, repo, monkeypatch, [CARD], sessions=1,
+                         TE_KNOWLEDGE="off", TE_MICROSKILLS="envfacts")
+    ctx = context_in(dict(enabled, TE_KNOWLEDGE="on"), repo)
+    directory = Path(ctx.mech_dir, "knowledge_state")
+    Path(Knowledge._path(ctx.mech_dir, ctx.repo.label)).write_text(json.dumps({"facts": [CARD]}))
+    stray = directory / "stray.json"
+    stray.write_text(json.dumps({"facts": [CARD]}))
+    fold_mixed(tmp_path, env, repo, monkeypatch, [CARD], sessions=1,
+               TE_KNOWLEDGE="on", TE_MICROSKILLS="envfacts", TE_MICROSKILLS_PROPOSE_EVERY="1")
+    assert not stray.exists()
+    assert not any((row.get("knowledge") or {}).get("error")
+                   for row in ctx.store.read_lines("ledger.jsonl"))
+    assert sorted(Knowledge.load(ctx.repo.label, ctx.mech_dir).facts) == ["source-observed"]
+
+
 def test_the_sweep_removes_only_what_the_layout_cannot_read(tmp_path):
     """Criterion 4: a stock of four-field cards is this layout's own and stays; a file holding
     anything else goes, and the store is swept once."""
