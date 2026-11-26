@@ -211,8 +211,8 @@ persisted.
 `tests/test_knowledge_pi.py::test_pi_hook_learns_from_recorded_active_sessions`
 replays the sanitized Pi complete-read recording five times through the live hooks,
 with distinct session IDs, an added simulated successful `pytest` command, and a
-stub proposer returning one grounded file candidate. No lifecycle threshold or
-proposal cadence is overridden. The following counts are `(stored, eligible for
+stub proposer returning one grounded two-source Knowledge. Neither the proposal
+cadence nor anything else is overridden. The following counts are `(stored, eligible for
 rendering)` after each fold: `(0, 0), (1, 1), (1, 1), (1, 1), (1, 1)` -- a Knowledge has no
 lifecycle to earn, so it is usable on the fold that admitted it.
 The test also checks the hook output, forget/unforget, deletion and restoration.
