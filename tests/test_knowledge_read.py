@@ -340,6 +340,28 @@ def test_the_delivery_and_its_volume_are_logged_without_being_counted_twice(
     assert accounting.summarize(list(rows.values()))["overhead_tokens"] == 0
 
 
+def test_the_volume_by_type_covers_the_same_span_as_the_ceiling(tmp_path, env, repo, monkeypatch):
+    """Criterion 5 (#333): the volume the ledger records by type is the `knowledge_tokens` the
+    session spent, so it starts again where the ceiling does -- at a clear -- and can never
+    exceed `knowledge_max_tokens` the way a total left over from the previous conversation
+    could."""
+    enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    store = store_for(enabled, repo)
+    source = str(Path(repo) / "source.txt")
+    _read(enabled, repo, "v1", source)
+    first = store.read("sessions/v1.json")
+    assert first["knowledge_injected"]["tokens"] == first["knowledge_tokens"] > 0
+    call(enabled, {"hook_event_name": "SessionStart", "source": "clear",
+                   "session_id": "v1", "cwd": repo})
+    cleared = store.read("sessions/v1.json")
+    assert "knowledge_injected" not in cleared and "knowledge_tokens" not in cleared
+    _read(enabled, repo, "v1", source)
+    again = store.read("sessions/v1.json")
+    assert again["knowledge_injected"]["tokens"] == again["knowledge_tokens"] == first[
+        "knowledge_tokens"]
+    assert again["knowledge_injected"]["tokens"] <= 300      # the default ceiling, one card
+
+
 def test_a_host_not_verified_and_every_other_case_inject_nothing(tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin.hosts import ClaudeCode
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)

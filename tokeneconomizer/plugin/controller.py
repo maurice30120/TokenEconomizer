@@ -156,6 +156,10 @@ class LiveController:
         if fresh:
             s.pop("knowledge_given", None)
             s.pop("knowledge_tokens", None)
+            # The volume by type goes with the ceiling it is read against: the two describe the
+            # same span, so neither can outlive a clear and the ledger's figure cannot exceed
+            # what the conversation was allowed.
+            s.pop("knowledge_injected", None)
             s.pop("knowledge_startup", None)
             s.pop("files_read", None)
         s.setdefault("cwd", self.host.cwd(self.p, self.ctx.env))

@@ -252,7 +252,10 @@ The ledger's session record keeps the volume a session was given by type: `injec
 the native facts, `knowledge_injected` (`chars`, `tokens`) for Knowledge. Those volumes are
 descriptive: the block is already inside the requests the trace prices, so it is never added
 again to the session's `effective_tokens` nor to its mechanism `overhead`, and the paid
-optimizer's `injection` field stays the native one.
+optimizer's `injection` field stays the native one. The Knowledge volume covers the same span
+as the Knowledge ceiling it sits beside -- a fresh start or a clear begins the ids, the tokens
+and the volume again together -- and its `tokens` are the session's `knowledge_tokens`, so the
+recorded volume can never exceed `knowledge_max_tokens`.
 
 Before each new injection TE checks the stored contract against the checkout and drops only
 Knowledge whose proof no longer matches. Deletion and read errors fail closed; restoring the
