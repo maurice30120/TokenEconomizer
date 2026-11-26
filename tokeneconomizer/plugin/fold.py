@@ -112,7 +112,7 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
 def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_path=None, shared=None):
     if not ctx.config.knowledge or not transcript or ctx.host.name not in ("claude", "pi", "copilot"):
         return None
-    from tokeneconomizer.knowledge.stage import Knowledge, proposal_counts
+    from tokeneconomizer.knowledge.stage import Knowledge, proposal_counts, reset_stock
     from tokeneconomizer.knowledge import capture
     from tokeneconomizer.microskills import distiller
     distiller.PROPOSE_EVERY = ctx.config.microskills_propose_every
@@ -121,6 +121,9 @@ def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_
         runner = (sidecall.runner_for(ctx.host.name, ctx.config, role="proposer")
                   if not sidecall.paused(ctx.host.name, ctx.root)
                   else sidecall.local_runner("proposer", ctx.config))
+    # The first fold of a store resolves its stock: what an earlier layout wrote there is not
+    # data this one reads, so it goes before anything is loaded or admitted.
+    reset_stock(ctx.mech_dir)
     stage = Knowledge.load(ctx.repo.label, ctx.mech_dir, runner=runner,
                            vocab=adapter.env_vocabulary())
     stage.workspace = ctx.repo.root

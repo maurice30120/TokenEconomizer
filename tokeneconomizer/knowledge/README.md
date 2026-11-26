@@ -58,7 +58,9 @@ of a fold -- admitted or refused with its reason -- is appended to
 memories apart. Verification is local, against the checkout the card is read in. The stock is
 one repository's own on this host, filed by its name as the other mechanism state is, so every
 clone and worktree of the repository -- with the same `origin`, or the same main checkout when
-it has none -- reads and writes the same cards.
+it has none -- reads and writes the same cards. The first fold of a store discards a stock an
+earlier layout wrote, cards and index together, and leaves the micro-skills state, the
+sessions, the ledger and the log untouched.
 
 `te microskills` lists Knowledge identity, claim, current proof status, the session it was
 learned in, its sources and the lines a partial read actually returned, including forgotten
@@ -223,8 +225,8 @@ The separate Copilot recording test exercises a second host. Workflow tests cove
 file and symbol contracts, several sources, admission reasons, warm-cache revalidation,
 budget, native coexistence, the activation matrix, the shared proposal call and user controls;
 `tests/test_knowledge_stock.py` covers the stock itself: two checkouts of one repository
-sharing it, validity computed against each checkout's own code, and the other repository, host
-and memory type kept out of it.
+sharing it, validity computed against each checkout's own code, the other repository and host
+kept out of it, the layout reset and a restart of an installation holding both memories.
 
 This is a deterministic integration scenario, not a representative yield estimate:
 the same read is replayed, confirmations are synthetic and the candidate is supplied

@@ -20,6 +20,7 @@ KNOWLEDGE_HEADER = (
 )
 _ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _CARD_FIELDS = {"id", "claim", "injection", "detector"}   # what a persisted card holds
+_STOCK_SWEPT = ".swept"      # in `knowledge_state/`: the stock is on this layout, and swept
 
 # The mission is spec #329's English sentence, verbatim; the format and the admission rules are
 # separate so that what the engine checks and what the model is told cannot drift apart. Nothing
@@ -97,6 +98,62 @@ def proposal_counts(outcomes):
     return {"proposed": len(outcomes),
             "admitted": sum(1 for _id, admitted, _reason in outcomes if admitted),
             "rejected": rejected}
+
+
+def _is_card(record):
+    """Whether a persisted record is one of this layout's cards."""
+    return isinstance(record, dict) and _CARD_FIELDS <= set(record)
+
+
+def _unreadable(state):
+    """Whether a stock file holds a record this layout cannot read: the retired multi-file
+    cards were `{spec, life}` records, and the window and the command history beside them
+    indexed a stock this one does not have."""
+    return not isinstance(state, dict) or not all(
+        _is_card(record) for record in (state.get("facts") or {}).values())
+
+
+def reset_stock(root):
+    """Discard the Knowledge state an earlier layout wrote, once, so the stock starts blank.
+
+    Spec #329's stock is a repository's four-field cards. A file holding anything else -- the
+    retired multi-file cards, and the window and command history that indexed them -- is not
+    data of this one, and loading it would carry an old index into the new stock: the fold
+    removes the file before it reads anything. A file of four-field cards is this layout's own
+    and stays. Nothing outside `<root>/knowledge_state` is touched: the micro-skills state, the
+    sessions, the ledger and `knowledge_log.jsonl` keep every line. A marker beside the files
+    records the sweep, so a store pays for it once and every later fold only looks. Returns the
+    names removed.
+    """
+    directory = os.path.join(root, "knowledge_state")
+    marker = os.path.join(directory, _STOCK_SWEPT)
+    if os.path.exists(marker):
+        return []
+    try:
+        names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
+    except OSError:
+        names = []
+    removed = []
+    for name in names:
+        path = os.path.join(directory, name)
+        try:
+            with open(path, encoding="utf-8") as stream:
+                state = json.load(stream)
+        except (OSError, ValueError):
+            state = None                 # a file this layout cannot read at all
+        if not _unreadable(state):
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        removed.append(name)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        write_json_atomic(marker, {"removed": removed})
+    except OSError:
+        pass
+    return removed
 
 
 def _observed_lines(record):
@@ -534,7 +591,7 @@ class Knowledge(Distiller):
             # #329 starts from a blank Knowledge stock and its old blocks are not restored as
             # data of this one, so a record that is not a card is skipped and the rest of the
             # stock still loads: a legacy state file never fails a fold.
-            if isinstance(record, dict) and _CARD_FIELDS <= set(record):
+            if _is_card(record):
                 self.facts[key] = cls.FACT_CLS.from_dict(record)
         self.window = list(state.get("window") or [])[-WINDOW:]
         self.raw_window = [[(c, "") for c in cmds] for cmds in state.get("raw_cmds") or []]
