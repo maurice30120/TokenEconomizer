@@ -555,14 +555,16 @@ class Knowledge(Distiller):
         pairs that fit the budget, ranked before the cut: those a request shares a signal with,
         or, with `read`, those covering that file. `given`, when a list, holds the ids already
         injected: those are left out, and the ids chosen here are appended to it (the caller's
-        list is mutated)."""
+        list is mutated). A candidate that cannot be delivered -- already given, or a line that
+        would take the block past `max_tokens` -- is passed over and the ranking goes on to the
+        next one; only `max_facts` reached ends the walk, since no later card has a place."""
         chosen, lines = [], []
         for card, signal in (self.covering(read) if read is not None else self.relevant(task)):
             if len(lines) >= max_facts:
                 break
             if given is not None and card.id in given:
                 continue
-            line = self._card_line(card)
+            line = self.card_line(card)
             if knowledge_tokens(knowledge_block([*lines, line])) > max_tokens:
                 continue
             lines.append(line)
@@ -577,12 +579,14 @@ class Knowledge(Distiller):
         for card_id in cards:
             card = self.facts.get(card_id)
             if card is not None and self.contract_valid(card):
-                lines.append(self._card_line(card))
+                lines.append(self.card_line(card))
                 kept.append(card_id)
         return knowledge_block(lines), kept
 
     @staticmethod
-    def _card_line(card):
+    def card_line(card):
+        """The line one card renders as: its injection alone, as JSON so that a text with a
+        newline stays one line."""
         return "- " + json.dumps(card.injection, ensure_ascii=False)
 
     def render(self, task=None, max_facts=4, max_tokens=150, given=None):

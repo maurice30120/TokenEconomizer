@@ -694,6 +694,11 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
             "turns": len(turns),
             "nudges": int(sess.get("nudges", 0)), "aborts": int(sess.get("aborts", 0)),
             "injected_chars": int(sess.get("injected_chars", 0)),
+            # The Knowledge this session was given, by type like the native block above:
+            # descriptive volumes only. The block is already inside the requests the trace
+            # prices, so it is never added to `effective_tokens` nor to `overhead`.
+            "knowledge_injected": dict(sess.get("knowledge_injected")
+                                       or {"chars": 0, "tokens": 0}),
             # A session from before the plugin ran under no deny list of its.
             "untool_applied": [] if imported else denylist.applied_for(
                 ctx.store, ctx.repo.root, ctx.host.name),

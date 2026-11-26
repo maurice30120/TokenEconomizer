@@ -75,24 +75,25 @@ and `unforget` change nothing and ask for `te microskills forget --type microski
 
 ## When Knowledge is injected
 
-On Pi and Copilot CLI, the session-start hook can give eligible Knowledge alongside native
-facts, in registration order. Both hosts can also deliver Relevant Knowledge after a successful
-read of any covered file. Hosts that support the earlier prompt trigger keep it, while Pi and
-Copilot use startup and read triggers for this experiment.
+Knowledge never arrives at a session start: it arrives after a successful read of a file it
+covers. Hosts that support the earlier prompt trigger keep it; Pi and Copilot use the read
+trigger for this experiment.
 
 An eligible Knowledge is rendered as its `injection` text and nothing else: the contract and the
 internal block stay out of the injected map. Knowledge has a total budget for the conversation
-context. Set `knowledge_max_cards` (default
-4), `knowledge_max_tokens` (default 300 estimated tokens) and `knowledge_startup_share`
-(default 0.5, from 0 to 1) via the regular `te config` settings. The startup share applies to
-both limits, rounded down. At 0, Knowledge only arrives after a read on Pi and Copilot. Unused
-startup capacity is available later. Native facts use their own budget. A map must fit in full.
+context. Set `knowledge_max_cards` (default 4) and `knowledge_max_tokens` (default 300 estimated
+tokens) via the regular `te config` settings; both bound the whole conversation, over every turn
+and trigger. The two ceilings are separate: a session that has used its cards gets no more,
+however many tokens are left, and the other way round. Native facts use their own budget. A map
+must fit in full.
 
 An already delivered card consumes its allowance only once while it remains in context.
 Duplicate start hooks for the same event are ignored for both native facts and Knowledge.
-Copilot rebuilds start context on resume, so TE restores the same cards, by id, while their
-contracts hold, without charging again. A clear or a compaction that drops Knowledge frees its capacity. Pi
-compaction keeps the startup section and the steer messages still in the retained history.
+Copilot rebuilds start context on resume, so TE gives back a block it recorded, by id, while its
+cards' contracts hold, without charging or logging it again. A block that disappears -- a clear,
+or a compaction that drops it -- does not give its capacity back: the session's cards and tokens
+stay spent, and the cards it held are not given again. Pi compaction keeps the steer messages
+still in the retained history.
 
 ### The prompt trigger
 
@@ -130,8 +131,8 @@ registration order. A subagent's read, a failed
 read, a shadow run and a replayed (queued) hook inject nothing.
 
 **The read trigger cannot save its own read.** It injects only after the tool result
-(`when: "after_read"`). A card delivered at startup can already be in context at that point.
-The session state remembers the files read (`files_read`, emptied with
+(`when: "after_read"`). A card an earlier read of the same session delivered can already be in
+context at that point. The session state remembers the files read (`files_read`, emptied with
 `knowledge_given`), so the log says when the file had been read earlier in the session
 (`read_before`): then the Knowledge came too late for that read as well. The reads are
 remembered whenever the host reports one, also where it cannot inject after a read. Reads are
@@ -166,11 +167,19 @@ file-reading tool), Cursor, Antigravity, Grok, Droid, opencode, Hermes.
 Each Knowledge actually injected is logged, one line per Knowledge, in the repository's
 `events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
 `knowledge_id`, `signal` (the symbol or file the prompt named, or the file that was read),
-`trigger` (`"startup"`, `"prompt"` or `"read"`), plus the usual `at`, `session_id` and `shadow`. A read
-adds `when` (`"after_read"`). Both triggers add `read_before`: on a read, the file had been read
-earlier in the session; on a prompt, one of the Knowledge's own files had been. Nothing is logged when nothing is injected, and
-forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind; the ledger has no
-`injection` field for Knowledge, which belongs to the paid optimizer.
+`trigger` (`"prompt"` or `"read"`), `type` (`"knowledge"`, the field that tells the two
+memories' volumes apart), that line's own `chars` and `tokens`, plus the usual `at`,
+`session_id` and `shadow`. A read adds `when` (`"after_read"`). Both triggers add `read_before`:
+on a read, the file had been read earlier in the session; on a prompt, one of the Knowledge's own
+files had been. Nothing is logged when nothing is injected, and forgotten, stale-proof or
+budget-dropped Knowledge never appears. The triggers share this one kind; a restored block is
+not logged again, since it is not a new card.
+
+The ledger's session record keeps the volume a session was given by type: `injected_chars` for
+the native facts, `knowledge_injected` (`chars`, `tokens`) for Knowledge. Those volumes are
+descriptive: the block is already inside the requests the trace prices, so it is never added
+again to the session's `effective_tokens` nor to its mechanism `overhead`, and the paid
+optimizer's `injection` field stays the native one.
 
 Before each new injection TE checks the stored contract against the checkout and drops only
 Knowledge whose proof no longer matches. Deletion and read errors fail closed; restoring the

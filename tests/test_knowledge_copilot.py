@@ -90,9 +90,10 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
         transcript.write_text(text + "\n".join(map(json.dumps, extra)))
         run_session(env, str(repo), f"s{i}", str(transcript), host="copilot")
     start = {"hook_event_name": "SessionStart", "source": "new", "session_id": "next", "cwd": str(repo)}
-    startup = call(env, start, host="copilot")["additionalContext"]
-    assert "Copilot observation" in startup
-    assert call(env, dict(start, source="resume"), host="copilot")["additionalContext"] == startup
+    # Nothing is given at a start, and a resume gives nothing back either (#333): the card
+    # arrives with the read.
+    assert call(env, start, host="copilot") == {}
+    assert call(env, dict(start, source="resume"), host="copilot") == {}
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
     assert call(env, payload, host="copilot") == {}
     # A read of the covered file: top-level additionalContext, after the tool's result.

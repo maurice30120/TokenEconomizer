@@ -108,6 +108,24 @@ def test_the_names_before_the_rename_still_work(tmp_path):
     assert written["loopguard_thresholds"] == {"edit_churn": 5}
 
 
+def test_the_startup_share_is_retired_and_the_two_ceilings_stay(tmp_path):
+    """Criterion 1 (#333): `knowledge_startup_share` is no longer a setting. The two Knowledge
+    ceilings keep resolving from the file and the environment, a file that still holds the
+    retired key loads without a warning, and setting it again says why it is gone."""
+    root = tmp_path / "root"
+    os.makedirs(root)
+    with open(root / "config.json", "w") as fh:
+        json.dump({"knowledge": "on", "knowledge_max_cards": 5,
+                   "knowledge_startup_share": 0.5}, fh)
+    cfg = load_config(str(root), env={"TE_KNOWLEDGE_MAX_TOKENS": "240",
+                                      "TE_KNOWLEDGE_STARTUP_SHARE": "0.25"})
+    assert not hasattr(cfg, "knowledge_startup_share")
+    assert (cfg.knowledge, cfg.knowledge_max_cards, cfg.knowledge_max_tokens) == (True, 5, 240)
+    assert not cfg.warnings
+    with pytest.raises(ValueError, match="no longer exists"):
+        write_config(str(root / "config.json"), {"knowledge_startup_share": "0.5"})
+
+
 def test_the_fact_caps_default_to_the_cores_own():
     from tokeneconomizer.microskills import envfacts
     cfg = LiveConfig()
