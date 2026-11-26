@@ -807,6 +807,9 @@ def cmd_config(args):
     if cur.get("loopguard") == "stop":
         print("note: `stop` acts as `nudge`: the plugin never stops a turn; a turn still stuck "
               "after the redirect gets a notice saying how to stop it")
+    if "knowledge_variant" in {canonical(k) for k in updates}:
+        print("note: `knowledge_variant` is a temporary campaign selector (spec #329): it picks "
+              "which Knowledge triggers run, and #336 removes it -- leave it at `c`")
     return 0
 
 

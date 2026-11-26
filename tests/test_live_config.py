@@ -250,3 +250,17 @@ def test_off_everywhere_and_on_in_one_repository_runs_only_there(env, repo, tmp_
         run_session(env, checkout, sid, str(tmp_path / f"{sid}.jsonl"))
     assert os.listdir(os.path.join(home, "repos")) == [on]
     assert os.listdir(os.path.join(home, "repos", on)) != ["config.json"]   # it ran there
+
+
+def test_the_temporary_selector_says_what_it_is_where_it_is_set(env, repo, monkeypatch, capsys):
+    """`te config` has no help text, so the one place a person learns that
+    `knowledge_variant` is not an ordinary setting is where they set it: it picks a campaign
+    arm, and #336 deletes it."""
+    from tokeneconomizer.plugin import cli
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    capsys.readouterr()
+    assert cli.main(["--host", "claude", "--cwd", repo, "config", "set",
+                     "knowledge_variant=d"]) == 0
+    out = capsys.readouterr().out
+    assert "knowledge_variant" in out and "#336" in out
