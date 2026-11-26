@@ -5,7 +5,7 @@ what it later reuses as Knowledge. They meet in one proposer call but keep separ
 
 ## Contexts
 
-- [Knowledge](./GLOSSARY.md): durable understanding of how the code works, from one or several observed sources, given at session start and after a read
+- [Knowledge](./GLOSSARY.md): durable understanding of how the code works, from one or several observed sources, given after a read that covers it or a prompt that names it
 - [Micro-skills](./tokeneconomizer/microskills/GLOSSARY.md): facts learned from earlier sessions and injected as a block at session start
 
 ## Relationships

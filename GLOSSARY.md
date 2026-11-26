@@ -27,16 +27,16 @@ The bytes of a file kept by the hook as a Pi `read` returned them, so a partial 
 **Knowledge Signal**:
 The symbol a Knowledge is about or, failing that, the file it is about, taken from its contract. A user request shares a signal when it names that symbol (as a whole identifier) or that file (by path or by file name). A Knowledge with several sources has one signal per source.
 
+**Knowledge Nearness**:
+How close a user request and a Knowledge's text are in the local index: the cosine similarity of the vectors the shipped lexical vectorizer makes from their words and word fragments. A request that names no Knowledge Signal can still be near a card and receive it. Nearness is lexical -- shared words, not shared meaning -- so a request in one language is not near a card in another, and a card reached that way never displaces or replaces one the exact signals named.
+
 **Relevant Knowledge**:
-Knowledge that shares a Knowledge Signal with the user's current request, or that covers a file the agent has read. Only Relevant Knowledge is ever given to the agent. It is given at session start, up to the startup share of the Knowledge allowance, and again when a successful read covers it; when none is relevant, none is given.
+Knowledge that shares a Knowledge Signal with the user's current request, or that covers a file the agent has read, or that the request is near. Only Relevant Knowledge is ever given to the agent: after a successful read that covers it, at a prompt that names it or that is near it, and, on a resume, the block an earlier start of that conversation recorded; when none is relevant, none is given.
 _Avoid_: matching knowledge, applicable knowledge
 
 **Knowledge Allowance**:
-What the conversation may receive of Knowledge in total: how many Knowledge entries and how many tokens, together with the share of both available at session start.
+What the conversation may receive of Knowledge in total: how many Knowledge entries and how many tokens. Both bound the whole conversation, over every turn and trigger; no part of the allowance is reserved for a session start.
 _Avoid_: knowledge budget, knowledge quota
-
-**Startup Share**:
-The fraction of the Knowledge Allowance a session may be given at session start. What the startup does not use stays available for Knowledge given after a read.
 
 **Knowledge Revision**:
 Retired: a Knowledge keeps one stable identity and one claim; a claim that changed is a new Knowledge.
