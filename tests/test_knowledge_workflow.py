@@ -225,15 +225,16 @@ def test_a_knowledge_persists_only_its_four_business_fields(tmp_path):
     assert restored.contract_valid(card)
 
 
-def test_a_stock_from_the_retired_format_does_not_break_the_fold(tmp_path, env, repo,
-                                                                monkeypatch):
-    """Spec #329 starts from a blank Knowledge stock: the records its retired format wrote are
-    not data of this one, so they are skipped -- never raised -- and the fold still learns."""
+def test_a_stock_from_the_retired_format_is_swept_before_the_fold_reads_it(tmp_path, env, repo,
+                                                                          monkeypatch):
+    """Spec #329 starts from a blank Knowledge stock: the file its retired format wrote is
+    removed by the fold's sweep, before anything is loaded, and the fold still learns."""
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode
     ctx = LiveContext.build(ClaudeCode(), repo, dict(env, TE_KNOWLEDGE="on"))
     repo_id = ctx.repo.label
-    Path(Knowledge._path(ctx.mech_dir, repo_id)).write_text(json.dumps({
+    stock = Path(Knowledge._path(ctx.mech_dir, repo_id))
+    stock.write_text(json.dumps({
         "repo": ctx.repo.label, "now": 9, "opt_tokens": 0.0, "last_propose": 0,
         "facts": {"old-mechanism": {
             "spec": {"id": "old-mechanism", "claim": "an old mechanism",
@@ -243,11 +244,25 @@ def test_a_stock_from_the_retired_format_does_not_break_the_fold(tmp_path, env, 
         "window": [{"iid": "old", "edited_files": [], "n_cmds": 0,
                     "cmd_templates": [], "test_invocations": []}],
         "raw_cmds": [["pytest", "passed"]]}))
-    assert Knowledge.load(repo_id, ctx.mech_dir).facts == {}
     _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
+    marker = stock.parent / ".swept"
+    assert json.loads(marker.read_text())["removed"] == [stock.name]
     assert sorted(Knowledge.load(repo_id, ctx.mech_dir).facts) == ["source-observed"]
     assert not any((row.get("knowledge") or {}).get("error")
                    for row in ctx.store.read_lines("ledger.jsonl"))
+
+
+def test_knowledge_load_skips_a_record_of_the_retired_format(tmp_path):
+    """A direct caller reads the stock without the fold's sweep: a `{spec, life}` record is
+    skipped rather than raised, and the four-field cards beside it still load."""
+    directory = tmp_path / "knowledge_state"
+    directory.mkdir()
+    (directory / "repo.json").write_text(json.dumps({"facts": {
+        "old-mechanism": {"spec": {"id": "old-mechanism"}, "life": {"state": "live"}},
+        "source-observed": {"id": "source-observed", "claim": "Source is observed",
+                            "injection": "Source is observed",
+                            "detector": [{"kind": "file", "path": "source.txt"}]}}}))
+    assert sorted(Knowledge.load("repo", tmp_path).facts) == ["source-observed"]
 
 
 def test_the_rendered_card_is_its_injection_alone(tmp_path):
