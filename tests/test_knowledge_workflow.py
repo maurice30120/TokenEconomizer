@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+from tokeneconomizer.knowledge.stage import (KNOWLEDGE_MAX_CANDS, Knowledge, KnowledgeCard,
+                                            workspace_id)
 from tokeneconomizer.plugin.config import load_config
 from tests.test_knowledge_pi import SOURCE, capture_read, pi_read, reads_session
 from tests.test_live_hooks import call, env, repo, run_session  # noqa: F401
@@ -15,15 +16,23 @@ def test_knowledge_is_independent_and_disabled_by_default(tmp_path):
     assert cfg.knowledge and cfg.microskills == "off"
 
 
-def _learn_source_knowledge(tmp_path, env, repo, monkeypatch):
+SOURCE_CARD = {"id": "source-observed", "claim": "Source is observed",
+               "injection": "Source is observed",
+               "detector": [{"path": "source.txt"}, {"path": "support.txt"}]}
+
+
+def _learn_source_knowledge(tmp_path, env, repo, monkeypatch, card=None):
+    """Five live sessions that read `source.txt` and `support.txt` and propose one Knowledge."""
     from tokeneconomizer.plugin import sidecall
     source = Path(repo) / "source.txt"
     source.write_text("observed\n")
     other = Path(repo) / "support.txt"
     other.write_text("support\n")
-    candidate = {"id": "k", "claim": "Source is observed", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}], "flow": "source and support are related", "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
-    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
-    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="off", TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
+    knowledge = [SOURCE_CARD if card is None else card]
+    monkeypatch.setattr(sidecall, "runner_for",
+                        lambda *a, **kw: lambda *a: (json.dumps({"knowledge": knowledge}), 0))
+    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="off", TE_LOOPGUARD="off",
+                   TE_TOOLPRUNE="off")
     for i in range(5):
         tp = tmp_path / f"hook{i}.jsonl"
         events = [
@@ -119,352 +128,257 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     assert "Source is observed" not in json.dumps(result)
 
 
-def test_sessions_learn_then_revalidate_before_each_injection(tmp_path, monkeypatch):
-    from tokeneconomizer.microskills import distiller
-    monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
-    source = tmp_path / "source.txt"
-    source.write_text("observed\n")
-    support = tmp_path / "support.txt"
-    support.write_text("support\n")
-    def runner(prompt, model):
-        return json.dumps({"facts": [{"id": "suggestion", "claim": "Source contains observed", "injection": "Source contains observed", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0
-    stage = Knowledge("repo", runner=runner)
-    stage.workspace = tmp_path
-    def fold_session(i):
-        path = tmp_path / f"s{i}.jsonl"
-        events = [
-            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "other", "name": "Read", "input": {"file_path": str(support)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read", "content": "observed\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "other", "content": "support\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(support), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
-        ]
-        path.write_text("\n".join(map(json.dumps, events)))
-        stage.update(path, iid=f"s{i}")
-    for i in range(5):
-        fold_session(i)
-    assert "Source contains observed" in stage.render()
-    fid = next(k for k in stage.debug_row() if not k.startswith("_"))
-    def reobserve(prompt, model):
-        return json.dumps({"facts": [{"id": fid, "claim": "Source contains observed", "injection": "Source contains observed", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source", "source_session": "s6"}, {"source": "support.txt", "role": "support", "source_session": "s6"}], "source_session": "s6", "cite": ["s5", "s6"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0
-    stage.runner = reobserve
-    for i in range(5, 8):
-        fold_session(i)
-    assert stage.debug_row()[fid]["rev"] == 1
-    assert "Source contains observed" in stage.render()
-    def revise(prompt, model):
-        return json.dumps({"facts": [{"id": fid, "claim": "Revised observation", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s9", "cite": ["s8", "s9"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0
-    stage.runner = revise
-    for i in range(8, 11):
-        fold_session(i)
-    assert not stage.render()
-    assert stage.debug_row()[fid]["rev"] == 2
-    for i in range(11, 15):
-        fold_session(i)
-    assert "Revised observation" in stage.render()
-    source.write_text("changed\n")
-    assert "Revised observation" not in stage.render()
-    source.write_text("observed\n")
-    assert "Revised observation" in stage.render()
-
-
-def test_detector_revision_must_earn_injection_again(tmp_path, monkeypatch):
-    from tokeneconomizer.microskills import distiller
-    monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
-    source = tmp_path / "source.txt"
-    source.write_text("observed\n")
-    support = tmp_path / "support.txt"
-    support.write_text("support\n")
-    def runner(prompt, model):
-        return json.dumps({"facts": [{"id": "suggestion", "claim": "Source contains observed", "injection": "Source contains observed", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0
-    stage = Knowledge("repo", runner=runner)
-    stage.workspace = tmp_path
-    def fold_session(i):
-        path = tmp_path / f"s{i}.jsonl"
-        events = [
-            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "other", "name": "Read", "input": {"file_path": str(support)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read", "content": "observed\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "other", "content": "support\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(support), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
-        ]
-        path.write_text("\n".join(map(json.dumps, events)))
-        stage.update(path, iid=f"s{i}")
-    for i in range(5):
-        fold_session(i)
-    assert "Source contains observed" in stage.render()
-    fid = next(k for k in stage.debug_row() if not k.startswith("_"))
-    def revise(prompt, model):
-        return json.dumps({"facts": [{"id": fid, "claim": "Revised observation", "source": "source.txt", "source_session": "s6", "cite": ["s5", "s6"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0
-    # Changing only the contradiction detector is still a Knowledge revision.
-    old = stage.facts[fid].spec
-    def revise_detector(prompt, model):
-        candidate = dict(old, detector=dict(old["detector"], contradict="failed"),
-                         source_session="s6", cite=["s5", "s6"])
-        return json.dumps({"facts": [candidate]}), 0
-    stage.runner = revise_detector
-    for i in range(5, 8):
-        fold_session(i)
-    assert not stage.render()
-    assert stage.debug_row()[fid]["rev"] == 2
-    for i in range(8, 12):
-        fold_session(i)
-    assert "Source contains observed" in stage.render()
-    return
-
-
-@pytest.mark.parametrize("parser_available", [True, False])
-def test_symbol_requested_in_session_survives_unrelated_edits_and_fails_closed(tmp_path, monkeypatch, parser_available):
-    from tokeneconomizer.microskills import distiller
-    monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
-    if not parser_available:
-        import tree_sitter_language_pack
-        def unavailable(*args):
-            raise LookupError("unavailable")
-        monkeypatch.setattr(tree_sitter_language_pack, "get_parser", unavailable)
-    source = tmp_path / "source.py"
-    content = "def target():\n    return 1\n\ndef other():\n    return 2\n"
-    source.write_text(content)
-    support = tmp_path / "support.txt"
-    support.write_text("support\n")
-    candidate = {"id": "s", "claim": "Target returns one", "flow": "source and support", "sources": [{"source": "source.py", "symbol": "target", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
-    stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": [candidate]}), 0))
-    stage.workspace = tmp_path
-    for i in range(5):
-        path = tmp_path / f"session{i}.jsonl"
-        events = [
-            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "other", "name": "Read", "input": {"file_path": str(support)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": content}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": content, "startLine": 1, "numLines": 5, "totalLines": 5}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "other", "content": "support\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(support), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}
-        ]
-        path.write_text("\n".join(map(json.dumps, events)))
-        stage.update(path, iid=f"s{i}")
-    assert "Target returns one" in stage.render()
-    evidence = next(iter(stage.facts.values())).spec["proof"][0]
-    assert evidence["kind"] == ("symbol" if parser_available else "file")
-    if not parser_available:
-        assert evidence["fallback"] == {"symbol": "target", "reason": "symbol-unresolvable"}
-        assert "source.py::target" not in stage.render()
-    source.write_text(content.replace("return 2", "return 3"))
-    assert ("Target returns one" in stage.render()) == parser_available
-    source.write_text(content.replace("return 1", "return 4"))
-    assert not stage.render()
-
-
-def test_a_knowledge_about_several_files_holds_while_all_of_them_do(tmp_path, monkeypatch):
-    from tokeneconomizer.microskills import distiller
-    monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
-    for name in ("a.txt", "b.txt"):
-        (tmp_path / name).write_text(f"{name} observed\n")
-    candidates = [{"id": "both", "claim": "a and b agree", "flow": "a.txt feeds b.txt",
-                   "sources": [{"source": "a.txt", "role": "produces the input", "source_session": "s0"},
-                               {"source": "b.txt", "role": "consumes the input", "source_session": "s1"}],
-                   "source_session": "s1", "cite": ["s0", "s1"],
-                   "detector": {"scope": "pytest", "confirm": "passed"}}]
-    stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": candidates}), 0))
-    stage.workspace = tmp_path
-    def session(i):
-        path = tmp_path / f"several{i}.jsonl"
-        names = ("a.txt",) if i == 0 else ("b.txt",) if i == 1 else ("a.txt", "b.txt")
-        reads = [(f"r{n}", tmp_path / name) for n, name in enumerate(names)]
-        events = [{"type": "assistant", "message": {"content": [
-            *({"type": "tool_use", "id": rid, "name": "Read", "input": {"file_path": str(file)}} for rid, file in reads),
-            {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}}]
-        for rid, file in reads:
-            text = file.read_text()
-            events.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": rid, "content": text}]},
-                           "toolUseResult": {"type": "text", "file": {"filePath": str(file), "content": text, "startLine": 1, "numLines": 1, "totalLines": 1}}})
-        events.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}})
-        path.write_text("\n".join(map(json.dumps, events)))
-        stage.update(path, iid=f"s{i}")
-    for i in range(5):
-        session(i)
-    assert "a and b agree" in stage.render()
-    assert "a.txt feeds b.txt" in stage.render()
-    assert "a.txt" in stage.render() and "produces the input" in stage.render()
-    assert "b.txt" in stage.render() and "consumes the input" in stage.render()
-    assert stage.selection(read="a.txt", max_tokens=5) == ("", [])
-    stage.save(tmp_path)
-    stage = Knowledge.load("repo", tmp_path)
-    stage.workspace = tmp_path
-    fact = next(iter(stage.facts.values()))
-    assert set(stage.signals(fact)) == {"a.txt", "b.txt"}
-    assert [source["source_session"] for source in fact.spec["sources"]] == ["s0", "s1"]
-    assert "a and b agree" in stage.render("look at b.txt")
-    assert [f.id for f, _ in stage.covering("a.txt")] == [fact.id] == [f.id for f, _ in stage.covering("b.txt")]
-    (tmp_path / "b.txt").write_text("changed\n")
-    assert "a and b agree" not in stage.render()
-
-
-def test_a_knowledge_that_synthesizes_other_knowledge_is_refused(tmp_path, monkeypatch):
-    from tokeneconomizer.microskills import distiller
-    monkeypatch.setattr(distiller, "PROPOSE_EVERY", 3)
-    (tmp_path / "source.txt").write_text("observed\n")
-    stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": [
-        {"id": "synthesis", "claim": "combined", "dependencies": ["x", "y"],
-         "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}]}), 0))
-    stage.workspace = tmp_path
-    assert stage._admit({"id": "synthesis", "claim": "combined", "dependencies": ["x", "y"]}) == (False, "invalid-source-or-content")
-
-
-def test_a_proposal_requires_two_distinct_files_even_for_two_symbols(tmp_path):
+def observed_stage(tmp_path, files, sessions=2, host="claude"):
+    """A `Knowledge` that folded `sessions` sessions reading every file of `files` completely
+    and passing a test run, so admission has those observations to resolve against."""
     stage = Knowledge("repo")
-    stage.workspace = tmp_path
-    base = {"id": "k", "claim": "a relationship", "flow": "a calls b", "source_session": "s1", "cite": ["s0", "s1"]}
-    assert stage._admit(dict(base, source="a.py", symbol="alpha")) == (False, "invalid-source-or-content")
-    assert stage._admit(dict(base, sources=[{"source": "a.py", "symbol": "alpha"}])) == (False, "invalid-source-or-content")
-    assert stage._admit(dict(base, sources=[{"source": "a.py", "symbol": "alpha"},
-                                             {"source": "./a.py", "symbol": "beta"}])) == (False, "invalid-source-or-content")
-    valid_sources = [{"source": "a.py", "symbol": "alpha", "role": "caller"},
-                     {"source": "b.py", "symbol": "beta", "role": "callee"}]
-    assert stage._admit(dict(base, flow="", sources=valid_sources)) == (False, "invalid-source-or-content")
-    assert stage._admit(dict(base, sources=[{"source": "a.py"}, valid_sources[1]])) == (False, "invalid-source-or-content")
-    # Distinct names do not suffice: both files must actually have been observed.
-    assert stage._admit(dict(base, sources=[{"source": "a.py", "symbol": "alpha", "role": "caller"},
-                                             {"source": "b.py", "symbol": "beta", "role": "callee"}])) == (False, "source-not-observed")
-    (tmp_path / "a.py").write_text("def alpha(): pass\n")
-    (tmp_path / "uncovered.py").write_text("pass\n")
-    (tmp_path / "b.py").write_text("def beta(): pass\n")
-    assert stage._admit(dict(base, flow="a.py calls uncovered.py", sources=valid_sources)) == (False, "uncovered-file")
-    assert stage._admit(dict(base, flow="a.py calls ./uncovered.py", sources=valid_sources)) == (False, "uncovered-file")
-    assert stage._admit(dict(base, flow="It calls uncovered.py.", sources=valid_sources)) == (False, "uncovered-file")
-    (tmp_path / "dir").mkdir()
-    (tmp_path / "dir" / "uncovered.py").write_text("pass\n")
-    assert stage._admit(dict(base, flow=r"a.py calls dir\uncovered.py", sources=valid_sources)) == (False, "uncovered-file")
-    (tmp_path / ".github" / "workflows").mkdir(parents=True)
-    (tmp_path / ".github" / "workflows" / "test.yml").write_text("name: test\n")
-    (tmp_path / "dir" / "my.file.ts").write_text("export {}\n")
-    for path in (".github/workflows/test.yml", "dir/my.file.ts"):
-        assert stage._admit(dict(base, flow="a.py calls " + path, sources=valid_sources)) == (False, "uncovered-file")
-    (tmp_path / "b.py").unlink()
-    (tmp_path / "b.py").hardlink_to(tmp_path / "a.py")
-    assert stage._admit(dict(base, sources=valid_sources)) == (False, "invalid-source-or-content")
-
-
-def test_two_observed_symbols_in_distinct_files_are_admitted(tmp_path):
-    pytest.importorskip("tree_sitter_language_pack")
-    stage = Knowledge("repo")
-    stage.workspace = tmp_path
-    paths = [tmp_path / "a.py", tmp_path / "b.py"]
-    for path, symbol in zip(paths, ("alpha", "beta")):
-        path.write_text(f"def {symbol}():\n    return 1\n")
-    for i in range(2):
+    stage.workspace, stage.host = tmp_path, host
+    for i in range(sessions):
         uses, results = [], []
-        for n, path in enumerate(paths):
-            content = path.read_text()
-            uses.append({"type": "tool_use", "id": f"r{n}", "name": "Read", "input": {"file_path": str(path)}})
-            results.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": f"r{n}", "content": content}]},
-                            "toolUseResult": {"type": "text", "file": {"filePath": str(path), "content": content, "startLine": 1, "numLines": 2, "totalLines": 2}}})
+        for n, (name, content) in enumerate(files.items()):
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(content)
+            lines = len(content.splitlines())
+            uses.append({"type": "tool_use", "id": f"r{n}", "name": "Read",
+                         "input": {"file_path": str(path)}})
+            results.append({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": f"r{n}", "content": content}]},
+                "toolUseResult": {"type": "text", "file": {
+                    "filePath": str(path), "content": content, "startLine": 1,
+                    "numLines": lines, "totalLines": lines}}})
         uses.append({"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}})
         events = [{"type": "assistant", "message": {"content": uses}}, *results,
-                  {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}]
-        transcript = tmp_path / f"symbols{i}.jsonl"
+                  {"type": "user", "message": {"content": [
+                      {"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}]
+        transcript = tmp_path / f"observed{i}.jsonl"
         transcript.write_text("\n".join(map(json.dumps, events)))
         stage.update(transcript, iid=f"s{i}")
-    candidate = {"id": "k", "claim": "both return one", "flow": "alpha calls beta", "source_session": "s1", "cite": ["s0", "s1"],
-                 "detector": {"scope": "pytest", "confirm": "passed"},
-                 "sources": [{"source": "a.py", "symbol": "alpha", "role": "caller"}, {"source": "b.py", "symbol": "beta", "role": "callee"}]}
-    assert stage._admit(candidate) == (True, "admitted")
-    fact = next(iter(stage.facts.values()))
-    assert [(p["path"], p["symbol"]) for p in fact.spec["proof"]] == [("a.py", "alpha"), ("b.py", "beta")]
-    assert set(stage.signals(fact)) == {"alpha", "beta"}
-    fact.life.state, fact.life.fire_num, fact.life.fire_den = "ACTIVE", 4, 4
-    fact.spec["flow"] = "alpha calls beta"
-    fact.spec["sources"][0]["role"] = "caller"
-    fact.spec["sources"][1]["role"] = "callee"
-    text = stage.render()
-    assert "a.py::alpha: caller" in text
-    assert "b.py::beta: callee" in text
-    fact.injection = "é" * 100
-    assert stage.selection(read="a.py", max_tokens=100)[0]
+    return stage
 
 
-def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo, monkeypatch):
-    from tokeneconomizer.plugin import sidecall
+def proposal(**fields):
+    """One proposed Knowledge: four business fields, `detector` a list of references."""
+    candidate = {"id": "source-observed", "claim": "Source is observed",
+                 "injection": "Source is observed", "detector": [{"path": "source.txt"}]}
+    candidate.update(fields)
+    return candidate
+
+
+# ---- criterion 6: four business fields, no lifecycle, available after the fold ------------
+def test_an_admitted_knowledge_is_available_in_the_same_run(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    card = stage.facts["source-observed"]
+    assert (card.id, card.claim, card.injection) == (
+        "source-observed", "Source is observed", "Source is observed")
+    assert stage.contract_valid(card)
+    assert "Source is observed" in stage.render()
+    assert [c.id for c, _ in stage.covering("source.txt")] == ["source-observed"]
+
+
+def test_a_knowledge_persists_only_its_four_business_fields(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    stage.save(tmp_path)
+    state = json.loads((tmp_path / "knowledge_state" / "repo.json").read_text())
+    assert set(state) == {"repo", "now", "opt_tokens", "last_propose", "facts", "forgotten",
+                          "window", "raw_cmds"}
+    stored = state["facts"]["source-observed"]
+    assert set(stored) == {"id", "claim", "injection", "detector", "internal"}
+    assert stored["detector"] == [{"kind": "file", "path": "source.txt",
+                                   "sha256": stored["detector"][0]["sha256"]}]
+    assert stored["internal"] == {"session": "s1", "observed_lines": {}}
+    restored = Knowledge.load("repo", tmp_path)
+    restored.workspace = tmp_path
+    card = restored.facts["source-observed"]
+    assert (card.id, card.claim, card.injection) == (
+        "source-observed", "Source is observed", "Source is observed")
+    assert card.detector == stored["detector"]
+    assert restored.contract_valid(card)
+
+
+def test_the_rendered_card_is_its_injection_alone(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal(injection="source.txt is the observed input")) == (True, "admitted")
+    assert '"source.txt is the observed input"' in stage.render()
+
+
+def test_a_changed_source_makes_the_card_ineligible_until_restored(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    card = stage.facts["source-observed"]
+    (tmp_path / "source.txt").write_text("changed\n")
+    assert not stage.contract_valid(card)
+    assert "Source is observed" not in stage.render()
+    assert card.id in stage.facts        # ineligible, never deleted or marked
+    (tmp_path / "source.txt").write_text("observed\n")
+    assert stage.contract_valid(card)
+    assert "Source is observed" in stage.render()
+
+
+def test_a_forgotten_knowledge_stays_forgotten(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    stage.forget("source-observed")
+    assert "Source is observed" not in stage.render()
+    assert stage._admit(proposal()) == (False, "forgotten")
+    assert stage._admit(proposal(id="another-id")) == (True, "admitted")
+
+
+# ---- criterion 4/5: admission from one source, several, or none --------------------------
+def test_a_single_observed_file_is_admitted(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    assert [proof["kind"] for proof in stage.facts["source-observed"].detector] == ["file"]
+
+
+def test_a_single_observed_symbol_is_admitted(tmp_path):
+    pytest.importorskip("tree_sitter_language_pack")
+    stage = observed_stage(tmp_path, {"source.py": "def alpha():\n    return 1\n"})
+    assert stage._admit(proposal(detector=[{"path": "source.py", "symbol": "alpha"}])) == (
+        True, "admitted")
+    card = stage.facts["source-observed"]
+    assert card.detector[0]["kind"] == "symbol" and card.detector[0]["symbol"] == "alpha"
+    assert stage.signals(card) == ["alpha"]
+
+
+def test_several_sources_may_prove_one_mechanism(tmp_path):
+    stage = observed_stage(tmp_path, {"a.txt": "a observed\n", "b.txt": "b observed\n"})
+    assert stage._admit(proposal(detector=[{"path": "a.txt"}, {"path": "b.txt"}])) == (
+        True, "admitted")
+    card = stage.facts["source-observed"]
+    assert stage.files(card) == ["a.txt", "b.txt"]
+    assert stage.signals(card) == ["a.txt", "b.txt"]
+    assert [c.id for c, _ in stage.covering("b.txt")] == ["source-observed"]
+    assert "Source is observed" in stage.render("look at b.txt")
+    (tmp_path / "b.txt").write_text("changed\n")
+    assert "Source is observed" not in stage.render()
+
+
+def test_a_bare_file_name_resolves_to_the_one_observed_path(tmp_path):
+    stage = observed_stage(tmp_path, {"pkg/deep.txt": "observed\n"})
+    assert stage._admit(proposal(detector=[{"path": "deep.txt"}])) == (True, "admitted")
+    assert stage.facts["source-observed"].detector[0]["path"] == "pkg/deep.txt"
+
+
+def test_an_ambiguous_bare_file_name_is_refused(tmp_path):
+    stage = observed_stage(tmp_path, {"pkg/deep.txt": "observed\n", "lib/deep.txt": "other\n"})
+    assert stage._admit(proposal(detector=[{"path": "deep.txt"}])) == (False, "ambiguous-source")
+    assert not stage.facts
+    # The full path of either one is not ambiguous.
+    assert stage._admit(proposal(detector=[{"path": "lib/deep.txt"}])) == (True, "admitted")
+
+
+def test_a_proposal_without_evidence_is_refused(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal(detector=[{"path": "missing.txt"}])) == (
+        False, "source-not-observed")
+    assert not stage.facts
+
+
+def test_a_stale_observation_is_refused(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    (tmp_path / "source.txt").write_text("changed\n")
+    assert stage._admit(proposal()) == (False, "stale-proof")
+    assert not stage.facts
+
+
+def test_an_empty_proposal_list_admits_nothing(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._apply_proposals(None, []) == 0
+    assert not stage.facts and stage.outcomes == []
+
+
+def test_a_proposal_is_proven_once_per_admission(tmp_path, monkeypatch):
     calls = []
-    source = __import__("pathlib").Path(repo) / "source.txt"
-    source.write_text("observed\n")
-    support = Path(repo) / "support.txt"
-    support.write_text("support\n")
-    detector = {"scope": "pytest", "confirm": "passed"}
-    facts = [{"id": "native", "claim": "native claim", "cite": ["s0", "s1"], "detector": detector}]
-    facts += [{"id": f"k{i}", "claim": f"knowledge {i}", "flow": "source and support", "sources": [{"source": "source.txt" if i != 1 else "invalid\0.txt", "role": "source"}, {"source": "support.txt", "role": "support"}],
-               "source_session": "s1", "cite": ["s0", "s1"], "detector": detector}
-              for i in range(8)]
-    def runner(prompt, model):
-        calls.append(prompt)
-        return json.dumps({"facts": facts}), 5
-    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: runner)
-    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller",
-                   TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
-    for i in range(3):
-        path = tmp_path / f"shared{i}.jsonl"
-        events = [
-            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "other", "name": "Read", "input": {"file_path": str(support)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "observed\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "other", "content": "support\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(support), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
-        ]
-        path.write_text("\n".join(map(json.dumps, events)))
-        run_session(enabled, repo, f"s{i}", str(path))
-    assert len(calls) == 1
-    assert "observed_sources" in calls[0]
-    assert "up to 8 candidates TOTAL" in calls[0] and "<=4" not in calls[0]
-    from tokeneconomizer.plugin.context import LiveContext
-    from tokeneconomizer.plugin.hosts import ClaudeCode
-    from tokeneconomizer.microskills.distiller import Distiller
-    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
-    native = Distiller.load(ctx.repo.label, ctx.mech_dir)
-    knowledge = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
-    assert len(native.facts) == 1
-    assert {fact.claim for fact in knowledge.facts.values()} == {
-        f"knowledge {i}" for i in (0, 2, 3, 4, 5, 6)}
-    batches = [row["injection"]["shared_proposals"] for row in ctx.store.read_lines("ledger.jsonl")
-               if "shared_proposals" in (row.get("injection") or {})]
-    assert batches == [{
-        "native": {"proposed": 1, "admitted": 1},
-        "knowledge": {"proposed": 7, "admitted": 6},
-    }]
+    from tokeneconomizer.knowledge import stage as knowledge_stage
+    real = knowledge_stage.verify_proof
+    monkeypatch.setattr(knowledge_stage, "verify_proof",
+                        lambda root, proof: calls.append(proof) or real(root, proof))
+    stage = observed_stage(tmp_path, {"a.txt": "a observed\n", "b.txt": "b observed\n"})
+    assert stage._admit(proposal(detector=[{"path": "a.txt"}, {"path": "b.txt"}])) == (
+        True, "admitted")
+    assert len(calls) == 2       # one verification per resolved reference, and no second pass
 
 
-@pytest.mark.parametrize("failure", ["empty_window", "capture_error", "admission_error"])
-def test_native_proposal_survives_unavailable_knowledge_context(tmp_path, env, repo, monkeypatch, failure):
-    from tokeneconomizer.plugin import sidecall
-    from tokeneconomizer.plugin.context import LiveContext
-    from tokeneconomizer.plugin.hosts import ClaudeCode
-    from tokeneconomizer.microskills.distiller import Distiller
-
-    calls = []
-    candidate = {"id": "native", "claim": "native claim", "cite": ["s0", "s1"],
-                 "detector": {"scope": "pytest", "confirm": "passed"}}
-    def runner(prompt, model):
-        calls.append(prompt)
-        return json.dumps({"facts": [candidate]}), 5
-    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: runner)
-    if failure == "empty_window":
-        monkeypatch.setattr(Knowledge, "update", lambda *a, **kw: None)
-    else:
-        monkeypatch.setattr(Knowledge, "has_proposal_sources", lambda self: True)
-        def fail(*args):
-            raise ValueError("invalid Knowledge context")
-        method = "_proposal_prompt" if failure == "capture_error" else "_apply_proposals"
-        monkeypatch.setattr(Knowledge, method, fail)
-    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller",
-                   TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
-    for i in range(3):
-        path = tmp_path / f"native{i}.jsonl"
-        events = [
-            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
-        ]
-        path.write_text("\n".join(map(json.dumps, events)))
-        run_session(enabled, repo, f"s{i}", str(path))
-    assert len(calls) == 1
-    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
-    native = Distiller.load(ctx.repo.label, ctx.mech_dir)
-    assert "native" in native.facts
+@pytest.mark.parametrize("candidate", [
+    {"id": "k", "claim": "a claim", "detector": [{"path": "source.txt"}]},
+    {"id": "k", "claim": "a claim", "injection": "inject", "detector": []},
+    {"id": "k", "claim": "a claim", "injection": "inject", "detector": ["source.txt"]},
+    {"id": "k", "claim": "a claim", "injection": "inject",
+     "detector": [{"path": "source.txt", "role": "source"}]},
+    {"id": "", "claim": "a claim", "injection": "inject", "detector": [{"path": "source.txt"}]},
+])
+def test_a_proposal_without_the_four_fields_is_refused(tmp_path, candidate):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(candidate) == (False, "invalid-fields")
+    assert not stage.facts
 
 
-# ---- Knowledge from a Pi read of part of a file -------------------------------------------
+def test_a_synthesized_knowledge_is_refused(tmp_path):
+    """The retired `dependencies` form carries nothing admission can prove."""
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit({"id": "synthesis", "claim": "combined",
+                         "dependencies": ["x", "y"]}) == (False, "invalid-fields")
+
+
+def test_a_retired_field_is_not_persisted(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal(flow="a flow", sources=[{"source": "source.txt"}])) == (
+        True, "admitted")
+    stage.save(tmp_path)
+    state = json.loads((tmp_path / "knowledge_state" / "repo.json").read_text())
+    assert set(state["facts"]["source-observed"]) == {"id", "claim", "injection", "detector",
+                                                     "internal"}
+
+
+@pytest.mark.parametrize("candidate", [
+    {"id": "Alpha One", "claim": "a claim", "injection": "inject",
+     "detector": [{"path": "source.txt"}]},
+    {"id": "source_observed", "claim": "a claim", "injection": "inject",
+     "detector": [{"path": "source.txt"}]},
+])
+def test_a_non_kebab_id_is_refused(tmp_path, candidate):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(candidate) == (False, "invalid-id")
+    assert not stage.facts
+
+
+def test_a_duplicate_claim_and_contract_is_refused_whatever_its_id(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    assert stage._admit(proposal()) == (False, "duplicate")
+    assert stage._admit(proposal(id="another-id")) == (False, "duplicate")
+    assert len(stage.facts) == 1
+
+
+def test_an_id_already_taken_with_other_content_is_refused_without_overwrite(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    assert stage._admit(proposal(claim="Another claim", injection="Another claim")) == (
+        False, "id-conflict")
+    assert stage.facts["source-observed"].claim == "Source is observed"
+
+
+def test_a_changed_claim_under_a_new_id_is_admitted(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal()) == (True, "admitted")
+    assert stage._admit(proposal(id="source-other", claim="Another claim",
+                                 injection="Another claim")) == (True, "admitted")
+    assert sorted(stage.facts) == ["source-observed", "source-other"]
+
+
+def test_a_file_named_in_the_claim_must_be_covered_by_the_contract(tmp_path):
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    (tmp_path / "uncovered.txt").write_text("pass\n")
+    assert stage._admit(proposal(injection="source.txt feeds uncovered.txt")) == (
+        False, "uncovered-file")
+    assert not stage.facts
+
+
+# ---- criterion 5: a partial read proves only what it returned ----------------------------
 def claude_trace(path, command="pytest", output="passed"):
     """The digest's view of a session: one finished check (observations read the Pi log)."""
     events = [
@@ -497,13 +411,11 @@ def partial_stage(tmp_path, sessions=2):
 
 def partial_candidate(**fields):
     symbol = fields.pop("symbol", "alpha")
-    source = {"source": "source.py", "role": "implementation"}
+    reference = {"path": "source.py"}
     if symbol is not None:
-        source["symbol"] = symbol
-    candidate = {"id": "alpha-one", "claim": "Alpha returns one", "flow": "source and support",
-                 "sources": [source, {"source": "support.txt", "role": "support"}],
-                 "source_session": "s1", "cite": ["s0", "s1"],
-                 "detector": {"scope": "pytest", "confirm": "passed"}}
+        reference["symbol"] = symbol
+    candidate = {"id": "alpha-one", "claim": "Alpha returns one",
+                 "injection": "Alpha returns one", "detector": [reference]}
     candidate.update(fields)
     return {k: v for k, v in candidate.items() if v is not None}
 
@@ -511,9 +423,9 @@ def partial_candidate(**fields):
 def test_partial_knowledge_admits_on_the_symbol_its_read_crossed(tmp_path):
     stage, _ = partial_stage(tmp_path)
     assert stage._admit(partial_candidate()) == (True, "admitted")
-    spec = next(iter(stage.facts.values())).spec
-    assert spec["proof"][0]["kind"] == "symbol" and spec["proof"][0]["symbol"] == "alpha"
-    assert spec["provenance"]["observed"]["source.py"] == {"reads": [{"offset": 2, "lines": 1}], "total_lines": 7}
+    card = stage.facts["alpha-one"]
+    assert card.detector[0]["kind"] == "symbol" and card.detector[0]["symbol"] == "alpha"
+    assert card.spec["internal"]["observed_lines"] == {"source.py": "2-2 of 7"}
 
 
 def test_partial_knowledge_refuses_anything_but_an_observed_symbol(tmp_path):
@@ -564,13 +476,12 @@ def test_a_partial_observation_never_stores_the_captured_file(tmp_path):
 def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
     stage, _ = partial_stage(tmp_path)
     prompts = []
-    stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"facts": []}', 0)
+    stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"knowledge": []}', 0)
     stage._maybe_propose()
     assert "read only in part" in prompts[0]
     assert "observed_lines" in prompts[0]
-    assert "coherent, reusable mechanism" in prompts[0]
-    assert "at least two distinct files" in prompts[0]
-    assert "role" in prompts[0] and "source_session" in prompts[0]
+    assert Knowledge.fixed_instructions() in prompts[0]
+    assert "untrusted data" in prompts[0]
 
 
 def symbol_less_partial_stage(tmp_path, sessions=2):
@@ -631,7 +542,7 @@ def test_the_cli_shows_the_scope_a_partial_knowledge_really_read(tmp_path, env, 
     assert cli.main(["--host", "claude", "--cwd", repo, "microskills"]) == 0
     out = capsys.readouterr().out
     assert "evidence=source.py session=s1" in out
-    assert '"source.py": {"reads": [{"lines": 1, "offset": 2}], "total_lines": 7}' in out
+    assert '"source.py": "2-2 of 7"' in out
 
 
 def test_a_failed_fold_keeps_the_captures_for_a_retry(tmp_path, env, repo, monkeypatch):
@@ -669,16 +580,17 @@ def learn_knowledge(tmp_path, env, repo, monkeypatch, files, candidates):
         paths[name] = Path(repo) / name
         paths[name].parent.mkdir(parents=True, exist_ok=True)
         paths[name].write_text(content)
-    facts = []
+    knowledge = []
     for candidate in candidates:
-        fact = dict(candidate)
-        source = {"source": fact.pop("source"), "role": "source"}
-        if "symbol" in fact:
-            source["symbol"] = fact.pop("symbol")
-        fact.update(flow="source and support", sources=[source, {"source": "support.txt", "role": "support"}],
-                    source_session="s1", cite=["s0", "s1"], detector={"scope": "pytest", "confirm": "passed"})
-        facts.append(fact)
-    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": facts}), 0))
+        entry = dict(candidate)
+        reference = {"path": entry.pop("source")}
+        if "symbol" in entry:
+            reference["symbol"] = entry.pop("symbol")
+        entry.setdefault("injection", entry["claim"])
+        entry["detector"] = [reference, {"path": "support.txt"}]
+        knowledge.append(entry)
+    monkeypatch.setattr(sidecall, "runner_for",
+                        lambda *a, **kw: lambda *a: (json.dumps({"knowledge": knowledge}), 0))
     enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="off", TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
     for i in range(5):
         uses, results = [], []
@@ -701,7 +613,7 @@ def prompt(enabled, repo, sid, text, **limits):
     return json.dumps(call(env, {"hook_event_name": "UserPromptSubmit", "session_id": sid, "cwd": repo, "prompt": text}))
 
 
-def test_read_budget_prioritizes_the_highest_firing_card(tmp_path, env, repo, monkeypatch):
+def test_a_read_budget_keeps_the_first_registered_covering_card(tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode
     enabled = learn_knowledge(tmp_path, env, repo, monkeypatch,
@@ -710,43 +622,34 @@ def test_read_budget_prioritizes_the_highest_firing_card(tmp_path, env, repo, mo
                                {"id": "b", "claim": "second card", "source": "b.txt"}])
     ctx = LiveContext.build(ClaudeCode(), repo, enabled)
     stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
-    by_source = {f.spec["source"]: f for f in stage.facts.values()}
-    by_source["a.txt"].life.fire_num, by_source["a.txt"].life.fire_den = 5, 10
-    by_source["b.txt"].life.fire_num, by_source["b.txt"].life.fire_den = 9, 10
-    stage.save(ctx.mech_dir)
+    assert sorted(stage.facts) == ["a", "b"]
     payload = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": repo,
                "tool_name": "Read", "tool_input": {"file_path": "support.txt"},
                "tool_response": {"content": "support"}}
     text = json.dumps(call(dict(enabled, TE_KNOWLEDGE_MAX_CARDS="1"), payload))
-    assert "second card" in text and "first card" not in text
+    assert "first card" in text and "second card" not in text
 
 
-def test_a_small_budget_keeps_the_stronger_match_then_the_higher_firing_rate(
+def test_a_small_budget_keeps_the_stronger_match_then_the_first_registered(
         tmp_path, env, repo, monkeypatch):
     """Story 9: with a budget too small for every match, the strongest match is injected first,
-    then the one with the higher firing rate, and registration order only breaks a tie."""
-    from tokeneconomizer.plugin.context import LiveContext
-    from tokeneconomizer.plugin.hosts import ClaudeCode
+    then the one registered first."""
     body = "observed\n"
     names = ["pkg/deep.txt", "lib/full.txt", "lib/twin.txt", "lib/rare.txt"]
     enabled = learn_knowledge(
         tmp_path, env, repo, monkeypatch, {n: body for n in names},
         [{"id": n.split("/")[1][:4], "claim": f"{n} is observed", "source": n} for n in names])
-    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
     one = dict(TE_KNOWLEDGE_MAX_CARDS="1")
     # Registration order puts the file-name match first; the full path is the stronger match.
     assert "lib/full.txt is observed" in prompt(enabled, repo, "b", "read deep.txt and lib/full.txt", **one)
     assert "lib/full.txt is observed" in prompt(enabled, repo, "c", "lib/full.txt then deep.txt", **one)
-    # Equal matches: the higher firing rate first, registration order when rates tie.
+    # Equal matches: registration order decides.
     both = "lib/twin.txt and lib/rare.txt"
     assert "lib/twin.txt is observed" in prompt(enabled, repo, "d", both, **one)
-    stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
-    by_source = {f.spec["source"]: f for f in stage.facts.values()}
-    rare, twin = by_source["lib/rare.txt"].life, by_source["lib/twin.txt"].life
-    rare.fire_num, rare.fire_den, twin.fire_num, twin.fire_den = 9, 10, 5, 10
-    stage.save(ctx.mech_dir)
-    assert "lib/rare.txt is observed" in prompt(enabled, repo, "e", both, **one)
     # Delivered native facts do not alter the Knowledge limit.
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
     ctx.store.write("injection.json", {"rendered": "# native\n- A\n- B\n"})
     together = dict(enabled, TE_MICROSKILLS="envfacts")
     start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "n", "cwd": repo}

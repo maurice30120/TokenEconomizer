@@ -350,35 +350,30 @@ def cmd_microskills(args):
     stage = Knowledge.load(key, mechanism_dir) if os.path.exists(knowledge_path) else None
     if stage:
         stage.workspace = ctx.repo.root
-        from tokeneconomizer.knowledge.proof import verify_proof, available_languages
+        from tokeneconomizer.knowledge.proof import available_languages
         print("\nknowledge symbol grammars: " + (", ".join(f"{ext}={lang}" for ext, lang in sorted(available_languages().items())) or "none"))
     if stage and (stage.facts or stage.forgotten):
-        from tokeneconomizer.microskills.distiller import Fact
-        from tokeneconomizer.knowledge.stage import proofs_of
         print("\nknowledge tracked:")
-        entries = [(fid, fact, False) for fid, fact in stage.facts.items()]
+        entries = [(fid, card, False) for fid, card in stage.facts.items()]
         for fid, record in stage.forgotten.items():
             try:
-                entries.append((fid, Fact.from_dict(record["record"]), True))
+                entries.append((fid, stage.FACT_CLS.from_dict(record["record"]), True))
             except (KeyError, TypeError, ValueError):
                 continue
-        for fid, fact, forgotten in sorted(entries, key=lambda item: item[0]):
-            valid = stage._contract_valid(fact)
-            for proof in proofs_of(fact.spec):
+        for fid, card, forgotten in sorted(entries, key=lambda item: item[0]):
+            valid = stage.contract_valid(card)
+            internal = card.spec.get("internal") or {}
+            for proof in card.detector:
                 if proof.get("fallback"):
                     print(f"  fallback {fid}: {proof['fallback']}")
-            provenance = fact.spec.get("provenance") or {}
-            print(f"  {fact.state:9s} rev={fact.spec.get('rev', 1)} "
-                  f"proof={'valid' if valid else 'invalid'} "
-                  f"{'forgotten ' if forgotten else ''}{fid}  {_short(fact.claim)}")
-            print(f"    source={', '.join(provenance.get('paths') or [provenance.get('path', '?')])} "
-                  f"session={provenance.get('session', '?')}")
-            for source in provenance.get("sources", []):
-                if isinstance(source, dict):
-                    print(f"    evidence={source.get('path', '?')} session={source.get('session', '?')}")
+            print(f"  proof={'valid' if valid else 'invalid'} "
+                  f"{'forgotten ' if forgotten else ''}{fid}  {_short(card.claim)}")
+            for proof in card.detector:
+                print(f"    evidence={proof.get('path', '?')} "
+                      f"session={internal.get('session', '?')}")
             # A partial read's real scope: which lines it returned, out of how many.
-            if isinstance(provenance.get("observed"), dict):
-                print("    observed=" + json.dumps(provenance["observed"], sort_keys=True))
+            if internal.get("observed_lines"):
+                print("    observed=" + json.dumps(internal["observed_lines"], sort_keys=True))
     from tokeneconomizer.microskills import forgotten_facts
     gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"),
                            workspace=ctx.repo.root)

@@ -370,7 +370,7 @@ class LiveController:
             if self.host.keeps_start_context or not startup:
                 return ""
             # Copilot rebuilds startup context. Restore only previously delivered cards whose
-            # revisions and proofs are still eligible, without charging or logging them again.
+            # contracts still hold, without charging or logging them again.
             from ..knowledge.stage import knowledge_tokens
             block, kept = "", []
             if enabled:
@@ -378,7 +378,7 @@ class LiveController:
                     if not got:
                         raise fold.Busy("a fold of this repository's sessions holds its state")
                     block, kept = self._knowledge_stage().restore_startup(startup["cards"])
-            dropped = {fid for fid, _ in startup["cards"]} - {fid for fid, _ in kept}
+            dropped = set(startup["cards"]) - set(kept)
             s["knowledge_given"] = [fid for fid in s["knowledge_given"] if fid not in dropped]
             tokens = knowledge_tokens(block)
             s["knowledge_tokens"] += tokens - startup["tokens"]
@@ -414,10 +414,8 @@ class LiveController:
                 s["knowledge_given"] = given
                 s["knowledge_tokens"] = tokens_used + cost
                 if trigger == "startup":
-                    s["knowledge_startup"] = {
-                        "cards": [(fact.id, fact.spec.get("rev", 1)) for fact, _ in chosen],
-                        "tokens": cost,
-                    }
+                    s["knowledge_startup"] = {"cards": [card.id for card, _ in chosen],
+                                              "tokens": cost}
                 if trigger == "read" and self.host.name == "pi" and self.p.get("tool_use_id"):
                     s.setdefault("knowledge_read_blocks", {})[self.p["tool_use_id"]] = {
                         "cards": [fact.id for fact, _ in chosen], "tokens": cost,

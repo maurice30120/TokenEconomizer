@@ -112,7 +112,7 @@ def _fold_microskills(ctx, adapter, run_dir, session_id, injected=None, imported
 def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_path=None, shared=None):
     if not ctx.config.knowledge or not transcript or ctx.host.name not in ("claude", "pi", "copilot"):
         return None
-    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.knowledge.stage import Knowledge, proposal_counts, workspace_id
     from tokeneconomizer.knowledge import capture
     from tokeneconomizer.microskills import distiller
     distiller.PROPOSE_EVERY = ctx.config.microskills_propose_every
@@ -133,30 +133,61 @@ def _fold_knowledge(ctx, adapter, transcript, session_id, imported=False, trace_
     # Kept on failure: a retried fold still needs them, and only a read-time capture is evidence.
     capture.discard(captures)
     if shared is not None:
+        # The shared call happens on the native tick, after this returns: its own admissions
+        # are logged and counted there.
         shared.stage, shared.root = stage, ctx.mech_dir
-    return {"optimizer_tokens": stage.opt_tokens - before}
+    else:
+        log_proposals(ctx, stage.outcomes, session_id)
+    return dict(proposal_counts(stage.outcomes), optimizer_tokens=stage.opt_tokens - before)
+
+
+def log_proposals(ctx, outcomes, session_id):
+    """One line per proposal of this fold, admitted or refused with the reason that decided it,
+    in `<store>/knowledge_log.jsonl`: the local record of what the Knowledge memory took and
+    what it turned away. `type` is the field a later memory type's lines will carry. A logging
+    failure must never fail the fold."""
+    try:
+        for card_id, admitted, reason in outcomes:
+            ctx.store.append("knowledge_log.jsonl", {
+                "at": time.time(), "session_id": session_id, "host": ctx.host.name,
+                "repo": ctx.repo.label, "type": "knowledge", "id": card_id,
+                "outcome": "admitted" if admitted else "rejected", "reason": reason})
+    except Exception:
+        return
 
 
 class _SharedProposer:
-    """Share the native tick and its candidate budget with Knowledge."""
-    stage = None
-    root = None
-    counts = None
-    max_candidates = 8
+    """One proposal call for both active missions.
+
+    The prompt carries the native mission's instructions and task digests, the Knowledge
+    mission's fixed instructions, the observations this fold prepared once, and one closing
+    demand for two separate lists. Each list keeps its own candidate cap and its own validator;
+    the call's cost is charged to the native stage alone, so the ledger counts it once.
+    """
+
+    def __init__(self, ctx, session_id):
+        self.ctx = ctx
+        self.session_id = session_id
+        self.stage = None
+        self.root = None
+        self.counts = None
 
     def propose(self, native):
-        from tokeneconomizer.microskills.distiller import parse_payload
+        from tokeneconomizer.knowledge.stage import (KNOWLEDGE_MAX_CANDS, parse_knowledge_payload,
+                                                    proposal_counts)
+        from tokeneconomizer.microskills.distiller import MAX_CANDS, parse_payload
         stage = self.stage
         try:
             if stage is None or not stage.has_proposal_sources():
                 return False
-            knowledge_prompt = stage._proposal_prompt(self.max_candidates)
+            knowledge_context = "\n\n".join([stage.fixed_instructions(),
+                                             stage.observation_block()])
         except Exception:
             return False  # Knowledge context is optional; keep the native tick.
-        prompt = (native._proposal_prompt(self.max_candidates)
-                  + "\n\nKnowledge context:\n" + knowledge_prompt
-                  + f"\nReturn one facts list with up to {self.max_candidates} candidates TOTAL. "
-                  "Mix native Facts and Knowledge freely. Include sources only on Knowledge.")
+        prompt = (native._proposal_prompt(MAX_CANDS) + "\n\n" + knowledge_context
+                  + '\nReturn the JSON object {"extractors": [...], "facts": [...], '
+                    f'"knowledge": [...]}}: up to {MAX_CANDS} facts and up to '
+                    f"{KNOWLEDGE_MAX_CANDS} Knowledge candidates, one list per key.")
         try:
             raw, tokens = native.runner(prompt, native.model)
         except Exception:
@@ -164,20 +195,19 @@ class _SharedProposer:
             return True
         if tokens is not None:
             native.opt_tokens += tokens
-        extractors, facts = parse_payload(raw, max_candidates=self.max_candidates)
-        # The Knowledge stage also rejects the retired source/dependencies forms.
-        kinds = ("source", "sources", "dependencies")
-        knowledge = [f for f in facts if any(k in f for k in kinds)]
-        native_facts = [f for f in facts if not any(k in f for k in kinds)]
-        self.counts = {"native": {"proposed": len(native_facts),
-                                  "admitted": native._apply_proposals(extractors, native_facts)},
-                       "knowledge": {"proposed": len(knowledge), "admitted": 0}}
+        extractors, facts = parse_payload(raw, max_candidates=MAX_CANDS)
+        knowledge = parse_knowledge_payload(raw, KNOWLEDGE_MAX_CANDS)
+        self.counts = {"native": {"proposed": len(facts),
+                                  "admitted": native._apply_proposals(extractors, facts)},
+                       "knowledge": {"proposed": len(knowledge), "admitted": 0,
+                                     "rejected": {}}}
         try:
-            admitted = stage._apply_proposals(extractors, knowledge)
+            stage._apply_proposals(None, knowledge)
             stage.save(self.root)
-            self.counts["knowledge"]["admitted"] = admitted
+            self.counts["knowledge"] = proposal_counts(stage.outcomes)
+            log_proposals(self.ctx, stage.outcomes, self.session_id)
         except Exception:
-            # A failed Knowledge save must not discard the native response.
+            # A failed Knowledge admission or save must not discard the native response.
             self.counts["knowledge"]["error"] = "proposal not saved"
         return True
 
@@ -622,7 +652,7 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
             adapter = LiveAdapter(ctx.host, ctx.repo.root, vocabulary=ctx.config.vocabulary,
                                   catalog=catalog, protect=ctx.config.toolprune_protect)
             with ctx.store.locked("mechanisms"):
-                shared = (_SharedProposer() if ctx.config.knowledge and not imported
+                shared = (_SharedProposer(ctx, session_id) if ctx.config.knowledge and not imported
                           and ctx.host.name in ("claude", "pi", "copilot")
                           and "distiller" in ctx.config.microskills else None)
                 try:
