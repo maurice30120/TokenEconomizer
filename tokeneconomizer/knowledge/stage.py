@@ -149,7 +149,7 @@ def reset_stock(root):
     try:
         names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
     except OSError:
-        names = []
+        return []                    # not listed, not swept: no marker, so the next fold tries again
     removed = []
     for name in names:
         path = os.path.join(directory, name)

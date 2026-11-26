@@ -236,6 +236,26 @@ def test_a_wrongly_shaped_stock_file_neither_breaks_the_fold_nor_survives_it(
     assert sorted(Knowledge.load(ctx.repo.label, ctx.mech_dir).facts) == ["source-observed"]
 
 
+def test_a_sweep_that_could_not_list_the_stock_does_not_mark_it_swept(tmp_path, monkeypatch):
+    """Criterion 4: a transient error reading the directory means the sweep did not happen, so
+    it writes no marker: the store is swept by the next fold, not never."""
+    stock = Path(tmp_path, "knowledge_state")
+    stock.mkdir()
+    (stock / "old.json").write_text(json.dumps(OLD_STOCK))
+    listdir = os.listdir
+
+    def transient(path):
+        if str(path).endswith("knowledge_state"):
+            raise PermissionError("a momentary error")
+        return listdir(path)
+
+    monkeypatch.setattr(os, "listdir", transient)
+    assert reset_stock(tmp_path) == []
+    assert not (stock / ".swept").exists()
+    monkeypatch.undo()
+    assert reset_stock(tmp_path) == ["old.json"]
+
+
 def test_the_sweep_removes_only_what_the_layout_cannot_read(tmp_path):
     """Criterion 4: a stock of four-field cards is this layout's own and stays; a file holding
     anything else goes, and the store is swept once."""
