@@ -378,10 +378,9 @@ class Knowledge(Distiller):
         return sum(1 for _id, admitted, _reason in self.outcomes if admitted)
 
     def _maybe_propose(self):
-        """The Knowledge-only tick: its own call, its own prompt, its own list."""
+        """The Knowledge-only tick: its own call, its own prompt, its own list. The shared call
+        is the native stage's tick, and reaches this stage through `_SharedProposer`."""
         if self.runner is None or not self.window:
-            return
-        if self.shared_propose is not None and self.shared_propose(self):
             return
         prompt = self._proposal_prompt(KNOWLEDGE_MAX_CANDS)
         try:
