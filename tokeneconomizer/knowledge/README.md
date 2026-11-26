@@ -62,10 +62,16 @@ it has none -- reads and writes the same cards. The first fold of a store discar
 earlier layout wrote, cards and index together, and leaves the micro-skills state, the
 sessions, the ledger and the log untouched.
 
-`te microskills` lists Knowledge identity, claim, current proof status, the session it was
-learned in, its sources and the lines a partial read actually returned, including forgotten
-records. Use `te microskills forget ID` to suppress one and `te microskills unforget ID` to
-restore it; injection still requires a contract that verifies.
+`te microskills` lists both memories in one pass -- the micro-skills, then the Knowledge -- each
+row saying which one it belongs to: a Knowledge's identity, claim, current proof status, the
+session it was learned in, its sources and the lines a partial read actually returned. The
+forgotten entries of both are in the same list, marked `forgotten`. `--type` narrows the list to
+one memory: `te microskills --type knowledge` lists the Knowledge alone and verifies its contracts,
+and `te microskills --type microskills` lists the micro-skills and verifies no Knowledge contract.
+Use `te microskills forget ID` to suppress an entry and `te microskills unforget ID` to restore it;
+injection still requires a contract that verifies. An id both memories hold is ambiguous: `forget`
+and `unforget` change nothing and ask for `te microskills forget --type microskills ID` or
+`--type knowledge ID`, so only the memory named is touched.
 
 ## When Knowledge is injected
 
@@ -201,9 +207,14 @@ they explain one mechanism; there is no minimum number of files, and a claim may
 session. An empty proposal list is a valid answer. A proposal is refused with a stable reason:
 `invalid-fields` (`id`, `claim` or `injection` not a non-empty string, or a `detector` that is not
 a non-empty list of `{path, symbol?}` references), `invalid-id` (not kebab-case), `forgotten`,
-`duplicate` (the same claim and the same resolved contract, whatever its id), `id-conflict` (an id
-already stored with other content, never overwritten), `source-not-observed`, `ambiguous-source`,
-`partial-needs-symbol`, `symbol-not-observed`, `stale-proof`, and `uncovered-file`.
+`restates-forgotten` (the same claim on the same resolved contract as a forgotten Knowledge,
+whatever its id: a forgotten Knowledge is not learned again by restating it), `duplicate` (the same
+claim and the same resolved contract, whatever its id), `id-conflict` (an id already stored with
+other content, never overwritten), `source-not-observed`, `ambiguous-source`,
+`partial-needs-symbol`, `symbol-not-observed`, `stale-proof`, and `uncovered-file`. A new claim,
+or the same claim on a new contract, is a new Knowledge and follows the ordinary admission;
+`unforget` restores eligibility itself, so a restored card is injected while its current contract
+holds, and not before.
 
 `uncovered-file` rejects explicit workspace-relative file references in `claim` or `injection`
 that resolve to existing files outside the contract. It does not resolve every shorthand or

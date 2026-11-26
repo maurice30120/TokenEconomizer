@@ -842,6 +842,13 @@ first, the proposer fills what is left, and a line that does not fit is left out
 `te microskills` marks a fact `INJECTED` only when the block the next session receives carries
 it.
 
+That listing is one list over the repository's two memories, the micro-skills first and then the
+Knowledge, each row naming the memory it belongs to and the forgotten entries of both included:
+`te microskills --type microskills` or `--type knowledge` keeps it to one, and a listing of one
+memory reads no state of the other. `te microskills forget ID` and `unforget ID` change the same
+two memories, so an id both of them hold is refused -- naming both and asking for `--type` --
+rather than resolved to the first one, and nothing is changed.
+
 ## 5. Known limitations
 
 * **Copilot CLI** — the real-model checks used one model (Claude Haiku 4.5, over BYOK). A

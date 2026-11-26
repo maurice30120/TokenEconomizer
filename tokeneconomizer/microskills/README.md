@@ -26,6 +26,10 @@ Each finished session goes through three steps:
    `te microskills forget`): it leaves the block, and its id goes into its layer's
    `forgotten` set, so the fact is never formed again under that id; the proposer's
    admission also refuses a new id that confirms only on the forgotten fact's evidence.
+   `stage.saved_layers` loads the same layers for a listing, with `memory_of` to tell the
+   micro-skills from the Knowledge beside them, and `forget_facts` refuses an id that both
+   memories hold (`AmbiguousId`) instead of resolving it to the first layer: `--type` is the
+   person's answer to which one to change.
 
 `stage.PrefixStage` ties these together for a caller: render the block before a session, fold
 the session in after it. The block is capped (`MAX_FACTS`, `MAX_TOKENS`), and a lint refuses any

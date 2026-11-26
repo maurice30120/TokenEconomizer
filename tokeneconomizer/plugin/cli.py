@@ -2,11 +2,13 @@
 
     te status                         what it has learned for this repository, and what it did
     te status --explain               explain the current settings and saved learning state
-    te microskills                    the facts it injects, and the ones still forming
-    te microskills forget ID ...      stop injecting the facts with these ids (as listed by
+    te microskills [--type MEMORY]    both memories -- the facts it injects at session start, and
+                                      the Knowledge it verified -- with the state of each and the
+                                      forgotten ones (MEMORY: microskills | knowledge)
+    te microskills forget ID ...      stop injecting the entries with these ids (as listed by
                                       `te microskills`); they are not learned again
                                       under that id or from the same evidence
-    te microskills unforget ID ...    bring forgotten facts back, as they were
+    te microskills unforget ID ...    bring forgotten entries back, as they were
     te toolprune show                 the proposed deny list, and the evidence behind it
     te toolprune apply [ITEM ...]     write the proposal (or the named items) to the repository's
                                       settings: tools (Claude Code), capabilities (Codex) or
@@ -42,6 +44,9 @@
                                       deny list save (makes model calls; see plugin/probe.py)
 
 `te facts` and `te untool` are the earlier names of `microskills` and `toolprune`, and still work.
+`--type microskills` or `--type knowledge` keeps `microskills` to one memory, for the listing and
+for `forget`/`unforget`: an id both memories hold is refused, and changed in neither, since which
+one to stop is the person's to say.
 `--cwd` picks the repository (default: the current directory) and `--host` the agent
 (claude | codex | copilot | pi; default: `TE_HOST`, else the agent whose shell runs `te`, else
 claude).
@@ -306,14 +311,16 @@ def cmd_microskills(args):
         print(f"`microskills {args.action}` takes no ids; did you mean `microskills forget "
               f"{' '.join(args.ids)}`?")
         return 2
-    ctx = _ctx(args)
-    inj = ctx.store.read("injection.json") or {}
-    from tokeneconomizer.knowledge.stage import Knowledge
+    from tokeneconomizer.microskills import MEMORY_KNOWLEDGE, memory_of, saved_layers
     from tokeneconomizer.names import repo_filename
-    key = ctx.repo.label
+    ctx = _ctx(args)
+    memory = args.type
+    inj = ctx.store.read("injection.json") or {}
     mechanism_dir = os.path.join(ctx.store.base, "mechanisms")
-    knowledge_path = os.path.join(mechanism_dir, "knowledge_state", repo_filename(key) + ".json")
-    if ctx.config.microskills == "off":
+    knowledge_path = os.path.join(mechanism_dir, "knowledge_state",
+                                  repo_filename(ctx.repo.label) + ".json")
+    asks_microskills = memory != MEMORY_KNOWLEDGE
+    if asks_microskills and ctx.config.microskills == "off":
         print(f"micro-skills is off here (the default). `config set microskills=on` turns it on: "
               f"facts are then learned from finished sessions, and a model proposes more every "
               f"{ctx.config.microskills_propose_every} sessions, through this agent")
@@ -321,15 +328,21 @@ def cmd_microskills(args):
             return 0
     text = inj.get("rendered") or ""
     ids = set(inj.get("rendered_ids") or ())
-    if ctx.config.microskills != "off":
+    adapter, vocab = None, None
+    if asks_microskills:
+        try:
+            from .adapter import LiveAdapter
+            adapter = LiveAdapter(ctx.host, ctx.repo.root, vocabulary=ctx.config.vocabulary,
+                                  catalog={}, protect=ctx.config.toolprune_protect)
+            vocab = adapter.env_vocabulary()
+        except Exception:
+            adapter, vocab = None, None
+    if asks_microskills and adapter is not None and ctx.config.microskills != "off":
         # What the next session actually gets, ids included. The stored block and its ids are
         # the last fold's render, and state written before the ids were recorded has none:
         # re-rendering here reads the same facts and the same caps without touching the store.
         try:
-            from .adapter import LiveAdapter
             from tokeneconomizer.microskills import PrefixStage
-            adapter = LiveAdapter(ctx.host, ctx.repo.root, vocabulary=ctx.config.vocabulary,
-                                  catalog={}, protect=ctx.config.toolprune_protect)
             block = PrefixStage(fold.microskills_config(ctx, ctx.config.microskills),
                                 ctx.repo.label, mechanism_dir, fresh=False, adapter=adapter)
             rendered = block.render() or ""
@@ -337,50 +350,84 @@ def cmd_microskills(args):
             rendered = ""
         if rendered:
             text, ids = rendered, set(block.injected_ids())
-    print(text.rstrip() or "(nothing injected: no fact cleared its firing gate within the "
-                          "block budget)")
-    facts = inj.get("facts") or {}
-    rows = [(k, v) for k, v in facts.items() if isinstance(v, dict) and "state" in v]
-    if rows:
-        print("\nfacts tracked:")
-        for k, v in sorted(rows):
-            mark = "INJECTED" if k in ids else ("gate ok" if v.get("inject") else "")
-            print(f"  {v.get('state', '?'):9s} fire={v.get('fire', '?'):>5s} "
-                  f"{mark:9s} {k}")
-    stage = Knowledge.load(key, mechanism_dir) if os.path.exists(knowledge_path) else None
-    if stage:
-        stage.workspace = ctx.repo.root
+    if asks_microskills:
+        print(text.rstrip() or "(nothing injected: no fact cleared its firing gate within the "
+                              "block budget)")
+    # One pass over both memories, so that a row of either type -- and of either memory's
+    # forgotten map -- is in the same list: the Knowledge layer alone computes a contract.
+    layers = saved_layers(ctx.repo.label, mechanism_dir, vocab=vocab,
+                          workspace=ctx.repo.root, memory=memory)
+    if any(memory_of(layer) == MEMORY_KNOWLEDGE for layer in layers):
         from tokeneconomizer.knowledge.proof import available_languages
-        print("\nknowledge symbol grammars: " + (", ".join(f"{ext}={lang}" for ext, lang in sorted(available_languages().items())) or "none"))
-    if stage and (stage.facts or stage.forgotten):
-        print("\nknowledge tracked:")
-        entries = [(fid, card, False) for fid, card in stage.facts.items()]
-        for fid, record in stage.forgotten.items():
-            try:
-                entries.append((fid, stage.FACT_CLS.from_dict(record["record"]), True))
-            except (KeyError, TypeError, ValueError):
-                continue
-        for fid, card, forgotten in sorted(entries, key=lambda item: item[0]):
-            valid = stage.contract_valid(card)
-            internal = card.spec.get("internal") or {}
-            for proof in card.detector:
-                if proof.get("fallback"):
-                    print(f"  fallback {fid}: {proof['fallback']}")
-            print(f"  proof={'valid' if valid else 'invalid'} "
-                  f"{'forgotten ' if forgotten else ''}{fid}  {_short(card.claim)}")
-            for proof in card.detector:
-                print(f"    evidence={proof.get('path', '?')} "
-                      f"session={internal.get('session', '?')}")
-            # A partial read's real scope: which lines it returned, out of how many.
-            if internal.get("observed_lines"):
-                print("    observed=" + json.dumps(internal["observed_lines"], sort_keys=True))
-    from tokeneconomizer.microskills import forgotten_facts
-    gone = forgotten_facts(ctx.repo.label, os.path.join(ctx.store.base, "mechanisms"))
-    if gone:
-        print("\nforgotten (`microskills unforget ID` brings one back):")
-        for k, claim in sorted(gone.items()):
-            print(f"  {k}" + (f"  ({_short(claim)})" if claim else ""))
+        print("\nknowledge symbol grammars: " + (", ".join(
+            f"{ext}={lang}" for ext, lang in sorted(available_languages().items())) or "none"))
+    _print_memories(layers, ids, memory)
     return 0
+
+
+# The heading of the one list, per filter: what a person asked to see.
+def _memory_title(memory):
+    from tokeneconomizer.microskills import MEMORY_KNOWLEDGE, MEMORY_MICROSKILLS
+    return {None: "both memories", MEMORY_MICROSKILLS: "the micro-skills only",
+            MEMORY_KNOWLEDGE: "the Knowledge only"}[memory]
+
+
+def _print_memories(layers, injected, memory):
+    """The listing: one row per entry of both memories, micro-skills first, then Knowledge, the
+    forgotten ones of both included, each row saying which memory it belongs to."""
+    from tokeneconomizer.microskills import MEMORIES, MEMORY_KNOWLEDGE, memory_of
+    rows = []
+    for layer in layers:
+        for fid, fact in layer.facts.items():
+            rows.append((memory_of(layer), fid, fact, False, layer))
+        for fid in layer.forgotten:
+            rows.append((memory_of(layer), fid, None, True, layer))
+    if not rows:
+        return
+    rows.sort(key=lambda row: (MEMORIES.index(row[0]), row[1]))
+    print(f"\nlearned here, {_memory_title(memory)} (`microskills forget ID` stops one, "
+          f"`microskills unforget ID` brings it back):")
+    for kind, fid, fact, forgotten, layer in rows:
+        if kind == MEMORY_KNOWLEDGE:
+            _print_knowledge_row(layer, fid, fact, forgotten, kind)
+        else:
+            _print_microskills_row(layer, fid, forgotten, injected, kind)
+
+
+def _print_knowledge_row(stage, fid, card, forgotten, kind):
+    """A Knowledge's row: what its contract says against the checkout now, and its evidence."""
+    if card is None:
+        try:
+            card = stage.FACT_CLS.from_dict(stage.forgotten[fid]["record"])
+        except (KeyError, TypeError, ValueError):
+            print(f"  {kind:12s} {'forgotten':30s} {fid}")
+            return
+    for proof in card.detector:
+        if proof.get("fallback"):
+            print(f"  fallback {fid}: {proof['fallback']}")
+    status = f"proof={'valid' if stage.contract_valid(card) else 'invalid'}"
+    internal = card.spec.get("internal") or {}
+    print(f"  {kind:12s} {(status + (' forgotten' if forgotten else '')):30s} "
+          f"{fid}  {_short(card.claim)}")
+    for proof in card.detector:
+        print(f"    evidence={proof.get('path', '?')} "
+              f"session={internal.get('session', '?')}")
+    # A partial read's real scope: which lines it returned, out of how many.
+    if internal.get("observed_lines"):
+        print("    observed=" + json.dumps(internal["observed_lines"], sort_keys=True))
+
+
+def _print_microskills_row(layer, fid, forgotten, injected, kind):
+    """A micro-skill's row: where it stands in its lifecycle, or that it is forgotten."""
+    if forgotten:
+        claim = (layer.forgotten.get(fid) or {}).get("claim", "")
+        print(f"  {kind:12s} {'forgotten':30s} {fid}"
+              + (f"  ({_short(claim)})" if claim else ""))
+        return
+    row = layer.debug_row().get(fid) or {}
+    mark = "INJECTED" if fid in injected else ("gate ok" if row.get("inject") else "")
+    status = f"{row.get('state', '?'):9s} fire={str(row.get('fire', '?')):>5s} {mark}"
+    print(f"  {kind:12s} {status:30s} {fid}")
 
 
 def _short(text, n=80):
@@ -389,6 +436,7 @@ def _short(text, n=80):
 
 
 def _microskills_forget(args):
+    from tokeneconomizer.microskills import AmbiguousId
     from tokeneconomizer.microskills.lifecycle import NO_RECORD
     undo = args.action == "unforget"
     if not args.ids:
@@ -400,11 +448,18 @@ def _microskills_forget(args):
     if refused:
         return refused
     try:
-        done = fold.forget_microskills(ctx, args.ids, undo=undo)
+        done = fold.forget_microskills(ctx, args.ids, undo=undo, memory=args.type)
     except KeyError as e:
         unknown = e.args[0] if e.args and isinstance(e.args[0], list) else list(e.args)
         print(f"not changed: no learned fact here has the id {', '.join(unknown)} "
               f"({ctx.host.name}, {ctx.repo.label}); `microskills` lists the ids")
+        return 1
+    except AmbiguousId as e:
+        # One id, two memories: which one to change is the person's to say, so nothing changed.
+        print(f"not changed: {', '.join(e.ids)} " + ("is" if len(e.ids) == 1 else "are") +
+              f" in both memories, microskills and knowledge; say which one to {args.action} "
+              f"with `microskills {args.action} --type microskills ID` or "
+              f"`microskills {args.action} --type knowledge ID`")
         return 1
     except fold.Busy as e:
         print(f"not changed: {e}; try again in a moment")
@@ -1063,6 +1118,10 @@ def build_parser():
                    help="show the facts (default); forget: stop injecting them and never learn "
                         "them again; unforget: bring forgotten facts back")
     p.add_argument("ids", nargs="*", metavar="ID", help="fact ids, as `te microskills` lists them")
+    from tokeneconomizer.microskills import MEMORIES
+    p.add_argument("--type", choices=MEMORIES, default=None,
+                   help="one memory only; without it both are listed, and an id both hold is "
+                        "refused rather than resolved to one")
     p.set_defaults(fn=cmd_microskills)
     p = add("toolprune", "untool")
     p.add_argument("action", nargs="?", default="show",

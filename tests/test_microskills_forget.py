@@ -69,7 +69,7 @@ def test_forget_takes_a_fact_out_of_the_block_and_it_is_not_learned_again(
     saved = json.load(open(env_state(env, repo)))
     assert FID not in saved["facts"] and FID in saved["forgotten"]
     code, out = te("microskills")
-    assert "forgotten (" in out and FID in out.split("forgotten (")[1]
+    assert FID in out.split("learned here")[1] and "forgotten" in out
 
 
 def test_forget_is_idempotent_and_unforget_brings_the_fact_back(

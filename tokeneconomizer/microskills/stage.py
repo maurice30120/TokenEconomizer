@@ -190,33 +190,69 @@ class PrefixStage(Stage):
 
 
 # ---- forgetting a fact by hand ---------------------------------------------
-def _saved_layers(repo, root, vocab=None):
-    """The distillers with state saved under `root`, loaded: the environment layer first."""
+MEMORY_MICROSKILLS = "microskills"
+MEMORY_KNOWLEDGE = "knowledge"
+# The two memories a repository has, in the order a listing shows them: everything a person
+# reads a row for belongs to one of them, whichever layer implements it.
+MEMORIES = (MEMORY_MICROSKILLS, MEMORY_KNOWLEDGE)
+
+
+def memory_of(layer):
+    """Which memory a layer belongs to: the environment layer and the paid proposer are one
+    memory to a person, since both render into the one block a session is given."""
+    from ..knowledge.stage import Knowledge
+    return MEMORY_KNOWLEDGE if isinstance(layer, Knowledge) else MEMORY_MICROSKILLS
+
+
+def saved_layers(repo, root, vocab=None, workspace=None, memory=None):
+    """The layers with state saved under `root`, loaded: the environment layer first, then the
+    paid proposer, then Knowledge. `workspace` is the checkout a Knowledge contract is verified
+    against; `memory` loads one memory only, so a listing of it reads no state of the other."""
     from . import envfacts
     from ..knowledge.stage import Knowledge
     out = []
-    for cls, sub in ((envfacts.EnvFactsDistiller, envfacts.STATE_SUBDIR),
-                     (Distiller, _distiller.STATE_SUBDIR)):
-        if os.path.exists(os.path.join(root, sub, repo_filename(repo) + ".json")):
-            out.append(cls.load(repo, root, vocab=vocab))
-    if os.path.exists(os.path.join(root, "knowledge_state", repo_filename(repo) + ".json")):
-        out.append(Knowledge.load(repo, root, vocab=vocab))
+    if memory in (None, MEMORY_MICROSKILLS):
+        for cls, sub in ((envfacts.EnvFactsDistiller, envfacts.STATE_SUBDIR),
+                         (Distiller, _distiller.STATE_SUBDIR)):
+            if os.path.exists(os.path.join(root, sub, repo_filename(repo) + ".json")):
+                out.append(cls.load(repo, root, vocab=vocab))
+    if memory in (None, MEMORY_KNOWLEDGE) and os.path.exists(
+            os.path.join(root, "knowledge_state", repo_filename(repo) + ".json")):
+        knowledge = Knowledge.load(repo, root, vocab=vocab)
+        if workspace is not None:
+            knowledge.workspace = workspace
+        out.append(knowledge)
     return out
 
 
-def forget_facts(repo, root, ids, vocab=None, undo=False):
+class AmbiguousId(LookupError):
+    """An id more than one memory holds: which one to change is the person's to say, with
+    `--type`, so nothing is changed."""
+
+    def __init__(self, ids):
+        super().__init__(list(ids))
+        self.ids = list(ids)
+
+
+def forget_facts(repo, root, ids, vocab=None, undo=False, memory=None):
     """Forget the facts `ids` (or, with `undo`, bring them back) in whichever saved layer holds
     each, and save the layers that changed. A forgotten fact is no longer rendered, and is not
-    learned again under its id. Returns [(id, changed, claim)] in the order given. When an id
-    is unknown to every layer nothing is changed, and KeyError carries the unknown ids."""
-    layers = _saved_layers(repo, root, vocab)
-    owner = {}
+    learned again under its id. `memory` keeps to one of the two memories. Returns
+    [(id, changed, claim)] in the order given. When an id is unknown to every layer nothing is
+    changed, and KeyError carries the unknown ids; when an id is in both memories and no
+    `memory` says which, nothing is changed either, and `AmbiguousId` carries those ids."""
+    layers = saved_layers(repo, root, vocab, memory=memory)
+    owner, memories = {}, {}
     for layer in layers:
         for fid in layer.known_ids():
             owner.setdefault(fid, layer)
+            memories.setdefault(fid, set()).add(memory_of(layer))
     unknown = [fid for fid in ids if fid not in owner]
     if unknown:
         raise KeyError(unknown)
+    shared = [fid for fid in dict.fromkeys(ids) if len(memories[fid]) > 1]
+    if shared:
+        raise AmbiguousId(shared)
     out, changed = [], []
     for fid in dict.fromkeys(ids):
         layer = owner[fid]
@@ -229,13 +265,4 @@ def forget_facts(repo, root, ids, vocab=None, undo=False):
         out.append((fid, did, claim))
     for layer in changed:
         layer.save(root)
-    return out
-
-
-def forgotten_facts(repo, root, vocab=None):
-    """{id: the claim it made} for every forgotten fact saved under `root`."""
-    out = {}
-    for layer in _saved_layers(repo, root, vocab):
-        for fid, rec in layer.forgotten.items():
-            out.setdefault(fid, rec.get("claim", ""))
     return out

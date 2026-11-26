@@ -1,5 +1,5 @@
 ---
-description: Earlier name of /tokeneconomizer:microskills - show the repository facts TokenEconomizer injects
+description: Earlier name of /tokeneconomizer:microskills - show the facts and the Knowledge TokenEconomizer learned here
 ---
 Run the command for this shell, then show me its output verbatim in a code block, with no commentary.
 

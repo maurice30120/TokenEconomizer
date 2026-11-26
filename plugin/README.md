@@ -770,9 +770,10 @@ repository is not used by Codex there), while settings are shared by every agent
 | Command | What it does |
 |---|---|
 | `status` | what it has learned in this repository, what it did, and what your sessions cost |
-| `microskills` | the facts it injects at session start, and those still forming |
-| `microskills forget ID …` | stop injecting the facts with these ids (as `microskills` lists them), and never learn them again under that id or from the same evidence; an unknown id changes nothing |
-| `microskills unforget ID …` | bring forgotten facts back, with the evidence they had |
+| `microskills` | both memories: the facts it injects at session start and the Knowledge it verified, each with its state and the forgotten ones |
+| `microskills --type microskills` | one memory only -- here the micro-skills, `--type knowledge` for the Knowledge: the listing, and which memory `forget`/`unforget` change |
+| `microskills forget ID …` | stop injecting the entries with these ids (as `microskills` lists them), and never learn them again under that id or from the same evidence; an unknown id, or one in both memories without `--type`, changes nothing |
+| `microskills unforget ID …` | bring forgotten entries back, with the evidence they had |
 | `toolprune` | the deny list: what it left out, what it would leave out next, and the evidence |
 | `toolprune apply [ITEM …]` | apply a waiting proposal (with `toolprune=propose`), or the named items; from the next session |
 | `toolprune restore [ITEM …]` | give back the plugin's entries (all, or the named ones); they are not removed again |
@@ -804,7 +805,9 @@ How to run them:
 
 `doctor`, `history`, `repomap` and `microskills forget`/`unforget` run from a terminal (or as `/te …` on
 Pi); there is no slash command or Codex skill for them. Quote a fact id that holds spaces or shell
-characters: `te microskills forget 'form_repair:run_tests:pytest -q'`.
+characters: `te microskills forget 'form_repair:run_tests:pytest -q'`. An id both memories hold is
+refused, since forgetting the wrong one would leave the other in place: name the memory with
+`te microskills forget --type microskills ID` or `--type knowledge ID`.
 
 Inside an agent, each command is one model turn; from a terminal it costs nothing. Codex asks
 before a command that changes something (`config set`, `toolprune restore`, ...), since it
