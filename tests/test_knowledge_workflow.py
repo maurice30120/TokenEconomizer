@@ -150,9 +150,11 @@ def test_hook_uses_current_proof_even_when_session_cache_is_warm(tmp_path, env, 
     assert "Source is observed" not in json.dumps(result)
 
 
-def observed_stage(tmp_path, files, sessions=2, host="claude"):
+def observed_stage(tmp_path, files, sessions=2, host="claude", reread=None):
     """A `Knowledge` that folded `sessions` sessions reading every file of `files` completely
-    and passing a test run, so admission has those observations to resolve against."""
+    and passing a test run, so admission has those observations to resolve against. `reread`,
+    when given, is the content the second and later sessions read instead: one path observed
+    twice, at two versions."""
     stage = Knowledge("repo")
     stage.workspace, stage.host = tmp_path, host
     for i in range(sessions):
@@ -160,7 +162,10 @@ def observed_stage(tmp_path, files, sessions=2, host="claude"):
         for n, (name, content) in enumerate(files.items()):
             path = tmp_path / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            if not path.exists():
+            if i and reread and name in reread:
+                content = reread[name]
+                path.write_text(content)
+            elif not path.exists():
                 path.write_text(content)
             lines = len(content.splitlines())
             uses.append({"type": "tool_use", "id": f"r{n}", "name": "Read",
@@ -529,6 +534,25 @@ def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
     assert "untrusted data" in prompts[0]
 
 
+def test_the_proposer_is_offered_each_source_once_at_its_newest_version(tmp_path):
+    """The window repeats what every session re-read, and admission resolves a path at the
+    newest observation of it: the proposer is offered the same, one entry per path."""
+    stage = observed_stage(tmp_path, {"source.txt": "first\n", "support.txt": "support\n"},
+                           reread={"source.txt": "second\n"})
+    prompts = []
+    stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"knowledge": []}', 0)
+    stage._maybe_propose()
+    prompt = prompts[0]
+    assert prompt.count('"path": "source.txt"') == 1
+    assert prompt.count('"path": "support.txt"') == 1
+    assert prompt.count('"excerpt": "second\\n"') == 1
+    assert '"excerpt": "first\\n"' not in prompt
+    # the block and admission resolve a path the same way
+    header, payload = stage.observation_block().split("\n", 1)
+    assert header.startswith("Observed sources")
+    assert {source["path"] for source in json.loads(payload)} == set(stage._observed())
+
+
 def symbol_less_partial_stage(tmp_path, sessions=2):
     """A `Knowledge` fed Pi sessions that each read line 3 of `source.py`: a blank line."""
     source = tmp_path / "source.py"
@@ -787,6 +811,10 @@ def test_both_missions_share_one_call_one_observation_pass_and_one_charge(
     assert "Observed sources" in prompt
     assert "up to 4 facts and up to 8 Knowledge candidates" in prompt
     assert "JSON list of <=4 such objects" in prompt      # the native cap is unchanged
+    # The observed sources reach the prompt once, at the newest observation of each: the window
+    # repeats what every session re-read, and the block resolves a path as admission does.
+    assert prompt.count('"path": "source.txt"') == 1
+    assert prompt.count('"excerpt": "observed\\n"') == 1
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode
     ctx = LiveContext.build(ClaudeCode(), repo, enabled)
