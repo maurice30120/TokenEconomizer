@@ -7,6 +7,7 @@ import re
 from ..microskills.distiller import BLOB_CAP, WINDOW, Distiller
 from ..microskills.lifecycle import write_json_atomic
 from ..names import repo_filename
+from .index import KnowledgeIndex, index_path
 from .observation import observations
 from .proof import symbol_proof, verify_proof
 
@@ -313,6 +314,8 @@ class Knowledge(Distiller):
     workspace = None
     host = "claude"
     outcomes = ()      # the last proposal list's [(id, admitted, reason)]
+    stock_root = None  # where `load` and `save` filed the stock: the index sits beside it
+    embedder = None    # the ranking's model, injected; none means the exact signals only
 
     @staticmethod
     def _path(root, repo):
@@ -516,7 +519,7 @@ class Knowledge(Distiller):
     def relevant(self, task):
         """The eligible Knowledge a request shares a signal with, as `(card, signal)` pairs,
         strongest match first, then registration order; every eligible one when there is no
-        request to match."""
+        request to match. `near` adds the cards it does not name."""
         out = []
         for order, card in enumerate(self.facts.values()):
             if task is None:
@@ -529,6 +532,34 @@ class Knowledge(Distiller):
             if self.contract_valid(card):
                 out.append(((-strength, order), card, signal))
         return [(card, signal) for _key, card, signal in sorted(out, key=lambda o: o[0])]
+
+    def _index_entries(self):
+        """What the index is prepared from: every card's id, claim, injection text, and the
+        paths and signals its contract covers."""
+        return [{"id": card.id, "claim": card.claim, "injection": card.injection,
+                 "paths": self.files(card), "signals": self.signals(card)}
+                for card in self.facts.values()]
+
+    def index(self):
+        """This stock's index, prepared for the cards it holds now; None when no embedder is
+        configured, so that nothing is written and the exact signals alone rank."""
+        if self.embedder is None:
+            return None
+        return KnowledgeIndex.prepare(index_path(self.stock_root, self.repo), self.embedder,
+                                      self.repo, self._index_entries())
+
+    def near(self, task):
+        """The eligible Knowledge a request is near without naming it, nearest first: what the
+        index adds to the exact signals. Nothing when no embedder is configured, when the
+        request is empty, or when the embedder cannot rank -- a search that cannot rank then
+        delivers exactly what it delivered before there was an index."""
+        index = self.index()
+        if index is None or not task:
+            return
+        for card_id in index.near(task):
+            card = self.facts.get(card_id)
+            if card is not None and self.contract_valid(card):
+                yield card
 
     def files(self, card):
         """The files a Knowledge covers: one per source of its contract."""
@@ -553,24 +584,42 @@ class Knowledge(Distiller):
     def selection(self, task=None, max_facts=4, max_tokens=150, given=None, read=None):
         """What `render` puts in context: its text ("" when nothing fits) and the `(card, signal)`
         pairs that fit the budget, ranked before the cut: those a request shares a signal with,
-        or, with `read`, those covering that file. `given`, when a list, holds the ids already
-        injected: those are left out, and the ids chosen here are appended to it (the caller's
-        list is mutated). A candidate that cannot be delivered -- already given, or a line that
-        would take the block past `max_tokens` -- is passed over and the ranking goes on to the
-        next one; only `max_facts` reached ends the walk, since no later card has a place."""
-        chosen, lines = [], []
-        for card, signal in (self.covering(read) if read is not None else self.relevant(task)):
+        then those it is near without naming them (an empty signal), or, with `read`, those
+        covering that file. `given`, when a list, holds the ids already injected: those are left
+        out, and the ids chosen here are appended to it (the caller's list is mutated). A
+        candidate that cannot be delivered -- already given, or a line that would take the block
+        past `max_tokens` -- is passed over and the ranking goes on to the next one; only
+        `max_facts` reached ends the walk, since no later card has a place."""
+        chosen, lines, named = [], [], set()
+
+        def take(card, signal):
+            """Whether the walk goes on: False once the budget has no place left."""
             if len(lines) >= max_facts:
-                break
+                return False
             if given is not None and card.id in given:
-                continue
+                return True
             line = self.card_line(card)
             if knowledge_tokens(knowledge_block([*lines, line])) > max_tokens:
-                continue
+                return True
             lines.append(line)
             chosen.append((card, signal))
             if given is not None:
                 given.append(card.id)
+            return True
+
+        for card, signal in (self.covering(read) if read is not None else self.relevant(task)):
+            named.add(card.id)
+            if not take(card, signal):
+                return knowledge_block(lines), chosen
+        if read is None:
+            # The cards the request is near but does not name, nearest first, each checked
+            # against the checkout as it is delivered: a file that changed since the ranking --
+            # or since the last search -- drops its card here.
+            for card in self.near(task):
+                if card.id in named:
+                    continue
+                if not take(card, ""):
+                    return knowledge_block(lines), chosen
         return knowledge_block(lines), chosen
 
     def restore_startup(self, cards):
@@ -597,6 +646,7 @@ class Knowledge(Distiller):
         # The window goes with the cards: a proposer reloaded for each session (the plugin's
         # fold) must see the observations the admission rules resolve against. Raw blobs are
         # capped, as the native state file caps them.
+        self.stock_root = root
         window = [dict(dg, _cmd_blob=dg.get("_cmd_blob", "")[-BLOB_CAP:],
                        _out_blob=dg.get("_out_blob", "")[-2 * BLOB_CAP:])
                   for dg in self.window[-WINDOW:]]
@@ -611,6 +661,7 @@ class Knowledge(Distiller):
     @classmethod
     def load(cls, repo, root, runner=None, model="agent", external_facts=None, vocab=None):
         self = cls(repo, runner, model, external_facts=external_facts, vocab=vocab)
+        self.stock_root = root
         p = cls._path(root, repo)
         if not os.path.exists(p):
             return self
