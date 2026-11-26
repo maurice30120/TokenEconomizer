@@ -48,6 +48,12 @@ KNOWLEDGE_READS = 500          # files a session remembers having read
 _DROID_DROPS_FAILURES = ((1, 12, 0), (1, 13, 0))
 
 
+def _card_id(entry):
+    """The id of a startup card: the id itself, or the id of the `[id, rev]` pair that session
+    states written before the card list became a list of ids hold."""
+    return entry[0] if isinstance(entry, (list, tuple)) and entry else entry
+
+
 class LiveController:
     def __init__(self, ctx, payload):
         self.ctx = ctx
@@ -372,13 +378,16 @@ class LiveController:
             # Copilot rebuilds startup context. Restore only previously delivered cards whose
             # contracts still hold, without charging or logging them again.
             from ..knowledge.stage import knowledge_tokens
+            # A session state written before the card list became a list of ids holds
+            # `[id, rev]` pairs: read either form as the id it names.
+            cards = [_card_id(entry) for entry in startup["cards"]]
             block, kept = "", []
             if enabled:
                 with self.ctx.store.locked("mechanisms") as got:
                     if not got:
                         raise fold.Busy("a fold of this repository's sessions holds its state")
-                    block, kept = self._knowledge_stage().restore_startup(startup["cards"])
-            dropped = set(startup["cards"]) - set(kept)
+                    block, kept = self._knowledge_stage().restore_startup(cards)
+            dropped = set(cards) - set(kept)
             s["knowledge_given"] = [fid for fid in s["knowledge_given"] if fid not in dropped]
             tokens = knowledge_tokens(block)
             s["knowledge_tokens"] += tokens - startup["tokens"]
