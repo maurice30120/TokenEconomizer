@@ -142,6 +142,89 @@ def test_knowledge_never_arrives_at_a_start_and_the_read_still_delivers(
     assert CLAIM in json.dumps(delivered)
 
 
+def test_a_read_delivers_a_card_whose_symbol_lines_the_read_did_not_return(
+        tmp_path, env, repo, monkeypatch):
+    """Criterion 2 (#333): the read trigger matches the file a read returned, not the lines it
+    covered, so a Knowledge about a symbol further down the file still arrives after a partial
+    read."""
+    pytest.importorskip("tree_sitter_language_pack")
+    source = "def alpha():\n    return 1\n\ndef beta():\n    return 2\n"
+    enabled = learn_knowledge(tmp_path, env, repo, monkeypatch, {"source.py": source},
+                              [{"id": "alpha-one", "claim": "Alpha returns one",
+                                "source": "source.py", "symbol": "alpha"}])
+    dst = _stock_for("pi", enabled, repo)
+    out = _read(enabled, repo, "partial", "source.py", host="pi", name="read", key="path",
+                call_id="r1", offset=5, limit=1)
+    assert "Alpha returns one" in json.dumps(out)
+    (entry,) = [e for e in dst.store.read_lines("events.jsonl") if e["kind"] == "knowledge"]
+    assert (entry["knowledge_id"], entry["signal"], entry["trigger"]) == (
+        "alpha-one", "source.py", "read")
+
+
+def test_a_card_the_budget_cannot_hold_is_skipped_for_the_next_one(tmp_path):
+    """Criterion 2 (#333): a candidate that does not fit the remaining budget is passed over,
+    and the ranking goes on to the next one rather than stopping at it."""
+    from tests.test_knowledge_workflow import observed_stage, proposal
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
+    assert stage._admit(proposal(id="long-card", claim="Long claim",
+                                 injection="x" * 400)) == (True, "admitted")
+    assert stage._admit(proposal(id="short-card", claim="Short claim",
+                                 injection="short")) == (True, "admitted")
+    # The long card is registered first and covers the file too: too big for 40 tokens, so the
+    # short one behind it is delivered.
+    _text, chosen = stage.selection(read="source.txt", max_facts=4, max_tokens=40)
+    assert [card.id for card, _signal in chosen] == ["short-card"]
+    _text, chosen = stage.selection(task="look at source.txt", max_facts=4, max_tokens=40)
+    assert [card.id for card, _signal in chosen] == ["short-card"]
+    # A card already in context is skipped the same way, and the one behind it is considered.
+    _text, chosen = stage.selection(read="source.txt", max_facts=4, max_tokens=200,
+                                    given=["short-card"])
+    assert [card.id for card, _signal in chosen] == ["long-card"]
+    # A card whose contract no longer holds is filtered out before the ranking.
+    (tmp_path / "source.txt").write_text("changed\n")
+    assert stage.selection(read="source.txt", max_facts=4, max_tokens=200) == ("", [])
+
+
+def test_three_cards_of_five_then_at_most_two_more(tmp_path, env, repo, monkeypatch):
+    """Criterion 3 (#333): the session's card ceiling holds across its turns -- five cards at
+    most, so three delivered leave two more and no more."""
+    names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt"]
+    enabled = learn_knowledge(tmp_path, env, repo, monkeypatch,
+                              dict.fromkeys(names, "observed\n"),
+                              [{"id": n[0], "claim": f"card for {n}", "source": n}
+                               for n in names])
+    enabled.update(TE_KNOWLEDGE_MAX_CARDS="5", TE_KNOWLEDGE_MAX_TOKENS="3000")
+    _stock_for("pi", enabled, repo)
+
+    def read(name):
+        return f"card for {name}" in json.dumps(
+            _read(enabled, repo, "five", name, host="pi", name="read", key="path",
+                  call_id=name))
+    assert [read(n) for n in names[:3]] == [True] * 3
+    assert [read(n) for n in names[3:]] == [True, True, False]
+
+
+def test_the_token_ceiling_is_a_ceiling_of_its_own(tmp_path, env, repo, monkeypatch):
+    """Criterion 3 (#333): a session's token ceiling stops delivery while the card ceiling still
+    has room. One card's block is 39 estimated tokens here."""
+    names = ["a.txt", "b.txt", "c.txt", "d.txt"]
+    enabled = learn_knowledge(tmp_path, env, repo, monkeypatch,
+                              dict.fromkeys(names, "observed\n"),
+                              [{"id": n[0], "claim": f"card for {n}", "source": n}
+                               for n in names])
+    enabled.update(TE_KNOWLEDGE_MAX_CARDS="4", TE_KNOWLEDGE_MAX_TOKENS="61")
+    dst = _stock_for("pi", enabled, repo)
+
+    def read(name):
+        return f"card for {name}" in json.dumps(
+            _read(enabled, repo, "tokens", name, host="pi", name="read", key="path",
+                  call_id=name))
+    assert read("a.txt")
+    assert [read(n) for n in names[1:]] == [False] * 3
+    state = dst.store.read("sessions/tokens.json")
+    assert state["knowledge_given"] == ["a"]
+
+
 def test_a_host_not_verified_and_every_other_case_inject_nothing(tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin.hosts import ClaudeCode
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)

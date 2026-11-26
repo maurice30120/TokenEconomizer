@@ -525,7 +525,9 @@ class Knowledge(Distiller):
         pairs that fit the budget, ranked before the cut: those a request shares a signal with,
         or, with `read`, those covering that file. `given`, when a list, holds the ids already
         injected: those are left out, and the ids chosen here are appended to it (the caller's
-        list is mutated)."""
+        list is mutated). A candidate that cannot be delivered -- already given, or a line that
+        would take the block past `max_tokens` -- is passed over and the ranking goes on to the
+        next one; only `max_facts` reached ends the walk, since no later card has a place."""
         chosen, lines = [], []
         for card, signal in (self.covering(read) if read is not None else self.relevant(task)):
             if len(lines) >= max_facts:
