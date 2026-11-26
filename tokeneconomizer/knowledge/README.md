@@ -126,19 +126,26 @@ first: a symbol named as a whole identifier (3), then a file named by its full p
 file named by its bare file name (1); a Knowledge with several sources counts its strongest
 matching signal. Equal matches keep registration order, so the choice is deterministic and
 makes no model call. The cards that share no signal with the request come after those that do,
-nearest first, when an index is configured (§ The local index).
+nearest first (§ The local index) -- never before them, and never instead of them.
 
 Delivery is the host's own prompt context, after what the cached prefix holds.
 
-### The local index (a seam, not a model)
+### The local index (a lexical backend, and the seam a model replaces)
 
 Two rules meet here: `CLAUDE.md` allows the standard library and Tree-sitter only, and spec #329
 leaves the choice of an embedding model -- and of the similarity at which a request counts as
-being about a card -- to #335's campaign. So what this repository holds is the seam and not the
-model: a search that takes an embedder from its caller, and a local index prepared from the
-stock. **No embedding model ships with the plugin, and no number here was measured:** the
-default backend is today's exact-signal ranking, and the model and the threshold are #335's
-decision.
+being about a card -- to #335's campaign. What ships, then, is the standard library's answer:
+words and three-character word fragments hashed into a fixed-size vector and compared by cosine
+(`knowledge/embedding.py`, `HashingEmbedder`, the default of `Knowledge.embedder`). **It finds a
+request that reuses a card's words without naming any of its signals** -- `where are the
+settings stored?` reaches a card whose text is `Settings live in config.json` -- **and it joins
+nothing whose words differ.** It carries no meaning across languages: a French request reaches
+no English card. It is nearness of vocabulary, not a semantic model, and no number here was
+measured -- the model and the similarity behind it (`NEAR_SIMILARITY`) are #335's decision,
+which replaces the backend at `Knowledge.embedder`; the embedder's name alone makes every
+stored vector be rebuilt. What a near card never does is take the place of one the exact
+signals named: those are ranked and delivered first, and the near ones only fill what the
+budget has left.
 
 The index is `<store>/mechanisms/knowledge_index/<repo>.json`, beside `knowledge_state/` and
 never inside it, so the stock's own sweep never reads it and deleting it loses no card. It holds
@@ -151,16 +158,18 @@ checkout as it is then, so a local edit or a branch change shows from the next s
 card stays in the stock and becomes eligible again when the code it proves comes back, and no
 re-embedding is needed for any of it. The index is rebuilt -- every vector again -- when the cards
 change (a card admitted, forgotten, edited or removed: `digest`) or when another embedder is
-configured. A search that cannot rank -- no embedder, an embedder that fails, vectors of the
-wrong shape -- delivers exactly what the exact signals deliver, and loses no card they gave.
+configured. A search that cannot rank -- no embedder configured, an embedder that fails, vectors
+of the wrong shape -- delivers exactly what the exact signals deliver, and loses no card they
+gave.
 
 An embedder is an object with a `name` and an `embed(texts)` method returning one vector per
-text; the plugin configures none yet (`Knowledge.embedder`), and a test injects a fake one. What
-the fake proves is the seam -- ranking by nearness, the rebuild, a French request reaching an
-English claim -- and not the quality of any model: its "learning" is a hand-written table of
-topics. The similarity a card must reach (`NEAR_SIMILARITY`) is a placeholder for the campaign to
-measure. A card delivered because the request is near it is logged with an empty `signal`, since
-the request named none of its signals.
+text, and `Knowledge.embedder` is where #335 plugs its model in. The tests hold both halves of
+the shipped backend's honesty: `tests/test_knowledge_embedding.py` proves what it joins and what
+it cannot, and `tests/test_knowledge_index.py` proves the seam -- the rebuild, the ranking by
+nearness, and a French request reaching an English claim -- through a fake whose "learning" is a
+hand-written table of topics, standing for a model that could do it. A card delivered because
+the request is near it is logged with an empty `signal`, since the request named none of its
+signals.
 
 ### The campaign's selectors (temporary)
 
@@ -303,10 +312,13 @@ budget, native coexistence, the activation matrix, the shared proposal call and 
 `tests/test_knowledge_stock.py` covers the stock itself: two checkouts of one repository
 sharing it, validity computed against each checkout's own code, the other repository and host
 kept out of it, the layout reset and a restart of an installation holding both memories.
-`tests/test_knowledge_index.py` covers the index and the nearness ranking over a fake embedder:
-ranking by nearness, the rebuild when a card is admitted, the on-disk name and shape, a search
-that cannot rank, and criterion 2's contract rules at search time; the fake proves the seam and
-measures no model. `tests/test_knowledge_variants.py` covers #334's delivery: the prompt
+`tests/test_knowledge_embedding.py` covers the backend that ships: a request reusing a card's
+words reaching it, a French request reaching nothing, and a vector that is the same in every
+process. `tests/test_knowledge_index.py` covers the index around any embedder, through a fake
+that stands for a model #335 may choose: ranking by nearness, the named card keeping its place,
+the rebuild when a card is admitted, the on-disk name and shape, a search that cannot rank, and
+criterion 2's contract rules at search time; the fake proves the seam and measures no model.
+`tests/test_knowledge_variants.py` covers #334's delivery: the prompt
 reaching Pi as `promptMessage` with its section untouched, the one ledger and dedup of the two
 triggers, the four temporary arms, a spent budget searching nothing, and a prompted and a
 read-delivered card costing the same across a Pi compaction.

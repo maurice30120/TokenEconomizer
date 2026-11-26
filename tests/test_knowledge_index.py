@@ -1,11 +1,13 @@
 """The Knowledge index and the nearness ranking that reads it (#334).
 
-The embedder used here is a fake: one dimension per hand-written topic, with French and English
-words in the same list. It therefore proves the seam -- that a search can rank by nearness, that
-the index is rebuilt when the stock changes, and that a French request can reach an English
-claim no string match joins -- and it proves nothing about a real embedding model. No number in
-this file measures one: spec #329 leaves the choice of model, and of the similarity a request
-must reach, to #335's campaign.
+The backend the plugin ships is tested where it is: `test_knowledge_embedding.py`. What this
+file tests is the index around any backend -- built from the stock, rebuilt when the stock or
+the embedder changes, kept beside the stock and never trusted with a verdict -- and, through
+`FakeEmbedder`, the seam a model #335's campaign chooses plugs into. The fake's "learning" is a
+hand-written table of topics in two languages: it stands for a model that could join a French
+request to an English claim, which the shipped lexical backend cannot, and it measures no
+model's quality. No number here measures one: spec #329 leaves the choice of model, and of the
+similarity a request must reach, to #335.
 """
 import json
 import os
@@ -23,10 +25,13 @@ TOPICS = {
 
 
 class FakeEmbedder:
-    """A stand-in model: one dimension per topic of `TOPICS`, in two languages.
+    """A stand-in for a model plugged in at the seam: one dimension per topic of `TOPICS`.
 
-    `before` runs before each batch is turned into vectors, with the batch it is about to
-    vectorise: a test uses it to change the code between the ranking and the delivery.
+    Its two-language table is the model it stands for, not a backend that ships: `TOPICS` joins
+    French to English because it was written that way, and the shipped `HashingEmbedder` joins
+    no such pair (`test_knowledge_embedding.py` states both halves). `before` runs before each
+    batch is turned into vectors, with the batch it is about to vectorise: a test uses it to
+    change the code between the ranking and the delivery.
     """
 
     name = "fake-topics"
@@ -84,11 +89,12 @@ def two_cards(tmp_path):
                  [CONFIG, TESTS])
 
 
-def test_the_index_ranks_a_card_a_french_request_is_near_and_no_string_match_is(tmp_path):
-    """The seam's whole point: `render` has no model of its own, so an injected embedder is what
-    lets a request that names no signal reach the card it is about."""
+def test_a_model_plugged_in_at_the_seam_can_rank_across_languages(tmp_path):
+    """The seam's whole point: `render` has no model of its own, so an embedder given to it is
+    what lets a request reach a card no string match joins. The fake stands for a model with
+    cross-language meaning; the shipped backend has none, and joins only what shares its words."""
     stage = two_cards(tmp_path)
-    assert stage.render("où sont les réglages ?") == ""      # the exact signals join nothing
+    assert stage.render("où sont les réglages ?") == ""      # no signal, and no shared word
     stage.embedder = FakeEmbedder()
     block = stage.render("où sont les réglages ?")
     assert "Settings live in config.json" in block
@@ -96,16 +102,24 @@ def test_the_index_ranks_a_card_a_french_request_is_near_and_no_string_match_is(
 
 
 def test_a_named_card_comes_before_a_card_the_request_is_only_near(tmp_path):
-    """Nearness adds to the exact signals; it does not reorder them."""
+    """Nearness adds to the exact signals; it does not reorder them, and with room for one card
+    it does not displace the named one."""
     stage = two_cards(tmp_path)
     stage.embedder = FakeEmbedder()
     block = stage.render("check config.json and the pytest run", max_tokens=300)
     assert block.index("Settings live in config.json") < block.index("Tests run with pytest")
+    only_named = stage.render("check config.json and the pytest run", max_facts=1, max_tokens=300)
+    assert "Settings live in config.json" in only_named
+    assert "Tests run with pytest" not in only_named
 
 
-def test_without_an_embedder_the_exact_signals_alone_rank_and_no_index_is_written(tmp_path):
-    """The default backend adds nothing: no model, no file, the ranking the plugin always had."""
+def test_without_an_embedder_the_exact_signals_alone_rank_and_no_index_is_written(
+        tmp_path, monkeypatch):
+    """Configured as none -- the seam closed -- the ranking is the one the plugin always had and
+    no index file is written. The shipped backend is not this state: see
+    `test_knowledge_embedding.py`."""
     from tokeneconomizer.knowledge.index import index_path
+    monkeypatch.setattr(Knowledge, "embedder", None)
     stage = two_cards(tmp_path)
     assert "Settings live in config.json" in stage.render("look at config.json")
     assert "Settings live in config.json" in stage.render("look at ./config.json")

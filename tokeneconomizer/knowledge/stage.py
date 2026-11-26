@@ -7,6 +7,7 @@ import re
 from ..microskills.distiller import BLOB_CAP, WINDOW, Distiller
 from ..microskills.lifecycle import write_json_atomic
 from ..names import repo_filename
+from .embedding import HashingEmbedder
 from .index import KnowledgeIndex, index_path
 from .observation import observations
 from .proof import symbol_proof, verify_proof
@@ -315,7 +316,10 @@ class Knowledge(Distiller):
     host = "claude"
     outcomes = ()      # the last proposal list's [(id, admitted, reason)]
     stock_root = None  # where `load` and `save` filed the stock: the index sits beside it
-    embedder = None    # the ranking's model, injected; none means the exact signals only
+    # The ranking's vectorizer: `HashingEmbedder` unless #335's campaign plugs a model in here.
+    # It is a lexical backend, not a learned one -- it joins texts that share words, and claims
+    # no meaning across languages.
+    embedder = HashingEmbedder()
 
     @staticmethod
     def _path(root, repo):
@@ -542,7 +546,7 @@ class Knowledge(Distiller):
 
     def index(self):
         """This stock's index, prepared for the cards it holds now; None when no embedder is
-        configured, so that nothing is written and the exact signals alone rank."""
+        configured -- in which case nothing is written and the exact signals alone rank."""
         if self.embedder is None:
             return None
         return KnowledgeIndex.prepare(index_path(self.stock_root, self.repo), self.embedder,

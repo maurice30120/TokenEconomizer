@@ -1,19 +1,22 @@
 """A local index over the Knowledge stock, and the nearness ranking that reads it.
 
-No embedding model ships here. `CLAUDE.md` allows the standard library and Tree-sitter, and
-spec #329 leaves the choice of a model, and of the similarity at which a request counts as being
-about a card, to #335's campaign. What this module is, then, is the seam: an index prepared from
-the stock and kept beside it, and a ranking that takes whatever embedder is given to it.
+`embedding.HashingEmbedder` ships as the vectorizer: words and word fragments hashed into a
+fixed-size vector, so a request that reuses a card's words without naming its signal is ranked
+by lexical nearness. It is not a learned model and claims no cross-language meaning -- spec
+#329 leaves the choice of a model, and of the similarity at which a request counts as being
+about a card, to #335's campaign -- so this module keeps the seam: an index prepared from the
+stock and kept beside it, and a ranking that takes whatever embedder is given to it.
 
 An embedder is an object with a `name` and an `embed(texts)` method returning one vector -- a
-list of numbers -- per text. With none, `Knowledge.index` is None, no file is written, and the
-search ranks by the exact signals it always did.
+list of numbers -- per text. Configured as none, `Knowledge.index` is None, no file is written,
+and the search ranks by the exact signals it always did.
 
 The index is derived data, never a verdict. It holds each card's id, claim, injection text,
 covered paths, signals and the vector of that text; whether a card may be delivered is decided
 at search time by `Knowledge.contract_valid`, at the moment the card is chosen. So a file that
-changed -- a local edit, a branch change -- shows on the next search, and a card whose code came
-back becomes eligible again without the index being told anything.
+changed -- a local edit, or the other version a branch switch puts there -- shows on the next
+search, and a card whose code came back becomes eligible again without the index being told
+anything.
 """
 import hashlib
 import json
@@ -24,9 +27,11 @@ from ..names import repo_filename
 
 INDEX_DIR = "knowledge_index"     # beside `knowledge_state/`, never inside it
 # How near a request must be to a card's text -- the cosine similarity of their vectors -- for
-# the card to be ranked at all. The value is a placeholder: #335's campaign measures the
-# similarity that decides a card is about a request, and replaces this one with it.
-NEAR_SIMILARITY = 0.5
+# the card to be ranked at all. The shipped backend's value is calibrated no further than this:
+# it joins a paraphrase that reuses a card's words, and joins nothing that shares none of them.
+# #335's campaign measures the similarity that decides a card is about a request, for whatever
+# model it chooses, and replaces this one with it.
+NEAR_SIMILARITY = 0.35
 
 
 def index_path(root, repo):
