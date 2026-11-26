@@ -228,6 +228,12 @@ def test_a_forgotten_knowledge_stays_forgotten(tmp_path):
 
 
 # ---- criterion 4/5: admission from one source, several, or none --------------------------
+def test_one_session_is_enough_to_admit_a_knowledge(tmp_path):
+    """Story 2: a single session's observation is sufficient evidence for an atomic claim."""
+    stage = observed_stage(tmp_path, {"source.txt": "observed\n"}, sessions=1)
+    assert stage._admit(proposal()) == (True, "admitted")
+
+
 def test_a_single_observed_file_is_admitted(tmp_path):
     stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
     assert stage._admit(proposal()) == (True, "admitted")
