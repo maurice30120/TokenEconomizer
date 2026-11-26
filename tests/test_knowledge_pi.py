@@ -80,8 +80,13 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     # Nothing is given at a session start (#333): the card arrives with the read.
     start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "next", "cwd": str(repo)}
     assert call(env, start, host="pi") == {}
+    # The prompt trigger reaches Pi too (#334): the Knowledge a prompt names comes back as
+    # `promptMessage`, a message after the prompt, so the section the extension rewrites on
+    # every prompt -- and with it the cached prefix -- stays as it was.
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
-    assert call(env, payload, host="pi") == {}
+    prompted = call(env, payload, host="pi")["hookSpecificOutput"]
+    assert "Pi observation" in prompted["promptMessage"]
+    assert "additionalContext" not in prompted
     assert call(env, dict(payload, session_id="other", prompt="rename widget"), host="pi") == {}
     # A read of the covered file: the extension sends it as a steering message after the result.
     read = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": str(repo), "tool_name": "read",

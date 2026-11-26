@@ -94,8 +94,10 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
     # arrives with the read.
     assert call(env, start, host="copilot") == {}
     assert call(env, dict(start, source="resume"), host="copilot") == {}
+    # The prompt trigger reaches Copilot too (#334): its prompt context is top-level
+    # `additionalContext`, after the prompt.
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
-    assert call(env, payload, host="copilot") == {}
+    assert "Copilot observation" in call(env, payload, host="copilot")["additionalContext"]
     # A read of the covered file: top-level additionalContext, after the tool's result.
     read = {"hook_event_name": "PostToolUse", "session_id": "read", "cwd": str(repo), "tool_name": "Read",
             "tool_input": {"path": str(repo / "source.txt")}, "tool_result": {"text_result_for_llm": "observed\n"}}

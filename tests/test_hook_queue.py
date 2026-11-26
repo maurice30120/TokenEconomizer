@@ -155,7 +155,8 @@ def test_a_prompt_that_may_carry_context_is_not_queued():
                                knowledge_start_context=False, tool_context=tool_context,
                                read_path=lambda p: "/r/a.py")
         c = SimpleNamespace(cfg=SimpleNamespace(repomap=repomap, knowledge=knowledge,
-                                               shadow=shadow),
+                                               shadow=shadow,
+                                               knowledge_triggers=("prompt", "read")),
                             host=host, p={"hook_event_name": "PostToolUse"})
         c.knowledge_on_prompt = MethodType(LiveController.knowledge_on_prompt, c)
         c.knowledge_on_read = MethodType(LiveController.knowledge_on_read, c)
