@@ -250,6 +250,28 @@ def test_the_sweep_removes_only_what_the_layout_cannot_read(tmp_path):
     assert reset_stock(tmp_path) == []        # on this layout now: the sweep has run
 
 
+def test_a_remote_that_moved_keeps_the_stock_the_retired_layout_left_beside(tmp_path, env):
+    """Criterion 4, then criterion 1: a store upgraded but not yet swept still holds the retired
+    per-checkout file when its remote changes. That orphan is not the stock, and it must not
+    stand between the stock and the destination's name: the cards are read there after the
+    move, under the new label."""
+    from tokeneconomizer.plugin import paths, repos
+    from tests.test_live_repos import git_repo, legacy_session, state, transcript
+
+    clone = git_repo(str(tmp_path / "widget"), "https://github.com/microsoft/widget")
+    st = state(env, f"widget-{paths.digest('github.com/acme/widget')}")
+    legacy_session(st, "s1", transcript(tmp_path / "s1.jsonl", clone))
+    stock = os.path.join("mechanisms", "knowledge_state")
+    st.write(os.path.join(stock, "acme__widget.json"),
+             {"repo": "acme/widget", "facts": {"source-observed": CARD}})
+    st.write(os.path.join(stock, "acme__widget--" + "0" * 64 + ".json"),
+             {"repo": "acme/widget", "facts": {"retired-observed": CARD}})
+    root = env["TOKENECONOMIZER_HOME"]
+    repos.run_migration(root, env)
+    moved = state(env, paths.repo_identity(clone, env).key).path("mechanisms")
+    assert sorted(Knowledge.load("microsoft/widget", moved).facts) == ["source-observed"]
+
+
 def test_a_session_state_does_not_restore_a_block_the_stock_no_longer_holds(
         tmp_path, env, repo, monkeypatch):
     """Criterion 4: an old block is not restored into the new flow. A session that was given
