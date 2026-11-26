@@ -411,6 +411,19 @@ def test_a_duplicate_claim_and_contract_is_refused_whatever_its_id(tmp_path):
     assert len(stage.facts) == 1
 
 
+def test_a_duplicate_claim_and_contract_is_refused_whatever_its_key_and_source_order(tmp_path):
+    """The same claim on the same resolved contract is one record: a key order carries no
+    meaning, and neither does the order the proposal listed its sources in."""
+    stage = observed_stage(tmp_path, {"a.txt": "a observed\n", "b.txt": "b observed\n"})
+    assert stage._admit(proposal(detector=[{"path": "a.txt"}, {"path": "b.txt"}])) == (
+        True, "admitted")
+    restated = {"detector": [{"path": "b.txt"}, {"path": "a.txt"}],
+                "injection": "Source is observed", "claim": "Source is observed",
+                "id": "both-files-again"}
+    assert stage._admit(restated) == (False, "duplicate")
+    assert sorted(stage.facts) == ["source-observed"]
+
+
 def test_an_id_already_taken_with_other_content_is_refused_without_overwrite(tmp_path):
     stage = observed_stage(tmp_path, {"source.txt": "observed\n"})
     assert stage._admit(proposal()) == (True, "admitted")
@@ -425,6 +438,16 @@ def test_a_changed_claim_under_a_new_id_is_admitted(tmp_path):
     assert stage._admit(proposal(id="source-other", claim="Another claim",
                                  injection="Another claim")) == (True, "admitted")
     assert sorted(stage.facts) == ["source-observed", "source-other"]
+
+
+def test_the_same_claim_on_a_different_contract_is_a_new_card(tmp_path):
+    """A duplicate is the same claim on the same contract: a claim that stands on other code is
+    another Knowledge, admitted under its own id."""
+    stage = observed_stage(tmp_path, {"a.txt": "a observed\n", "b.txt": "b observed\n"})
+    assert stage._admit(proposal(detector=[{"path": "a.txt"}])) == (True, "admitted")
+    assert stage._admit(proposal(id="source-on-b", detector=[{"path": "b.txt"}])) == (
+        True, "admitted")
+    assert sorted(stage.facts) == ["source-observed", "source-on-b"]
 
 
 # ---- criterion 5: a partial read proves only what it returned ----------------------------

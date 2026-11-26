@@ -154,6 +154,13 @@ def _resolve_path(observed, reference):
     return (matches[0], None) if matches else (None, "source-not-observed")
 
 
+def _contract_key(proofs):
+    """A resolved contract's identity: its proofs in a canonical order, each with its keys in a
+    canonical order too. Which source a proposal listed first, and in which order it wrote a
+    proof's keys, names the same contract."""
+    return sorted(json.dumps(proof, sort_keys=True) for proof in proofs)
+
+
 def _file_identity(root, path):
     full = os.path.realpath(os.path.join(root, path))
     try:
@@ -367,7 +374,8 @@ class Knowledge(Distiller):
         card = {"id": card_id, "claim": spec["claim"], "injection": spec["injection"],
                 "detector": detector,
                 "internal": {"session": session or "", "observed_lines": spans}}
-        if any(stored.claim == card["claim"] and stored.detector == detector
+        if any(stored.claim == card["claim"]
+               and _contract_key(stored.detector) == _contract_key(detector)
                for stored in self.facts.values()):
             return False, "duplicate"
         if card_id in self.facts:
