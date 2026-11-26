@@ -1,9 +1,9 @@
 """The prompt trigger on Pi, and the campaign's A/B/C/D selectors (#334).
 
-These are temporary: spec #329's measurement campaign runs the variants, and #336 removes the
-selector once it has decided. What is not temporary is the prompt path itself -- it reuses the
-post-read budget, dedup and logging -- and criterion 4's rule that a card costs the same however
-it arrived, including across a Pi compaction.
+The selector is temporary: spec #329's measurement campaign runs the four arms, and #336
+removes it once it has decided. What is not temporary is the prompt path itself -- it reuses
+the post-read budget, dedup and logging -- and criterion 4's rule that a card costs the same
+however it arrived, including across a Pi compaction.
 """
 import json
 from pathlib import Path
@@ -155,10 +155,10 @@ def test_a_budget_spent_before_the_prompt_ranks_nothing(tmp_path, env, repo, mon
 
 def test_a_compaction_charges_a_prompted_card_and_a_read_card_the_same(
         tmp_path, env, repo, monkeypatch):
-    """Criterion 4 (#334): Pi's compaction reports what its steering messages the branch still
-    carries through `details.teReadId`, which a prompt-delivered message has no id for. Both
-    triggers therefore keep the same bookkeeping: the ids and the charge stay spent, and only the
-    read block's record goes."""
+    """Criterion 4 (#334): Pi's compaction reports which steering messages the branch still
+    keeps, by the `details.teReadId` they carry -- an id the message a prompted card arrived in
+    does not have. Both triggers therefore keep the same bookkeeping: the ids and the charge stay
+    spent, and only the read block's record goes."""
     enabled = _learn_source_knowledge(tmp_path, env, repo, monkeypatch)
     _stock_for("pi", enabled, repo)
     store = store_for(enabled, repo, host="pi")
