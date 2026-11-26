@@ -760,3 +760,18 @@ def test_both_missions_share_one_call_one_observation_pass_and_one_charge(
     assert sorted(stage.facts) == [f"k{i}" for i in range(7)]
 
 
+# ---- criterion 3: fixed instructions, measured with one tokenizer ------------------------
+def test_the_knowledge_instructions_fit_inside_the_native_fixed_instructions():
+    """Mission, format and constraints, and nothing that varies with the fold, measured with
+    the ledger's own estimator against the native mission's fixed instructions."""
+    from tokeneconomizer.microskills import distiller
+    from tokeneconomizer.pricing import approx_tokens
+    instructions = Knowledge.fixed_instructions()
+    assert approx_tokens(instructions) <= approx_tokens(distiller.PROPOSER_SYSTEM_GENERIC)
+    assert instructions.startswith(
+        "Produce knowledge about how the code works that a future session would benefit from "
+        "knowing to avoid repeating exploration or reasoning.")
+    # Nothing variable rides along: the observations have their own block.
+    assert "Observed sources (paths relative to the repository" not in instructions
+
+
