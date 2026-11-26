@@ -124,8 +124,9 @@ def _offerable(record):
 
 
 def _valid_fields(spec):
-    """Whether a proposal carries the three text fields and a `detector` of observed
-    `{path, symbol?}` references -- exactly those keys, and at least one reference."""
+    """Whether a proposal carries `id`, `claim` and `injection` as non-empty strings and
+    `detector` as a non-empty list of `{path, symbol?}` references. Any other field the model
+    sends is ignored here and never persisted: lenient in, strict out."""
     if not isinstance(spec, dict):
         return False
     if any(not isinstance(spec.get(key), str) or not spec[key].strip()

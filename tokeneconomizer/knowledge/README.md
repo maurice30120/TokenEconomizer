@@ -194,17 +194,17 @@ list of those proofs: the Knowledge is valid only while every one of them is.
 One source is enough -- a file, or one declaration -- and several sources are right when together
 they explain one mechanism; there is no minimum number of files, and a claim may rest on a single
 session. An empty proposal list is a valid answer. A proposal is refused with a stable reason:
-`invalid-fields` (a missing or extra field, or a `detector` that is not a list of
-`{path, symbol?}`), `invalid-id` (not kebab-case), `forgotten`, `duplicate` (the same claim and
-the same resolved contract, whatever its id), `id-conflict` (an id already stored with other
-content, never overwritten), `source-not-observed`, `ambiguous-source`, `partial-needs-symbol`,
-`symbol-not-observed`, `stale-proof`, and `uncovered-file`.
+`invalid-fields` (`id`, `claim` or `injection` not a non-empty string, or a `detector` that is not
+a non-empty list of `{path, symbol?}` references), `invalid-id` (not kebab-case), `forgotten`,
+`duplicate` (the same claim and the same resolved contract, whatever its id), `id-conflict` (an id
+already stored with other content, never overwritten), `source-not-observed`, `ambiguous-source`,
+`partial-needs-symbol`, `symbol-not-observed`, `stale-proof`, and `uncovered-file`.
 
 `uncovered-file` rejects explicit workspace-relative file references in `claim` or `injection`
 that resolve to existing files outside the contract. It does not resolve every shorthand or
 implied reference and does not prove the explanation is correct. Knowledge that synthesizes other
-Knowledge has no such field and is refused as `invalid-fields`; retired fields are never
-persisted.
+Knowledge has no such field and is refused as `invalid-fields`; any other field the model sends,
+retired ones included, is ignored at admission and never persisted.
 
 ## Recorded-session evaluation
 
