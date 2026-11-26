@@ -1119,9 +1119,9 @@ def build_parser():
                         "them again; unforget: bring forgotten facts back")
     p.add_argument("ids", nargs="*", metavar="ID", help="fact ids, as `te microskills` lists them")
     from tokeneconomizer.microskills import MEMORIES
-    p.add_argument("--type", choices=MEMORIES, default=None, metavar="MEMORY",
-                   help="one memory only: microskills or knowledge; without it both are listed, "
-                        "and an id both hold is refused rather than resolved to one")
+    p.add_argument("--type", choices=MEMORIES, default=None,
+                   help="one memory only; without it both are listed, and an id both hold is "
+                        "refused rather than resolved to one")
     p.set_defaults(fn=cmd_microskills)
     p = add("toolprune", "untool")
     p.add_argument("action", nargs="?", default="show",
