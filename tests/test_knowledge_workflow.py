@@ -1113,3 +1113,31 @@ def test_the_digest_comes_back_identical_when_the_state_is_reloaded(tmp_path):
     assert again.digest.state() == stage.digest.state() == {"sequences": state["digest"]["sequences"]}
     assert again.digest.view() == stage.digest.view()
     assert [s["id"] for s in again.digest.sequences] == [f"s{n}/0" for n in range(1, 9)]
+
+
+def test_a_background_notification_opens_no_work_sequence(tmp_path):
+    (tmp_path / "first.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read first.txt"), *claude_read(tmp_path, "first.txt"),
+        {"type": "user", "origin": {"kind": "task-notification"},
+         "message": {"role": "user", "content": [
+             {"type": "text", "text": "<task-notification>done</task-notification>"}]}}])
+    assert [s["id"] for s in digest_view(stage)["sequences"]] == ["s0/0"]
+
+
+def test_eleven_reads_stay_in_the_digest_although_the_session_view_keeps_ten(tmp_path):
+    """The digest has no per-session path cap: a sequence is bounded by its own budget only."""
+    from tokeneconomizer.knowledge.observation import observations
+    names = [f"f{n}.txt" for n in range(11)]
+    for name in names:
+        (tmp_path / name).write_text(f"{name}\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    transcript = tmp_path / "s0.jsonl"
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read all of them"),
+        *[entry for n, name in enumerate(names) for entry in claude_read(tmp_path, name, n)]])
+    assert list(observations(transcript, tmp_path)) == names[:10]     # the session view
+    assert [e["path"] for e in digest_view(stage)["excerpts"]] == names  # the digest

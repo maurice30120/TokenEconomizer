@@ -22,6 +22,14 @@ Only entries with a valid **Knowledge Contract** qualify for semantic search.
 **Work Sequence**:
 A user message and the work that follows it until the next user message or the end of the session. A message with no work still starts a sequence.
 
+**Knowledge Digest**:
+The view the proposer reads: the newest **Work Sequences** of the folded sessions, ordered by message emission time, each with the refs of the **Knowledge Observations** it retained and the observations themselves. A sequence retains observations in read order while they fit its own 16 000 characters, so what one sequence drops can prove nothing.
+_Avoid_: window, session digest
+
+**Digest Ref**:
+The short stable name of one observation a **Knowledge Digest** retains, and the only thing a **Knowledge** proposal cites: a ref resolves against the retained digest alone, never against a file path or a session.
+_Avoid_: source id, anchor
+
 **Knowledge Observation**:
 What a session actually read of a source: the whole file for a complete read, the returned lines for a partial one. Its scope is recorded; the part that was not read is never presented as observed.
 

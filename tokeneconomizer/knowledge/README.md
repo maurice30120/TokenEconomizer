@@ -31,20 +31,30 @@ Copilot test fixtures are sanitized local sessions recorded with a simulated mod
 their file paths and Pi system prompt were replaced, while the tool calls and results were
 retained.
 
-The proposer sees bounded excerpts of observed reads -- complete ones, and partial ones with
-the lines they returned (`observed_lines`) -- each under the digest of the session that made
-it. A partial read that crossed no declaration has nothing to prove, so it is not offered at
-all. A Knowledge proposal names what it observed in `sources`, one or more
-`{source, symbol?, source_session?}` entries; the engine resolves each entry against the
-window's observations and computes the proofs itself, so the proposal never carries one. A
-source observed in several sessions of the window must name its `source_session`. Several
-sources may support one mechanism, but one complete read -- or one symbol a partial read
-crossed -- is enough. It runs on the existing micro-skills proposal cadence, but not on the
-native grounding gate: the proofs are the evidence, so a Knowledge is admitted and injectable
-in the same cycle, with no second session and no confirmation count. When the native proposer
-is active and at least one source is observed, one model call proposes up to eight candidates
-in any mix. The fold ledger records proposal and admission counts by type under
-`injection.shared_proposals`. Verification is local.
+What the proposer reads is a digest of **work sequences**: one per real user message, taken
+from the eight newest messages by emission time across every session folded so far, so a
+session folded late with older prompts lands where its times put it and two prompts of one
+session are two sequences. A message that read nothing still takes its slot; an injected
+message (Pi's extension sends its steering that way) and a `system` message open none. A
+sequence keeps its message, bounded, and the observations its reads made, in read order, up
+to 16 000 characters each -- the first observation that would push it past that ends its
+retention, and every sequence has its own budget. Repeated reads of one file within a
+sequence merge as everywhere else.
+
+The proposer is shown each retained observation with its `ref`, its path, its version and,
+for a partial read, the lines it returned (`observed_lines`) and the declarations they
+crossed; a partial read that crossed no declaration has nothing to prove, so it is neither
+shown nor citable. A Knowledge proposal names what it observed in `sources`, one or more
+`{ref, symbol?}` entries, and the engine resolves each ref against the retained digest and
+computes the proofs itself, so the proposal never carries one. Several refs may support one
+mechanism, but one complete read -- or one symbol a partial read crossed -- is enough. It runs
+on the existing micro-skills proposal cadence, but not on the native grounding gate: the
+proofs are the evidence, so a Knowledge is admitted and injectable in the same cycle, with no
+second session and no confirmation count. When the native proposer is active and at least one
+observation is retained, one model call proposes up to eight candidates in any mix. The fold
+ledger records proposal and admission counts by type under `injection.shared_proposals`.
+Verification is local. A session is folded once, so messages a resumed session appends never
+re-enter the digest.
 State is isolated by workspace path. `te microskills`
 lists Knowledge identity, revision, lifecycle, proof status, source session and path, and the
 lines a partial read actually returned, including forgotten records. Use
@@ -179,13 +189,12 @@ Install the package dependencies to enable symbol parsing.
 
 
 A new or revised Knowledge carries the four business fields -- `id`, `claim`, `injection`,
-`detector` -- and the `sources` it observed in its proposal: one or more
-`{source, symbol?, source_session?}` entries. The engine resolves each entry against the
-window's observations, refuses one that no observation backs (`source-not-observed`), one the
-window observed in more than one session without an explicit `source_session`
-(`ambiguous-source`), a partial read without a symbol (`partial-needs-symbol`), a symbol the
+`detector` -- and the `sources` it observed in its proposal: one or more `{ref, symbol?}`
+entries. The engine resolves each ref against the observations the digest retains, and refuses
+one it does not show -- unknown, ambiguous, dropped by a sequence's budget, or never citable
+(`out-of-digest`) -- a partial read without a symbol (`partial-needs-symbol`), a symbol the
 read did not cross (`symbol-not-observed`), and a proof that no longer verifies
-(`stale-proof`); two entries that resolve to the same file are one source, not two. The
+(`stale-proof`); two refs that resolve to the same file are one source, not two. The
 stored spec keeps only the business fields, the revision, and the engine's own `proof` list
 and `provenance` -- never the proposal's entries. One complete read, or one symbol a partial
 read crossed, is enough; several sources are allowed when they explain one mechanism, and the
