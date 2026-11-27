@@ -5,7 +5,7 @@ This context describes reusable knowledge derived from sessions in a workspace.
 ## Language
 
 **Knowledge**:
-A reusable understanding of a coherent mechanism and the relationships between its parts across at least two distinct files, supported by evidence. Knowledge is distinct from a native Fact and from a collection of separate file summaries.
+A durable understanding of how the code works, grounded in one observed file or symbol, or in several observed sources that explain one coherent mechanism. Knowledge is distinct from a native Fact and from a collection of separate file summaries.
 Several Knowledge entries can cover the same file when they describe different mechanisms.
 
 **Multi-source Knowledge**:
@@ -17,6 +17,9 @@ An observation supporting Knowledge whose validity establishes that the relevant
 **Knowledge Contract**:
 The evidence that determines whether a **Knowledge** entry remains valid in the current checkout.
 Only entries with a valid **Knowledge Contract** qualify for semantic search.
+
+**Work Sequence**:
+A user message and the work that follows it until the next user message or the end of the session. A message with no work still starts a sequence.
 
 **Knowledge Observation**:
 What a session actually read of a source: the whole file for a complete read, the returned lines for a partial one. Its scope is recorded; the part that was not read is never presented as observed.
