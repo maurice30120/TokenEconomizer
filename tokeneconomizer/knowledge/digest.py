@@ -331,11 +331,12 @@ class Digest:
         proving what the source says and the session it was observed in, or a reason it cannot
         back the fact.
 
-        A ref that no citable retained observation carries -- unknown, ambiguous, dropped by a
-        sequence's budget, or never shown because no symbol its lines crossed could prove it --
-        is `out-of-digest`, so a fragment the proposer was not shown proves nothing. A partial
+        A ref that no citable retained observation carries -- unknown, dropped by a sequence's
+        budget, or never shown because no symbol its lines crossed could prove it -- is
+        `out-of-digest`, so a fragment the proposer was not shown proves nothing. A partial
         read proves only a declaration its lines crossed and never falls back to the file
-        (`partial-needs-symbol`, `symbol-not-observed`). The proof is returned unverified:
+        (`partial-needs-symbol`, `symbol-not-observed`), and a ref never answers through a
+        sibling fragment of the same entry. The proof is returned unverified:
         `Knowledge._admit` checks it again (`stale-proof`).
         """
         units = [(sequence["session"], unit) for sequence in self.sequences
