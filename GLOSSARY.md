@@ -23,11 +23,17 @@ Only entries with a valid **Knowledge Contract** qualify for semantic search.
 A user message and the work that follows it until the next user message or the end of the session. A message with no work still starts a sequence.
 
 **Knowledge Digest**:
-The view the proposer reads: the newest **Work Sequences** of the folded sessions, ordered by message emission time, each with the refs of the **Knowledge Observations** it retained and the observations themselves. A sequence retains observations in read order while they fit its own 16 000 characters, so what one sequence drops can prove nothing.
+The view the proposer reads: the newest **Work Sequences** of the folded sessions, ordered by message emission time, each with the refs of the **Knowledge Observations** it retained, plus the **Knowledge Catalogue** of that code and the **Read Co-occurrence** pairs. A sequence retains observations in read order while they fit its own 16 000 characters, so what one sequence drops can prove nothing.
 _Avoid_: window, session digest
 
+**Knowledge Catalogue**:
+The retained code a **Knowledge Digest** shows the proposer, one entry per path and compatible version of the file, with every ref that hit it and the work sequence, session and read each ref names. Ranges of one version merge when they overlap, a complete read subsumes the partial reads of that version, and fragments that do not touch stay separate fragments of the entry. Another version of the file is another entry, even when a declaration's own fingerprint is unchanged.
+
+**Read Co-occurrence**:
+A pair of catalogue paths read in the same **Work Sequence**, with how many sequences show that pair. A signal that two files were explored together, never **Knowledge Evidence**: it cannot admit anything, and recurrence is not proof.
+
 **Digest Ref**:
-The short stable name of one observation a **Knowledge Digest** retains, and the only thing a **Knowledge** proposal cites: a ref resolves against the retained digest alone, never against a file path or a session.
+The short stable name of one read a **Knowledge Digest** retains, and the only thing a **Knowledge** proposal cites: a ref resolves against the retained digest alone, never against a file path or a session. Several refs name the same code when they read one version, so a proposal names the read it means.
 _Avoid_: source id, anchor
 
 **Knowledge Observation**:
