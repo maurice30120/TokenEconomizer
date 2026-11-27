@@ -59,7 +59,7 @@ def test_the_report_carries_every_metric_the_ticket_asks_for(report):
     # nothing at all.
     assert trace["digest"]["retention"] == {"units": 4, "kept": 1, "dropped": 3, "overflow": 2,
                                             "windowed_out": 0, "windowed_units": 0,
-                                            "max_used": 855, "dropped_chars": 37_538}
+                                            "max_used": 820, "dropped_chars": 37_538}
     # No comment attaches on Pi: every assistant message that carries text also carries a call.
     assert trace["comments"] == {"entries": 0, "occurrences": 0, "chars": 0}
     blocks = trace["prompt"]["blocks"]

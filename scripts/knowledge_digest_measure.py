@@ -143,8 +143,9 @@ def _digest_metrics(stage, trace, workspace, session):
     present = [sequence for sequence in folded if sequence["id"] in kept]
     units = sum(len(sequence["units"]) for sequence in present)
     retained = sum(kept.values())
-    used = {sequence["id"]: len(sequence["message"])
-            + sum(unit_chars(unit) for unit in sequence["units"]) for sequence in mine}
+    # What the digest's own budget charged: the observations only, as `_retain` does.
+    used = {sequence["id"]: sum(unit_chars(unit) for unit in sequence["units"])
+            for sequence in mine}
     return {"observation_chars": len(json.dumps(offered, indent=1, ensure_ascii=False))
                               + len(json.dumps(view["comments"], indent=1, ensure_ascii=False)),
             "digest": {"sequences_budget": SEQUENCES, "sequence_char_budget": BUDGET,
