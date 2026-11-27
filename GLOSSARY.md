@@ -23,8 +23,12 @@ Only entries with a valid **Knowledge Contract** qualify for semantic search.
 A user message and the work that follows it until the next user message or the end of the session. A message with no work still starts a sequence.
 
 **Knowledge Digest**:
-The view the proposer reads: the newest **Work Sequences** of the folded sessions, ordered by message emission time, each with the refs of the **Knowledge Observations** it retained and the observations themselves. A sequence retains observations in read order while they fit its own 16 000 characters, so what one sequence drops can prove nothing.
+The view the proposer reads: the newest **Work Sequences** of the folded sessions, ordered by message emission time, each with the refs of the **Knowledge Observations** it retained, the observations themselves, and the **Knowledge Comments** next to the refs they are about. A sequence retains observations in read order while they fit its own 16 000 characters, so what one sequence drops can prove nothing.
 _Avoid_: window, session digest
+
+**Knowledge Comment**:
+What the agent itself wrote: the visible text of one of its assistant messages, kept with the refs of the **Knowledge Observations** the call series it followed returned. A comment written after that series' results belongs to it until the next tool call or user message; one written beside a tool call belongs to the step that call starts and therefore to no read. An identical comment repeated is one entry with its occurrences and its provenance (session, sequence, position), and its text counts in the sequence's own 16 000 characters. A comment is untrusted data, never evidence: a finding it states, a hypothesis it guesses or a future requirement it expects never establishes a Knowledge, because only a retained code observation does.
+_Avoid_: agent note, conclusion, rationale
 
 **Digest Ref**:
 The short stable name of one observation a **Knowledge Digest** retains, and the only thing a **Knowledge** proposal cites: a ref resolves against the retained digest alone, never against a file path or a session.

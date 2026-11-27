@@ -1342,3 +1342,19 @@ def test_the_comments_come_back_identical_when_the_state_is_reloaded(tmp_path):
         "text": "source.txt is observed", "refs": ["s0/0.0"], "occurrences": 2,
         "provenance": [{"session": "s0", "sequence": "s0/0", "position": 3},
                        {"session": "s0", "sequence": "s0/0", "position": 4}]}]
+
+
+def test_a_comment_never_becomes_a_proof(tmp_path):
+    """A ref resolves to the code proof of the observation it names: what the agent said about it
+    is data, so it never enters the contract a later session is checked against."""
+    import hashlib
+    (tmp_path / "source.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read source.txt"), *claude_read(tmp_path, "source.txt"),
+        claude_says("source.txt is the configuration")])
+    evidence, session, reason = stage.digest.evidence({"ref": "s0/0.0"}, tmp_path)
+    assert (session, reason) == ("s0", None)
+    assert evidence == {"path": "source.txt",
+                        "sha256": hashlib.sha256(b"observed\n").hexdigest()}

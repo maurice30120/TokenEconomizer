@@ -13,6 +13,10 @@ Every retained observation has a stable `ref`; a Knowledge proposal cites refs, 
 `evidence` resolves a ref against the retained digest alone and a fragment the budget dropped
 (`out-of-digest`) proves nothing.
 
+A sequence also keeps what the agent itself wrote (GLOSSARY: Knowledge Comment), attached to the
+reads of the call series it followed: its text counts in the same budget, identical comments
+deduplicate with their occurrences and their provenance, and none of them is ever a proof.
+
 Everything here is deterministic: no filesystem order, no set iteration, no wall clock.
 """
 from ..trace.claude import claude_prompts, claude_replies

@@ -42,10 +42,29 @@ push it past that ends its retention, and every sequence has its own budget. Eac
 own observation: a unit proves only the text and the symbols of that read, and an identical
 repeat of one read (same file, version and lines) is the only thing that collapses.
 
+A sequence also keeps what the agent itself wrote: the visible `text` blocks of its assistant
+messages, attached to the reads of the call series they followed. A comment written after a
+series' results belongs to that series' reads until the next tool call or the next user
+message; a comment written beside a tool call belongs to the step that call starts, so it
+attaches to no read, and a series that returned no read owns nothing. A comment costs its
+text in the same 16 000 characters as the code it is about, so a comment that does not fit
+ends the sequence's retention together with the read it was attached to, and a comment about
+a read the budget dropped is neither shown nor citable. Identical comments are one entry,
+oldest first, keeping their occurrences, the refs they are about and their provenance
+(session, sequence, position). They cost neither a model call nor a tool call: they come from
+the transcript the fold already reads. Pi assistant messages and Claude Code assistant
+`text` blocks are the sources; Copilot has no assistant-message reader, so its sequences
+carry no comments and none is invented.
+
 The proposer is shown each retained observation with its `ref`, its path, its version and,
 for a partial read, the lines it returned (`observed_lines`) and the declarations they
 crossed; a partial read that crossed no declaration has nothing to prove, so it is neither
-shown nor citable. A Knowledge proposal names what it observed in `sources`, one or more
+shown nor citable. The agent's comments are shown next to the refs they are about, labelled
+untrusted data, and the contract tells the proposer to keep a finding (what the retained code
+shows), a hypothesis (what the agent guessed) and a future requirement (what a request or a
+note expects and the code does not do yet) apart: a comment, or a spec that is not
+implemented, never establishes a Knowledge on its own, because only the retained code
+observations are proof. A Knowledge proposal names what it observed in `sources`, one or more
 `{ref, symbol?}` entries, and the engine resolves each ref against the retained digest and
 computes the proofs itself, so the proposal never carries one. Several refs may support one
 mechanism, but one complete read -- or one symbol a partial read crossed -- is enough. It runs
