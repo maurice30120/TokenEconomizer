@@ -41,7 +41,7 @@ import subprocess
 import sys
 import tempfile
 
-ANNEX = "\nFor Knowledge candidates only"        # where every Knowledge prompt starts its annex
+ANNEX = "\nFor Knowledge candidates only"        # legacy Knowledge annex boundary
 CLAIM = "the first observation this digest offers still holds"
 DETECTOR = {"scope": "pytest", "confirm": "passed"}
 # The contradiction probe's own detector: one command the two synthetic sessions both run, whose
@@ -225,8 +225,11 @@ def _prompt_metrics(prompt, digest_arm):
         return out
     from tokeneconomizer.knowledge.stage import (COMMENTS_HEADER, DIGEST_HEADER, EXCERPTS_HEADER,
                                                  SIGNALS_HEADER)
-    out["blocks"]["native"] = prompt.index(ANNEX)
-    out["blocks"]["mandate"] = prompt.index(DIGEST_HEADER) - prompt.index(ANNEX)
+    # Knowledge now has its own prompt, with no native Fact preamble. Keep the same report
+    # columns for comparisons with checkouts that still append a Knowledge annex.
+    native_chars = prompt.index(ANNEX) if ANNEX in prompt else 0
+    out["blocks"]["native"] = native_chars
+    out["blocks"]["mandate"] = prompt.index(DIGEST_HEADER) - native_chars
     starts = [prompt.index(header) for header in (DIGEST_HEADER, EXCERPTS_HEADER,
                                                   COMMENTS_HEADER, SIGNALS_HEADER)]
     ends = starts[1:] + [chars]

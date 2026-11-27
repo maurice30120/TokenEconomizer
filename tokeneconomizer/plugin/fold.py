@@ -153,7 +153,13 @@ class _SharedProposer:
             knowledge_prompt = stage._proposal_prompt(self.max_candidates)
         except Exception:
             return False  # Knowledge context is optional; keep the native tick.
-        prompt = (native._proposal_prompt(self.max_candidates)
+        prompt = ("One proposer call produces two distinct kinds of candidates. "
+                  "Native Fact rules apply only to candidates WITHOUT sources; "
+                  "Knowledge rules apply only to candidates WITH sources. "
+                  "Native command detectors, two citations and revision restrictions "
+                  "are not Knowledge requirements. Each context's schema and evidence "
+                  "rules apply only to its own kind.\n\nNative Fact context:\n"
+                  + native._proposal_prompt(self.max_candidates)
                   + "\n\nKnowledge context:\n" + knowledge_prompt
                   + f"\nReturn one facts list with up to {self.max_candidates} candidates TOTAL. "
                   "Mix native Facts and Knowledge freely. Include sources only on Knowledge.")

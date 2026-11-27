@@ -64,6 +64,7 @@ def test_the_report_carries_every_metric_the_ticket_asks_for(report):
     assert trace["comments"] == {"entries": 0, "occurrences": 0, "chars": 0}
     blocks = trace["prompt"]["blocks"]
     assert list(blocks) == ["native", "mandate", "sequences", "catalogue", "comments", "signals"]
+    assert blocks["native"] == 0 and blocks["mandate"] > 0
     assert trace["prompt"]["chars"] == sum(blocks.values())
     assert trace["prompt"]["tokens"] == (trace["prompt"]["chars"] + 3) // 4
     assert 0 < trace["observation_chars"] < trace["prompt"]["chars"]

@@ -147,10 +147,36 @@ class Knowledge(Distiller):
 
     def _proposal_prompt(self, max_candidates=MAX_CANDS):
         view = self.digest.view()
-        return super()._proposal_prompt(max_candidates) + (
-            "\nFor Knowledge candidates only, replace the operating-manual focus above "
-            "with a coherent, reusable mechanism a later session would be glad to know. "
+        existing = {i: f.claim for i, f in self.facts.items()}
+        return (
+            "You mine durable, repository-specific Knowledge from retained code observations. "
+            "Explain a coherent, reusable mechanism a later session would be glad to know. "
             "Do not create a card from a list of unrelated facts. "
+            "No commands, tests, second session or confirmation count are required. "
+            "A sufficient retained read is evidence in the current cycle. "
+            "Keep each claim within the observed code's scope: one package's test command "
+            "does not establish a repository-wide command, and not seeing a setup step "
+            "does not prove that step is unnecessary. An empty facts list is valid when "
+            "the observations support no useful mechanism.\n\n"
+            "Return ONLY a JSON object {\"extractors\": [], \"facts\": [...]} with at most "
+            f"{max_candidates} Knowledge candidates. Each candidate requires id (short slug), "
+            "claim (what the code establishes), injection (a declarative explanation), "
+            "sources (a nonempty list of observed refs), and detector (a nonempty object). "
+            "The detector is only for later command-based lifecycle observations, never "
+            "admission evidence. Without an observed command condition use the inert "
+            'detector {"scope": "(?!)", "confirm": "(?!)"}; these regexes never match. '
+            "Optionally supply scope, confirm, contradict and fired as Python regex strings "
+            "when supported by observed commands.\n"
+            "Example shape (replace the ref and explanation with observed evidence):\n"
+            '{"extractors": [], "facts": [{"id": "mechanism", '
+            '"claim": "Explanation grounded in the retained code", '
+            '"injection": "Explanation grounded in the retained code", '
+            '"sources": [{"ref": "session/0.0"}], '
+            '"detector": {"scope": "(?!)", "confirm": "(?!)"}}]}\n\n'
+            "Existing Knowledge as id: claim (do not paraphrase one under a new id; "
+            "reuse its id to revise its content, sources or detector when observations "
+            "justify a change):\n" + json.dumps(existing, ensure_ascii=False)
+            + f"\nRepo: {self.repo}\n\n"
             "For each Knowledge, add sources: one or more {ref, symbol?} entries, each a ref "
             "of an observation retained below. One ref is enough -- one complete read, or one "
             "symbol a partial read crossed -- so a Knowledge can be admitted as soon as it is "

@@ -128,6 +128,53 @@ def test_one_observed_read_is_proposed_admitted_and_injected_in_the_next_cycle(
         "tool_response": {"content": "observed"}}))
 
 
+@pytest.mark.parametrize("microskills", ["off", "distiller"])
+def test_read_only_knowledge_has_its_own_proposal_contract(
+        tmp_path, env, repo, monkeypatch, microskills):
+    """One retained read needs neither commands nor repeated confirmations; the model gets
+    an explicit sourced schema, even when its one call also mines native Facts."""
+    from tokeneconomizer.plugin import sidecall
+    prompts = []
+    source = Path(repo) / "source.txt"
+    source.write_text("observed\n")
+    candidate = {"id": "read-only", "claim": "source.txt contains observed",
+                 "sources": [{"ref": "s0/0.0"}],
+                 "detector": {"scope": "(?!)", "confirm": "(?!)"}}
+
+    def runner(prompt, model):
+        prompts.append(prompt)
+        return json.dumps({"extractors": [], "facts": [candidate]}), 0
+
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: runner)
+    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS=microskills,
+                   TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
+    for i, events in enumerate([
+            [claude_prompt("read source.txt"), *claude_read(Path(repo), "source.txt")],
+            [claude_prompt("done", "2026-11-24T10:05:00.000Z")]]):
+        path = tmp_path / f"read-only{i}.jsonl"
+        path.write_text("\n".join(map(json.dumps, events)))
+        run_session(enabled, repo, f"s{i}", str(path))
+    assert len(prompts) == 1
+    prompt = prompts[0]
+    assert "No commands, tests, second session or confirmation count are required" in prompt
+    assert '"sources": [{"ref":' in prompt
+    assert '"detector": {"scope": "(?!)", "confirm": "(?!)"}' in prompt
+    assert "source.txt" in prompt and '"s0/0.0"' in prompt
+    if microskills == "off":
+        assert "2 citations" not in prompt and ">=2 iids" not in prompt
+        assert "operating manual" not in prompt and "Existing feature names" not in prompt
+    else:
+        assert "Native Fact rules apply only to candidates WITHOUT sources" in prompt
+        native_start = prompt.index("Native Fact context:")
+        knowledge_start = prompt.index("Knowledge context:")
+        assert native_start < prompt.index(">=2 iids") < knowledge_start
+        assert ">=2 iids" not in prompt[knowledge_start:]
+    assert "source.txt contains observed" in json.dumps(call(enabled, {
+        "hook_event_name": "PostToolUse", "session_id": "read-only-inject", "cwd": repo,
+        "tool_name": "Read", "tool_input": {"file_path": "source.txt"},
+        "tool_response": {"content": "observed"}}))
+
+
 def _learn_source_knowledge(tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin import sidecall
     source = Path(repo) / "source.txt"
