@@ -41,6 +41,7 @@ hook process; Claude Code otherwise. Each plugin hook file except Claude Code's 
 `--host` explicitly, so detection is the fallback rather than the rule.
 """
 import json
+import ntpath
 import os
 import re
 import shlex
@@ -54,6 +55,10 @@ _EXIT_RE = re.compile(r"(?im)^\s*(?:exit code|process exited with code)[:\s]+(-?
 # Copilot appends this line to every shell result.
 _COPILOT_EXIT_RE = re.compile(r"<shellId: [^>]*?completed with exit code (-?\d+)>")
 _PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File:\s*(.+?)\s*$", re.M)
+_PATH_PREFIX = r"(?:[A-Za-z]:[\\/]|/|\.\.?/|[\w.-]+/)"
+_EXPLICIT_PATH_RE = re.compile(
+    rf'''(?<![\w:/.-])(?:"({_PATH_PREFIX}[^"\n]+)"|'({_PATH_PREFIX}[^'\n]+)'|'''
+    rf'''({_PATH_PREFIX}[\w.\\/~-]+))''')
 RESULT_CAP = 20000      # characters of a tool result the guard folds (errors live early)
 # Notices a host shows as progress lines ahead of the hook's JSON (Copilot); `hook.main` writes
 # them and removes the key, so it never reaches an agent as an output field.
@@ -150,23 +155,34 @@ class Host:
         search that shows three lines of a file names as much as a full read; the Contract
         check at injection time, not this trigger, covers the stale card that can follow.
 
-        A failed call names nothing. The one mention whose location the seam knows without
-        parsing is a file-reading tool's (`Read`, `read`, `view`) own path: outside the
-        workspace, that mention is ignored and the call names nothing.
+        A failed call names nothing. Structured paths and simple explicit paths in text are
+        checked against the workspace; shell expressions are not interpreted.
         """
         from ..knowledge.stage import match_strength
-        name, args, _text, _code = self.tool_call(p)
+        name, args, _text, code = self.tool_call(p)
         response = p.get("tool_response") or p.get("tool_result")
-        if isinstance(response, dict) and (response.get("isError") or response.get("is_error")):
+        if (code is not None and code != 0) or (
+                isinstance(response, dict) and (response.get("isError") or response.get("is_error"))):
             return []
-        if name in ("Read", "read", "view"):
-            path = args.get("file_path") or args.get("path")
-            if isinstance(path, str) and path:
+        def outside(path):
+            try:
+                if os.name != "nt" and ntpath.splitdrive(path)[0]:
+                    return True
+                workspace = os.path.realpath(root)
                 full = os.path.realpath(os.path.join(cwd, path))
-                rel = os.path.relpath(full, os.path.realpath(root))
-                if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
-                    return []
-        text = " ".join(str(v) for v in args.values() if isinstance(v, str))
+                return os.path.commonpath((workspace, full)) != workspace
+            except (ValueError, OSError):
+                return True
+
+        path = args.get("file_path") or args.get("path")
+        if isinstance(path, str) and path and outside(path):
+            return []
+        text = " ".join(str(v) for v in args.values() if isinstance(v, str)).replace("\\", "/")
+        # Mask only clear paths, so a separate workspace signal in the same call remains
+        # eligible. Dynamic shell expressions, expansions and changed directories are unknown.
+        text = _EXPLICIT_PATH_RE.sub(
+            lambda m: " " if outside(next(g for g in m.groups() if g is not None)) else m.group(),
+            text)
         named = {}
         for signal, file in signals:
             strength = match_strength(text, signal)

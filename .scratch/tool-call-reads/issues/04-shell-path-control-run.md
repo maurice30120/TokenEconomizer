@@ -7,11 +7,12 @@
 **Status:** ready-for-agent
 
 - [ ] Both sessions run in the campaign harness with the same frozen sources, model and probe as the 27 November campaign, and their artifacts land under it
-- [ ] For the knowledge arm, the injections are read from the event log and each one is named with its trigger, its signal and the call that caused it
-- [ ] The report says plainly whether a card arrived on the shell path, with the trace line that proves it, or that none arrived and why
-- [ ] Token totals of both arms are reported beside the earlier pairs, and the report states whether the comparison is usable or not
+- [x] For the knowledge arm, the injections are read from the event log and each one is named with its trigger, its signal and the call that caused it
+- [x] The report says plainly whether a card arrived on the shell path, with the trace line that proves it, or that none arrived and why
+- [x] Token totals of both arms are reported beside the earlier pairs, and the report states whether the comparison is usable or not
 - [ ] Paid model calls are counted, and no source, Tour or campaign artifact is overwritten
 
 ## Comments
 
 - 2026-11-27: the closing loop of `.scratch/tool-call-reads/`. The earlier campaign measured shell-only exploration twice (runs 01 and 07) and both arms were blind to Knowledge on that path: 13 injections in total, 10 at session start, 3 after a `read`, none after a `bash` call. This ticket is the only one that spends model budget; the three before it are verifiable offline plus a live session with a stub-free provider.
+- 2026-11-27: both arms ran and the campaign report records the four Knowledge events, trace, token totals and 42 model responses. Two tool-triggered cards followed one bash call. The Knowledge Tour was created but the harness timed out; three skill references were read with `read`. Frozen-source identity and absence of any overwritten artifact could not be independently verified, so the first and last checks remain open. No repeat paid run was made.

@@ -325,23 +325,28 @@ class Knowledge(Distiller):
                 out.append(((-fact.firing_rate(), order), fact))
         return [(fact, path) for _key, fact in sorted(out, key=lambda o: o[0])]
 
-    def selection(self, task=None, max_facts=4, max_tokens=150, given=None, read=None):
+    def selection(self, task=None, max_facts=4, max_tokens=150, given=None, read=None, reads=None):
         """What `render` puts in context: its text ("" when nothing fits) and the `(fact, signal)`
         pairs that fit the budget, ranked before the cut: those a request shares a signal with,
-        or, with `read`, those covering that file. `given`, when a list, holds the ids already
+        or, with `read` or ordered `reads`, those covering those files. `given`, when a list, holds the ids already
         injected: those are left out, and the ids chosen here are appended to it (the caller's
         list is mutated)."""
-        chosen, lines = [], []
-        for fact, signal in (self.covering(read) if read is not None else self.relevant(task)):
+        chosen, lines, seen = [], [], set(given or ())
+        if reads is not None:
+            candidates = (item for path in reads for item in self.covering(path))
+        else:
+            candidates = self.covering(read) if read is not None else self.relevant(task)
+        for fact, signal in candidates:
             if len(lines) >= max_facts:
                 break
-            if given is not None and fact.id in given:
+            if fact.id in seen:
                 continue
             line = self._card_line(fact)
             if knowledge_tokens(knowledge_block([*lines, line])) > max_tokens:
                 continue
             lines.append(line)
             chosen.append((fact, signal))
+            seen.add(fact.id)
             if given is not None:
                 given.append(fact.id)
         return knowledge_block(lines), chosen

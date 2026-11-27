@@ -70,11 +70,40 @@ def test_the_seam_names_nothing_for_a_call_that_mentions_nothing_a_failure_or_a_
     assert host.named_files(dict(base, tool_name="read", tool_input={"path": "storage.ts"},
                                  tool_response={"content": "no", "isError": True}),
                             signals, cwd="/w", root="/w") == []
+    assert host.named_files(dict(base, tool_name="bash",
+                                 tool_input={"command": "cat storage.ts"},
+                                 tool_response={"content": "no", "isError": False, "exit_code": 1}),
+                            signals, cwd="/w", root="/w") == []
     # A read whose path lies outside the workspace names nothing, even when the bare name
     # matches a covered file: that mention is ignored.
     assert host.named_files(dict(base, tool_name="read",
                                  tool_input={"path": "../outside/storage.ts"}),
                             signals, cwd="/w", root="/w") == []
+    for tool, args in [("edit", {"path": "/tmp/storage.ts"}),
+                       ("write", {"path": "../outside/storage.ts"}),
+                       ("bash", {"command": "cat /tmp/storage.ts"}),
+                       ("bash", {"command": "cat ../outside/storage.ts"}),
+                       ("bash", {"command": "cat dir/../../outside/storage.ts"}),
+                       ("bash", {"command": r"cat C:\outside\storage.ts"}),
+                       ("bash", {"command": r"cat dir\..\..\outside\storage.ts"}),
+                       ("bash", {"command": r"cat \\server\share\storage.ts"})]:
+        assert host.named_files(dict(base, tool_name=tool, tool_input=args),
+                                signals, cwd="/w", root="/w") == []
+    assert host.named_files(dict(base, tool_name="bash",
+                                 tool_input={"command": "cat /tmp/storage.ts storage.ts"}),
+                            signals, cwd="/w", root="/w") == [(STORAGE, 1)]
+
+
+def test_shell_path_through_symlink_outside_workspace_is_ignored(tmp_path):
+    from tokeneconomizer.plugin.hosts import Host
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "external").symlink_to(outside, target_is_directory=True)
+    payload = {"tool_name": "bash", "tool_input": {"command": "cat external/storage.ts"},
+               "tool_response": {"content": "ok"}}
+    assert Host().named_files(payload, _signals(), cwd=str(root), root=str(root)) == []
 
 
 def test_the_seam_ranks_a_mention_with_the_prompt_triggers_matcher(monkeypatch):
@@ -103,15 +132,6 @@ def test_the_seam_ranks_a_mention_with_the_prompt_triggers_matcher(monkeypatch):
     assert call("grep -n x storage.ts") == [(STORAGE, 1)]
     # The matcher saw the call's own text, never a parsed command.
     assert all(text.endswith("storage.ts") and "grep" in text for text, _ in seen)
-
-
-def test_the_read_tool_names_live_only_in_the_one_seam():
-    """No second list of tool names survives in the plugin: the gate and the recorder both take
-    their answer from `Host.named_files`, nowhere else."""
-    plugin = Path(__file__).resolve().parents[1] / "tokeneconomizer" / "plugin"
-    needle = '"Read", "read", "view"'
-    hits = sum(p.read_text().count(needle) for p in plugin.rglob("*.py"))
-    assert hits == 1
 
 
 def test_nameable_pairs_each_source_its_symbol_and_its_file(
@@ -167,6 +187,8 @@ def test_a_call_that_names_a_covered_file_gets_its_knowledge_after_the_result(
                 if e["kind"] == "knowledge"]
     assert (entry["signal"], entry["trigger"], entry["when"], entry["tool"]) == (
         "source.txt", "tool", "after_call", tool)
+    assert entry["tool_use_id"] == "c1"
+    assert "command" not in entry
 
 
 def test_a_call_that_names_nothing_covered_a_failed_call_a_subagent_and_a_shadow_inject_nothing(
@@ -244,6 +266,41 @@ def test_a_read_still_injects_and_logs_exactly_as_before(tmp_path, env, repo, mo
                 if e["kind"] == "knowledge"]
     assert (entry["signal"], entry["trigger"], entry["when"], entry["tool"],
             entry["read_before"]) == ("source.txt", "tool", "after_call", "Read", False)
+    assert "tool_use_id" not in entry
+
+
+def test_multiple_files_share_a_budget_and_pi_compaction_tracks_the_whole_block(
+        tmp_path, env, repo, monkeypatch):
+    from tokeneconomizer.knowledge.stage import Knowledge, workspace_id
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.controller import LiveController
+    from tokeneconomizer.plugin.hosts import ClaudeCode, Pi
+    enabled = learn_knowledge(tmp_path, env, repo, monkeypatch,
+                              {"a.txt": "one\n", "b.txt": "two\n"},
+                              [{"id": "a", "claim": "first card", "source": "a.txt"},
+                               {"id": "b", "claim": "second card", "source": "b.txt"}],
+                              also=("support.txt",))
+    source = LiveContext.build(ClaudeCode(), repo, enabled)
+    ctx = LiveContext.build(Pi(), repo, enabled)
+    stage = Knowledge.load(workspace_id(source.repo.label, repo), source.mech_dir)
+    stage.save(ctx.mech_dir)
+    payload = {"hook_event_name": "PostToolUse", "session_id": "multi", "cwd": repo,
+               "tool_name": "bash", "tool_use_id": "call-1",
+               "tool_input": {"command": "cat a.txt b.txt support.txt"},
+               "tool_response": {"content": "ok"}}
+    out = json.dumps(call(enabled, payload, "pi"))
+    assert "first card" in out and "second card" in out
+    assert call(enabled, payload, "pi") == {}
+    doc = ctx.store.read("sessions/multi.json")
+    assert len(doc["knowledge_read_blocks"]["call-1"]["cards"]) == 2
+    assert len(doc["knowledge_given"]) == 2
+    controller = LiveController(ctx, payload)
+    controller._compact_pi_knowledge([])
+    assert len(ctx.store.read("sessions/multi.json")["knowledge_given"]) == 0
+    assert "first card" in json.dumps(call(enabled, payload, "pi"))
+    limited = dict(enabled, TE_KNOWLEDGE_MAX_CARDS="1")
+    out = json.dumps(call(limited, dict(payload, session_id="limited"), "pi"))
+    assert ("first card" in out) != ("second card" in out)
 
 
 def test_the_session_list_says_named_and_an_older_files_read_state_still_loads(

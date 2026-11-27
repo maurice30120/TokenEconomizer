@@ -162,7 +162,8 @@ stale card that can follow. The same once-per-session memory (`knowledge_given`)
 budget, proof, lifecycle and forgotten gates apply. A Knowledge already given in the context
 is skipped. When a call names several covered files, the strongest mention comes first (a
 symbol outranks a path, which outranks a bare name, as for the prompt trigger), and the
-covering Knowledge of the strongest named file is what the trigger injects. A subagent's call,
+covering Knowledge of each named file is considered in that order under the shared budget.
+Cards covering several files are given at most once. A subagent's call,
 a failed call, a shadow run and a replayed (queued) hook inject nothing.
 
 **The tool trigger cannot save its own call.** It injects only after the tool result
@@ -171,8 +172,9 @@ The session state remembers the files the session named (`files_named`, emptied 
 `knowledge_given`), so the log says when the file had been named earlier in the session
 (`read_before`): then the Knowledge came too late for that call as well. The files are
 remembered whenever the host reports the call, also where it cannot inject after one. A
-mention outside the workspace is ignored: the one mention whose location the hook knows
-without parsing, a file-reading tool's own path, resolves against the workspace first. A card
+structured path outside the workspace is ignored. Simple explicit absolute and relative paths
+in call text outside the workspace are masked before matching; shell expressions, expansions,
+and changes of directory are not interpreted, so ambiguous mentions may still match. A card
 already given in the session is not given again, and the shared card and token budget — the
 startup share included — is the only cap.
 
@@ -206,9 +208,9 @@ Each Knowledge actually injected is logged, one line per Knowledge, in the repos
 `events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
 `knowledge_id`, `signal` (the symbol or file the prompt or the call named), `trigger`
 (`"startup"`, `"prompt"` or `"tool"`), plus the usual `at`, `session_id` and `shadow`. A
-tool-call trigger adds `tool` (the tool that named the file — `read` for a full read, `bash`
-for a search — so a reader of the log tells the two apart without guessing) and `when`
-(`"after_call"`: the block lands after the tool result, too late to credit that call). The
+tool-call trigger adds `tool`, `tool_use_id` when supplied by the host, and `when`
+(`"after_call"`: the block lands after the tool result, too late to credit that call). It does
+not record or classify the command; `bash` alone cannot distinguish a read from a search. The
 prompt and tool triggers add `read_before`: on a tool call, the file had been named earlier in
 the session; on a prompt, one of the Knowledge's own files had been. Nothing is logged when nothing is injected, and
 forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind; the ledger has no

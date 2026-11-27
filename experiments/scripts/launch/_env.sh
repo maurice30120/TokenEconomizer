@@ -357,7 +357,7 @@ te_copilot_model_unserved() {
 #                              it just cannot control reasoning effort, and the rows record
 #                              effort: null so nobody later assumes it was held fixed.
 te_check_copilot_model() {
-  local model="$1" effort="$2" bin out
+  local model="$1" effort="$2" bin out probe_status
   # 'auto' (the router) never takes an effort level; the runner already records null.
   [[ -z "$model" || "$model" == "auto" ]] && return 0
   te_dryrun_skips_billed "copilot model/effort" && return 0
@@ -369,11 +369,25 @@ te_check_copilot_model() {
   bin="${COPILOT_HOST_BIN:-$HOME/.local/bin/copilot}"
   [[ -x "$bin" ]] || bin="$(command -v copilot || true)"
   [[ -n "$bin" ]] || return 0                # te_check_copilot_auth already reported this
+  if ! command -v timeout >/dev/null 2>&1; then
+    echo "[env] !! cannot verify copilot model: timeout command is unavailable" >&2
+    return 2
+  fi
+  probe_status=0
   out="$(timeout 120 "$bin" -p "ok" --no-color --log-level none \
-           --model "$model" ${effort:+--effort "$effort"} 2>&1)"
+           --model "$model" ${effort:+--effort "$effort"} 2>&1)" || probe_status=$?
+  if (( probe_status >= 124 && probe_status <= 127 )); then
+    echo "[env] !! cannot verify copilot model: probe failed or timed out (exit $probe_status)" >&2
+    return 2
+  fi
   # Before the model verdict: a refused probe says nothing about the model, and reading it
   # as "serves" would put a spent quota on the run banner as all-green.
   te_copilot_refused_die "$out" "model"
+  if (( probe_status != 0 )) && ! te_copilot_model_unserved "$out" &&
+     ! printf '%s' "$out" | grep -qi "does not support reasoning effort"; then
+    echo "[env] !! cannot verify copilot model: probe failed (exit $probe_status)" >&2
+    return 2
+  fi
   # Two "not served" shapes, one per billing path. The subscription says "is not
   # available"; a BYOK provider says "Model 'x' not found on provider at <url> (HTTP 404)".
   # Keying on the first alone would let a BYOK lane print `serves; effort accepted` for an
@@ -391,9 +405,19 @@ te_check_copilot_model() {
       alt=""
     fi
     if [[ -n "$alt" ]]; then
+      probe_status=0
       out2="$(timeout 120 "$bin" -p "ok" --no-color --log-level none \
-                --model "$alt" ${effort:+--effort "$effort"} 2>&1)"
+                --model "$alt" ${effort:+--effort "$effort"} 2>&1)" || probe_status=$?
+      if (( probe_status >= 124 && probe_status <= 127 )); then
+        echo "[env] !! cannot verify copilot model: probe failed or timed out (exit $probe_status)" >&2
+        return 2
+      fi
       te_copilot_refused_die "$out2" "model"
+      if (( probe_status != 0 )) && ! te_copilot_model_unserved "$out2" &&
+         ! printf '%s' "$out2" | grep -qi "does not support reasoning effort"; then
+        echo "[env] !! cannot verify copilot model: probe failed (exit $probe_status)" >&2
+        return 2
+      fi
       if ! te_copilot_model_unserved "$out2"; then
         echo "[env] !! copilot does not serve '$model' but DOES serve '$alt' -- the same model," >&2
         echo "[env] !! other separator. Using '$alt' for this lane (tree tag $(te_model_tag "$model")" >&2

@@ -109,7 +109,41 @@ def stub_copilot(tmp_path):
     bin_.chmod(bin_.stat().st_mode | stat.S_IEXEC)
     log = tmp_path / "asked.log"
     log.write_text("")
-    return {"COPILOT_HOST_BIN": str(bin_), "STUB_LOG": str(log)}, log
+    timeout = tmp_path / "timeout"
+    timeout.write_text('#!/usr/bin/env bash\nshift\nexec "$@"\n')
+    timeout.chmod(timeout.stat().st_mode | stat.S_IEXEC)
+    return {"COPILOT_HOST_BIN": str(bin_), "STUB_LOG": str(log),
+            "PATH": str(tmp_path) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")}, log
+
+
+def test_copilot_model_check_refuses_a_timed_out_probe(stub_copilot):
+    env, log = stub_copilot
+    timeout = log.parent / "timeout"
+    timeout.write_text("#!/usr/bin/env bash\nexit 124\n")
+    p = _sh('te_check_copilot_model claude-sonnet-5 high', env)
+    assert p.returncode == 2
+    assert "timed out" in p.stderr
+    assert "serves" not in p.stdout
+
+
+def test_copilot_model_check_refuses_an_unknown_probe_failure(stub_copilot):
+    env, log = stub_copilot
+    timeout = log.parent / "timeout"
+    timeout.write_text("#!/usr/bin/env bash\necho 'network failed'\nexit 1\n")
+    p = _sh('te_check_copilot_model claude-sonnet-5 high', env)
+    assert p.returncode == 2
+    assert "probe failed" in p.stderr
+    assert "serves" not in p.stdout
+
+
+def test_copilot_model_check_refuses_a_timed_out_fallback(stub_copilot):
+    env, log = stub_copilot
+    timeout = log.parent / "timeout"
+    timeout.write_text('#!/usr/bin/env bash\nshift\ncase "$*" in *claude-opus-4.8*) exit 124;; esac\nexec "$@"\n')
+    p = _sh('te_check_copilot_model claude-opus-4-8 high', env)
+    assert p.returncode == 2
+    assert "timed out" in p.stderr
+    assert "serves;" not in p.stdout
 
 
 def test_copilot_model_check_switches_to_the_cli_spelling(stub_copilot):

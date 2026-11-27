@@ -409,7 +409,7 @@ class LiveController:
                                            **match)
             for fact, signal in chosen:
                 self._log("knowledge", knowledge_id=fact.id, signal=signal, trigger=trigger,
-                          **(extra(stage, fact) if extra else {}))
+                          **(extra(stage, fact, signal) if extra else {}))
             if text:
                 cost = knowledge_tokens(text)
                 s["knowledge_given"] = given
@@ -435,7 +435,7 @@ class LiveController:
         try:
             return self._inject_knowledge(
                 s, "prompt", task=prompt,
-                extra=lambda stage, fact: {
+                extra=lambda stage, fact, signal: {
                     "read_before": any(f in named for f in stage.files(fact))})
         except Exception:
             self._record_error()
@@ -587,7 +587,7 @@ class LiveController:
 
     def _knowledge_from_tool(self):
         """Remember the files the call named (`files_named`), and where the host allows it give
-        the Knowledge covering the strongest one, logged with the file as its signal, the tool
+        the Knowledge covering them in mention order, logged with the file as its signal, the tool
         that named it, `after_call` and whether the file had been named earlier in the session.
         {} when none is given; a failure leaves the output as it would be without Knowledge."""
         try:
@@ -596,11 +596,9 @@ class LiveController:
                                           root=self.ctx.repo.root)
             if not files:
                 return {}
-            rel = files[0][0]
             tool, _args, _text, _code = self.host.tool_call(self.p)
             s = self._session()
             read = self._named_files(s)
-            read_before = rel in read
             named = [path for path, _strength in files if path not in read]
             if named or s.get("files_read") is not None:
                 s["files_named"] = (read + named)[-KNOWLEDGE_NAMED:]
@@ -608,9 +606,11 @@ class LiveController:
             block = ""
             if self.knowledge_on_tool() and not self.replaying:
                 block = self._inject_knowledge(
-                    s, "tool", read=rel,
-                    extra=lambda stage, fact: {"when": "after_call",
-                                               "read_before": read_before, "tool": tool})
+                    s, "tool", reads=[path for path, _strength in files],
+                    extra=lambda stage, fact, signal: {
+                        "when": "after_call", "read_before": signal in read, "tool": tool,
+                        **({"tool_use_id": self.p["tool_use_id"]}
+                           if self.p.get("tool_use_id") else {})})
             self._save(s)
             return self.host.context("PostToolUse", block) if block else {}
         except Exception:
