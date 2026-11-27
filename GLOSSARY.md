@@ -14,6 +14,10 @@ Knowledge supported by evidence for each of its source files or symbols.
 **Knowledge Evidence**:
 An observation supporting Knowledge whose validity establishes that the relevant code still matches the observed version, but does not establish that the finding is correct.
 
+**Knowledge Contract**:
+The evidence that determines whether a **Knowledge** entry remains valid in the current checkout.
+Only entries with a valid **Knowledge Contract** qualify for semantic search.
+
 **Knowledge Observation**:
 What a session actually read of a source: the whole file for a complete read, the returned lines for a partial one. Its scope is recorded; the part that was not read is never presented as observed.
 
