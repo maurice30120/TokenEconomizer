@@ -15,9 +15,9 @@ Every retained observation has a stable `ref`; a Knowledge proposal cites refs, 
 
 Everything here is deterministic: no filesystem order, no set iteration, no wall clock.
 """
-from ..trace.claude import claude_prompts
+from ..trace.claude import claude_prompts, claude_replies
 from ..trace.copilot import copilot_prompts
-from ..trace.pi import pi_prompts
+from ..trace.pi import pi_prompts, pi_replies
 from .observation import reads, records
 from .proof import symbol_proof
 
@@ -32,20 +32,33 @@ def session_sequences(transcript, root, iid, host="claude", captures=None):
 
     `transcript` is what the agent logged and `root` the workspace the reads are proved against;
     `captures` is that session's Pi capture directory, if any. A read belongs to the sequence its
-    own user message opened -- one before the first message belongs to none and is dropped.
+    own user message opened -- one before the first message belongs to none and is dropped. A
+    comment belongs to the reads of the call series it followed: see `_attach`.
     """
     events = records(transcript, host)
     prompts = sorted(_prompts(events, host), key=lambda prompt: prompt[0])
     found = reads(events, root, host=host, captures=captures)
+    replies = sorted(_replies(events, host), key=lambda reply: reply[0])
     sequences = [{"id": f"{iid}/{n}", "session": iid, "index": n, "emitted": emitted,
                   "message": _context(text), "units": []}
                  for n, (_position, emitted, text) in enumerate(prompts)]
-    opened, upcoming = -1, 0
-    for position, read in sorted(found, key=lambda pair: pair[0]):
+    stream = ([(position, "prompt", None) for position, _emitted, _text in prompts]
+              + [(position, "reply", (calls, text)) for position, calls, text in replies]
+              + [(position, "read", read) for position, read in found])
+    opened, upcoming, series = -1, 0, []
+    for position, kind, payload in sorted(stream, key=lambda item: item[0]):
         while upcoming < len(prompts) and prompts[upcoming][0] < position:
             opened, upcoming = upcoming, upcoming + 1
-        if opened >= 0:
-            _read_into(sequences[opened], read)
+        if kind == "prompt":
+            series = []
+        elif opened >= 0 and kind == "reply":
+            calls, text = payload
+            if calls:
+                series = []
+            elif text.strip() and series:
+                _attach(sequences[opened], position, text, series)
+        elif opened >= 0:
+            series.append(_read_into(sequences[opened], payload))
     for sequence in sequences:
         sequence["units"] = _retain(sequence, sequence["units"])
     return sequences
@@ -53,9 +66,9 @@ def session_sequences(transcript, root, iid, host="claude", captures=None):
 
 def unit_chars(unit):
     """What one retained unit costs its sequence's budget: the code it kept, the path and ref it
-    names, and the agent's comments once they are attached to it (#345)."""
+    names, and the comments the read series that returned it was followed by."""
     return (len(unit["path"]) + len(unit["ref"]) + len(unit.get("content") or "")
-            + sum(len(comment) for comment in unit.get("comments") or ()))
+            + sum(len(comment["text"]) for comment in unit.get("comments") or ()))
 
 
 def citable(unit):
@@ -81,6 +94,14 @@ def _prompts(events, host):
     return claude_prompts(events) if host == "claude" else []
 
 
+def _replies(events, host):
+    """The messages the agent itself wrote, in log order, as `(position, calls, text)`. Copilot
+    has no assistant-message reader, so it reports none; see `knowledge/README.md`."""
+    if host == "pi":
+        return pi_replies(events)
+    return claude_replies(events) if host == "claude" else []
+
+
 def _context(text):
     """A user message as the digest keeps it: whitespace collapsed and bounded."""
     text = " ".join((text or "").split())
@@ -97,15 +118,32 @@ def _identity(unit):
 
 
 def _read_into(sequence, read):
-    """Add one read to a sequence as its own unit, unless the sequence already made exactly that
-    read. Local deduplication goes no further: a unit carries its own read's text, version and
-    symbols, so what it proves is what it showed. Ranges of one file across a sequence are
-    merged by #344, not here."""
+    """Add one read to a sequence as its own unit and return that unit's index, or the index of
+    the unit it repeats. Local deduplication goes no further: a unit carries its own read's text,
+    version and symbols, so what it proves is what it showed. Ranges of one file across a
+    sequence are merged by #344, not here."""
     unit = {key: value for key, value in read["record"].items() if key != "excerpt"}
     unit["path"] = read["path"]
-    if any(_identity(unit) == _identity(other) for other in sequence["units"]):
-        return
+    for index, other in enumerate(sequence["units"]):
+        if _identity(unit) == _identity(other):
+            return index
     sequence["units"].append(unit)
+    return len(sequence["units"]) - 1
+
+
+def _attach(sequence, position, text, units):
+    """Attach one visible comment to the reads its call series returned: `units` are their
+    indices in the sequence's read order, and every one is a ref the comment is about. The last
+    read of the series owns the record, so the budget counts the text once, and the sequence
+    keeps the order the agent wrote in."""
+    refs = []
+    for index in units:
+        ref = f"{sequence['id']}.{index}"
+        if ref not in refs:
+            refs.append(ref)
+    owner = sequence["units"][units[-1]]
+    owner.setdefault("comments", []).append(
+        {"text": text, "refs": refs, "position": position})
 
 
 def _retain(sequence, units):
@@ -146,6 +184,33 @@ def _observation(unit):
     return shown
 
 
+def _comments(sequences):
+    """The agent's own comments as the proposer reads them: what it wrote, the refs of the
+    retained observations it is about, how many times it wrote exactly that, and where. A
+    comment about no citable retained observation cannot be shown -- its refs would point at
+    text the digest does not hold -- so it is left out, and one written twice in a row is one
+    entry with two occurrences. Nothing a comment says is a proof."""
+    entries, found = [], {}
+    for sequence in sequences:
+        shown = [unit["ref"] for unit in sequence["units"] if citable(unit)]
+        for unit in sequence["units"]:
+            for comment in unit.get("comments") or ():
+                refs = [ref for ref in comment["refs"] if ref in shown]
+                if not refs:
+                    continue
+                entry = found.get(comment["text"])
+                if entry is None:
+                    entry = found[comment["text"]] = {"text": comment["text"], "refs": [],
+                                                       "occurrences": 0, "provenance": []}
+                    entries.append(entry)
+                entry["occurrences"] += 1
+                entry["refs"] += [ref for ref in refs if ref not in entry["refs"]]
+                entry["provenance"].append({"session": sequence["session"],
+                                            "sequence": sequence["id"],
+                                            "position": comment["position"]})
+    return entries
+
+
 class Digest:
     """The rolling window of work sequences, kept with the Knowledge state."""
 
@@ -165,13 +230,16 @@ class Digest:
         return any(citable(unit) for sequence in self.sequences for unit in sequence["units"])
 
     def view(self):
-        """What the proposer sees: the sequences (id, session, bounded message, ordered refs) and
-        the retained observations they cite, oldest first."""
+        """What the proposer sees: the sequences (id, session, bounded message, ordered refs),
+        the retained observations they cite, and the agent's own comments next to the refs they
+        are about. Identical comments are one entry, oldest first, with their occurrences and
+        their provenance (session, sequence, position); nothing here is proof."""
         return {"sequences": [{"id": s["id"], "session": s["session"], "message": s["message"],
                                "refs": [unit["ref"] for unit in s["units"] if citable(unit)]}
                               for s in self.sequences],
                 "excerpts": [_observation(unit) for s in self.sequences for unit in s["units"]
-                             if citable(unit)]}
+                             if citable(unit)],
+                "comments": _comments(self.sequences)}
 
     def evidence(self, entry, root):
         """Resolve one proposal entry (`{ref, symbol?}`) against the retained digest: the contract

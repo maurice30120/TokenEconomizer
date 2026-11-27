@@ -563,3 +563,102 @@ def test_only_an_identical_repeat_of_a_read_collapses(tmp_path):
     stage.update(path, iid="s0", captures=captures)
     # The repeat of line 2 is one unit; the whole-file read that followed is another.
     assert [e["ref"] for e in pi_digest(stage)["excerpts"]] == ["s0/0.0", "s0/0.1"]
+
+
+# ---- the agent's own comments, attached to the reads they followed -------------------------
+def pi_comment(text):
+    """An assistant message that only writes, as Pi logs it: no tool call, so what it says
+    belongs to the reads of the series before it."""
+    return {"role": "assistant", "content": [{"type": "text", "text": text}]}
+
+
+def comments(stage):
+    """The comments the digest shows the proposer: text, the refs each is about, occurrences."""
+    return [(c["text"], c["refs"], c["occurrences"]) for c in pi_digest(stage)["comments"]]
+
+
+def test_a_pi_comment_after_a_read_attaches_to_that_reads_ref(tmp_path):
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.py"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+        ("2026-11-24T10:00:02.000Z", pi_comment("alpha returns one"), []),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    assert comments(stage) == [("alpha returns one", ["s0/0.0"], 1)]
+
+
+def test_a_pi_comment_written_with_the_next_tool_call_does_not_attach_backwards(tmp_path):
+    """The window closes at the next call: the text an assistant writes beside that call belongs
+    to the work it starts, and a comment after that call's series attaches to nothing."""
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.py"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+        ("2026-11-24T10:00:02.000Z", pi_comment("alpha returns one"), []),
+        ("2026-11-24T10:00:03.000Z",
+         {"role": "assistant", "content": [
+             {"type": "text", "text": "now I will run the tests"},
+             {"type": "toolCall", "id": "t", "name": "bash",
+              "arguments": {"command": "pytest"}}]}, []),
+        ("2026-11-24T10:00:04.000Z",
+         {"role": "toolResult", "toolCallId": "t", "toolName": "bash", "isError": False,
+          "content": [{"type": "text", "text": "passed"}]}, []),
+        ("2026-11-24T10:00:05.000Z", pi_comment("the tests pass"), []),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    assert comments(stage) == [("alpha returns one", ["s0/0.0"], 1)]
+
+
+def test_a_pi_comment_after_a_series_with_no_read_attaches_to_nothing(tmp_path):
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "run the tests"}]}, []),
+        ("2026-11-24T10:00:01.000Z",
+         {"role": "assistant", "content": [
+             {"type": "toolCall", "id": "t", "name": "bash",
+              "arguments": {"command": "pytest"}}]}, []),
+        ("2026-11-24T10:00:02.000Z",
+         {"role": "toolResult", "toolCallId": "t", "toolName": "bash", "isError": False,
+          "content": [{"type": "text", "text": "passed"}]}, []),
+        ("2026-11-24T10:00:03.000Z", pi_comment("the tests pass"), []),
+        ("2026-11-24T10:00:04.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    assert comments(stage) == []
+    assert [e["ref"] for e in pi_digest(stage)["excerpts"]] == ["s0/0.0"]
+
+
+def test_a_pi_user_message_ends_the_comment_window(tmp_path):
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.py"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+        ("2026-11-24T10:00:02.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "and now explain it"}]}, []),
+        ("2026-11-24T10:00:03.000Z", pi_comment("alpha returns one"), []),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    assert comments(stage) == []
+    assert [(s["id"], s["refs"]) for s in pi_digest(stage)["sequences"]] == [
+        ("s0/0", ["s0/0.0"]), ("s0/1", [])]
