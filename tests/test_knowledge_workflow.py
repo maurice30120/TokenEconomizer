@@ -698,6 +698,11 @@ def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
     assert "is enough" in prompts[0]
     assert "at least two distinct files" not in prompts[0]
     assert "Do not add flow, role or cite to a Knowledge" in prompts[0]
+    # The counts and the pairs read together are framed as signals: neither is proof.
+    assert "signals, not evidence" in prompts[0]
+    assert "say nothing about a functional relation" in prompts[0]
+    assert "is not proof" in prompts[0]
+    assert "cite the one you mean" in prompts[0]
 
 
 def symbol_less_partial_stage(tmp_path, sessions=2):
@@ -1181,3 +1186,84 @@ def test_a_repeated_complete_read_is_shown_and_counted_once(tmp_path):
                          "sources": [{"ref": "s0/0.1"}],
                          "detector": {"scope": "pytest", "confirm": "passed"}}) == (
         True, "admitted")
+
+
+def test_the_digest_counts_reads_work_sequences_and_sessions_separately(tmp_path):
+    """Reads, work sequences and sessions are three different numbers: a sequence that reads one
+    file twice counts one catalogue entry and two reads."""
+    (tmp_path / "a.txt").write_text("a observed\n")
+    (tmp_path / "b.txt").write_text("b observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read a.txt twice"),
+        *claude_read(tmp_path, "a.txt", 0), *claude_read(tmp_path, "a.txt", 1),
+        claude_prompt("now nothing", "2026-11-24T10:05:00.000Z")])
+    fold_events(stage, tmp_path, "s1", [
+        claude_prompt("read b.txt", "2026-11-24T10:10:00.000Z"),
+        *claude_read(tmp_path, "b.txt", 2)])
+    view = digest_view(stage)
+    assert view["signals"]["counts"] == {"reads": 3, "sequences": 3, "sessions": 2}
+    assert [(e["path"], e["counts"]) for e in view["excerpts"]] == [
+        ("a.txt", {"reads": 2, "sequences": 1, "sessions": 1}),
+        ("b.txt", {"reads": 1, "sequences": 1, "sessions": 1})]
+
+
+def test_co_occurrence_is_counted_per_sequence_and_admits_nothing(tmp_path):
+    """Pairs of catalogue paths read in one work sequence, with how many sequences show each
+    pair: a signal of converging exploration, never evidence."""
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text(f"{name} observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read a and b"),
+        *claude_read(tmp_path, "a.txt", 0), *claude_read(tmp_path, "b.txt", 1)])
+    fold_events(stage, tmp_path, "s1", [
+        claude_prompt("read a and b again", "2026-11-24T10:05:00.000Z"),
+        *claude_read(tmp_path, "a.txt", 2), *claude_read(tmp_path, "b.txt", 3)])
+    fold_events(stage, tmp_path, "s2", [
+        claude_prompt("read b and c", "2026-11-24T10:10:00.000Z"),
+        *claude_read(tmp_path, "b.txt", 4), *claude_read(tmp_path, "c.txt", 5)])
+    view = digest_view(stage)
+    assert view["signals"]["cooccurrence"] == [
+        {"paths": ["a.txt", "b.txt"], "sequences": 2},
+        {"paths": ["b.txt", "c.txt"], "sequences": 1}]
+    # The same digest, read twice, adds nothing and reorders nothing.
+    assert stage.digest.view()["cooccurrence"] == view["signals"]["cooccurrence"]
+    assert stage.digest.view()["counts"] == {"reads": 6, "sequences": 3, "sessions": 3}
+    # A pair is not a source: offering one instead of a ref is refused, and admits nothing.
+    base = {"id": "k", "claim": "a and b work together",
+            "detector": {"scope": "pytest", "confirm": "passed"}}
+    assert stage._admit(dict(base, sources=[{"paths": ["a.txt", "b.txt"]}])) == (
+        False, "invalid-source-or-content")
+    assert stage._admit(dict(base, sources=[{"ref": "a.txt+b.txt"}])) == (
+        False, "out-of-digest")
+    assert not stage.facts
+
+
+def test_the_catalogue_and_its_signals_come_back_identical_after_a_reload(tmp_path):
+    """Merged entries, their refs, the counts and the pairs are read from the saved state, so a
+    reload shows exactly the same digest."""
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text(f"{name} observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    for i in range(2):
+        fold_events(stage, tmp_path, f"s{i}", [
+            claude_prompt(f"read a.txt twice and b.txt ({i})",
+                          f"2026-11-24T10:0{i}:00.000Z"),
+            *claude_read(tmp_path, "a.txt", 0), *claude_read(tmp_path, "a.txt", 1),
+            *claude_read(tmp_path, "b.txt", 2)])
+    stage.save(tmp_path)
+    again = Knowledge.load("repo", tmp_path)
+    again.workspace = tmp_path
+    assert again.digest.state() == stage.digest.state()
+    assert again.digest.view() == stage.digest.view()
+    view = again.digest.view()
+    assert [(e["path"], e["refs"], e["counts"]) for e in view["excerpts"]] == [
+        ("a.txt", ["s0/0.0", "s0/0.1", "s1/0.0", "s1/0.1"],
+         {"reads": 4, "sequences": 2, "sessions": 2}),
+        ("b.txt", ["s0/0.2", "s1/0.2"], {"reads": 2, "sequences": 2, "sessions": 2})]
+    assert view["counts"] == {"reads": 6, "sequences": 2, "sessions": 2}
+    assert view["cooccurrence"] == [{"paths": ["a.txt", "b.txt"], "sequences": 2}]

@@ -21,13 +21,15 @@ def write_claude_transcript(path, calls):
 
 
 def knowledge_digest(prompt):
-    """The digest a Knowledge proposal prompt shows, parsed back out of its two labelled JSON
-    blocks: the work sequences the proposer may draw on, and the retained observations it cites
-    by ref (`tokeneconomizer.knowledge.stage.DIGEST_HEADER`/`EXCERPTS_HEADER`)."""
-    from tokeneconomizer.knowledge.stage import DIGEST_HEADER, EXCERPTS_HEADER
+    """The digest a Knowledge proposal prompt shows, parsed back out of its labelled JSON
+    blocks: the work sequences the proposer may draw on, the catalogue of retained observations
+    it cites by ref, and the counts and co-occurrence pairs it must treat as signals only
+    (`tokeneconomizer.knowledge.stage.DIGEST_HEADER`/`EXCERPTS_HEADER`/`SIGNALS_HEADER`)."""
+    from tokeneconomizer.knowledge.stage import DIGEST_HEADER, EXCERPTS_HEADER, SIGNALS_HEADER
     decoder = json.JSONDecoder()
     view = {}
-    for key, header in (("sequences", DIGEST_HEADER), ("excerpts", EXCERPTS_HEADER)):
+    for key, header in (("sequences", DIGEST_HEADER), ("excerpts", EXCERPTS_HEADER),
+                        ("signals", SIGNALS_HEADER)):
         view[key], _end = decoder.raw_decode(prompt[prompt.index(header) + len(header):])
     return view
 
