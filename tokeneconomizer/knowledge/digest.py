@@ -27,8 +27,8 @@ MESSAGE_CAP = 2_000  # characters of a user message kept as its sequence's conte
 VERSION_CHARS = 12   # how much of a version the proposer is shown
 
 
-def session_sequences(transcript, root, iid="", host="claude", captures=None):
-    """The work sequences of one finished session that can be evidence, oldest message first.
+def session_sequences(transcript, root, iid, host="claude", captures=None):
+    """The work sequences of one finished session, oldest message first.
 
     `transcript` is what the agent logged and `root` the workspace the reads are proved against;
     `captures` is that session's Pi capture directory, if any. A read belongs to the sequence its
@@ -47,7 +47,7 @@ def session_sequences(transcript, root, iid="", host="claude", captures=None):
         if opened >= 0:
             _read_into(sequences[opened], read)
     for sequence in sequences:
-        _retain(sequence, sequence.pop("units"))
+        sequence["units"] = _retain(sequence, sequence["units"])
     return sequences
 
 
@@ -109,10 +109,10 @@ def _read_into(sequence, read):
 
 
 def _retain(sequence, units):
-    """Keep the first units in read order while they fit the sequence's budget.
+    """The units a sequence keeps: the first ones in read order while they fit its budget.
 
-    The first unit that would push the sequence past `BUDGET` ends retention: it is dropped and
-    so is every later one, however small. A first unit already too large therefore leaves the
+    The first unit that would push the sequence past `BUDGET` ends retention, so it is dropped
+    and so is every later one, however small. A first unit already too large therefore leaves the
     sequence with no retained observation, and no sequence borrows from another's budget.
     """
     kept, used = [], len(sequence["message"])
@@ -123,7 +123,7 @@ def _retain(sequence, units):
             break
         used += size
         kept.append(retained)
-    sequence["units"] = kept
+    return kept
 
 
 def _order(sequence):
@@ -180,9 +180,10 @@ class Digest:
 
         A ref that no citable retained observation carries -- unknown, ambiguous, dropped by a
         sequence's budget, or never shown because no symbol its lines crossed could prove it --
-        is `out-of-digest`, so a fragment the proposer was not shown proves nothing. A partial read proves only a declaration its lines crossed, and
-        never falls back to the file (`partial-needs-symbol`, `symbol-not-observed`). The proof
-        is returned unverified: `Knowledge._admit` checks it again (`stale-proof`).
+        is `out-of-digest`, so a fragment the proposer was not shown proves nothing. A partial
+        read proves only a declaration its lines crossed and never falls back to the file
+        (`partial-needs-symbol`, `symbol-not-observed`). The proof is returned unverified:
+        `Knowledge._admit` checks it again (`stale-proof`).
         """
         units = [(sequence["session"], unit) for sequence in self.sequences
                  for unit in sequence["units"]
