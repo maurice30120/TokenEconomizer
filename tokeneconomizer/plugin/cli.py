@@ -18,6 +18,7 @@
                                       been idle long enough (the fold starts it, detached)
     te config show                    each mechanism on or off, its settings, the guard's thresholds
     te config set KEY=VALUE ...       e.g. `loopguard=off`, `microskills=on`,
+                                      `knowledge_injection=startup|tools|both`,
                                       `loopguard.min_turns=12` (this repository; `--global` for
                                       every repository)
     te config unset KEY ...           back to the next source down (the global file, then default)

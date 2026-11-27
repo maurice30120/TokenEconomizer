@@ -103,6 +103,24 @@ saved lifecycle; injection still requires a valid proof and an unretired lifecyc
 
 ## When Knowledge is injected
 
+Enable Knowledge with `te config set knowledge=on`, then choose its injection points:
+
+| Command | Delivery |
+| --- | --- |
+| `te config set knowledge_injection=startup` | Session start only, with the full Knowledge allowance. |
+| `te config set knowledge_injection=tools` | After matching tool calls only, with the full remaining allowance. |
+| `te config set knowledge_injection=both` | Session start and matching tool calls (default), sharing one allowance without duplicates. |
+
+`TE_KNOWLEDGE_INJECTION` accepts the same three values. `knowledge=off` disables all
+Knowledge injection independently of this choice. Settings are read on each hook; changing
+modes does not remove cards already in context or reset their allowance. Start a new session
+to compare modes from an empty context.
+
+Delivery remains limited by the host's capabilities: Pi and Copilot support both points.
+On hosts with the earlier prompt trigger, `both` preserves that trigger; `startup` and
+`tools` disable it. Selecting `startup` on a host without startup Knowledge support gives
+no Knowledge; it does not fall back to another trigger.
+
 On Pi and Copilot CLI, the session-start hook can give eligible Knowledge alongside native
 facts, ordered by firing rate and then registration order. Both hosts can also deliver Relevant
 Knowledge after a tool call names a covered file. Hosts that support the earlier prompt
@@ -114,10 +132,11 @@ A Knowledge card is the injection line the proposer wrote: one sentence about th
 The engine keeps the sources and their proofs out of the injected text.
 Knowledge has a total budget for the conversation context. Set `knowledge_max_cards` (default
 4), `knowledge_max_tokens` (default 300 estimated tokens) and `knowledge_startup_share`
-(default 0.5, from 0 to 1) via the regular `te config` settings. The startup share applies to
-both limits, rounded down. At 0, Knowledge only arrives after a tool call that names a covered
+(default 0.5, from 0 to 1) via the regular `te config` settings. In `both` mode the startup
+share applies to both limits, rounded down. At 0, Knowledge only arrives after a tool call that names a covered
 file, on Pi and Copilot. Unused startup capacity is available later. Native facts use their own
-budget. A map must fit in full.
+budget. `startup` uses the full allowance at startup regardless of the share; `tools` skips
+startup entirely. A map must fit in full.
 
 An already delivered card consumes its allowance only once while it remains in context.
 Duplicate start hooks for the same event are ignored for both native facts and Knowledge.
@@ -213,9 +232,11 @@ tool-call trigger adds `tool`, `tool_use_id` when supplied by the host, and `whe
 not record or classify the command; `bash` alone cannot distinguish a read from a search. The
 prompt and tool triggers add `read_before`: on a tool call, the file had been named earlier in
 the session; on a prompt, one of the Knowledge's own files had been. Nothing is logged when nothing is injected, and
-forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind; the ledger has no
-`injection` field for Knowledge, which belongs to the paid optimizer. The two places to look
-are `te microskills` for the stored Knowledge and this event log for what a session was given.
+forgotten, stale-proof or budget-dropped Knowledge never appears. New session ledger records
+include `knowledge.injected_cards` (unique card IDs) and `knowledge.injected_tokens` (estimated
+tokens delivered across injection blocks, including repeated delivery after context resets).
+These are not optimizer costs or a measure of tokens saved. Older records do not have these
+fields; use `events.jsonl` for their injection details and `te microskills` for stored Knowledge.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores

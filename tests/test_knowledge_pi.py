@@ -80,6 +80,12 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     assert counts == [(0, 0), (1, 1), (1, 1), (1, 1), (1, 1)]
     start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "next", "cwd": str(repo)}
     assert "Pi observation" in call(env, start, host="pi")["hookSpecificOutput"]["additionalContext"]
+    fid = next(iter(Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir).facts))
+    call(env, dict(start, hook_event_name="SessionEnd", reason="other",
+                   transcript_path=str(tmp_path / "s0.jsonl")), host="pi")
+    row = next(row for row in ctx.store.read_lines("ledger.jsonl") if row["session_id"] == "next")
+    assert row["knowledge"]["injected_cards"] == [fid]
+    assert row["knowledge"]["injected_tokens"] > 0
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
     assert call(env, payload, host="pi") == {}
     assert call(env, dict(payload, session_id="other", prompt="rename widget"), host="pi") == {}
@@ -90,6 +96,11 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
                 host="pi") == {}
     assert "Pi observation" in call(env, read, host="pi")["hookSpecificOutput"]["additionalContext"]
     assert call(env, read, host="pi") == {}
+    call(env, dict(read, hook_event_name="SessionEnd", reason="other",
+                   transcript_path=str(tmp_path / "s0.jsonl")), host="pi")
+    read_row = next(row for row in ctx.store.read_lines("ledger.jsonl") if row["session_id"] == "read")
+    assert read_row["knowledge"]["injected_cards"] == [fid]
+    assert read_row["knowledge"]["injected_tokens"] > 0
     from tokeneconomizer.plugin import cli
     fid = next(iter(Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir).facts))
     for key, value in env.items():

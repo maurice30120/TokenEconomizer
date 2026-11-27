@@ -38,7 +38,9 @@ person can tune by hand:
                                    manual share one allowance; a line that does not fit is
                                    left out whole);
   * knowledge_max_cards, knowledge_max_tokens -- total Knowledge allowance per conversation;
-  * knowledge_startup_share    -- fraction of both Knowledge limits available at startup (0–1);
+  * knowledge_injection        -- startup, tools or both (default);
+  * knowledge_startup_share    -- fraction of both Knowledge limits available at startup
+                                   in both mode (0–1);
   * microskills_propose_every   -- sessions between proposer runs;
   * toolprune_evidence          -- prompts a never-used tool must have stayed unused through,
                                    over at least toolprune_min_sessions sessions, before it is
@@ -195,6 +197,7 @@ def _threshold_name(key):
 class LiveConfig:
     enabled: bool = True
     knowledge: bool = False
+    knowledge_injection: str = "both"
     knowledge_max_cards: int = 4
     knowledge_max_tokens: int = 300
     knowledge_startup_share: float = 0.5
@@ -248,6 +251,7 @@ class LiveConfig:
     _CHOICES = {"mode": MODES, "microskills": MICROSKILLS, "toolprune": TOOLPRUNE,
                 "loopguard": LOOPGUARD, "repomap": REPOMAP, "loopguard_aggr": AGGR,
                 "local_model": LOCAL_MODELS,
+                "knowledge_injection": ("startup", "tools", "both"),
                 "vocabulary": ("auto", "generic", "python-git", "node-web"),
                 # Each CLI's own words (Claude Code 2.1.319, Codex 0.167.0); whether a model
                 # takes one is the CLI's to say.
@@ -362,6 +366,7 @@ class LiveConfig:
 
 # Environment variables, old names first so that a new name set alongside its old one wins.
 _ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow", "TE_KNOWLEDGE": "knowledge",
+        "TE_KNOWLEDGE_INJECTION": "knowledge_injection",
         "TE_KNOWLEDGE_MAX_CARDS": "knowledge_max_cards",
         "TE_KNOWLEDGE_MAX_TOKENS": "knowledge_max_tokens",
         "TE_KNOWLEDGE_STARTUP_SHARE": "knowledge_startup_share",

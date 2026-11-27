@@ -156,7 +156,7 @@ def test_a_prompt_that_may_carry_context_is_not_queued():
                                named_files=lambda p, signals=(), cwd="", root="": [("/r/a.py", 0)],
                                cwd=lambda p, env: "/r")
         c = SimpleNamespace(cfg=SimpleNamespace(repomap=repomap, knowledge=knowledge,
-                                               shadow=shadow),
+                                               shadow=shadow, knowledge_injection="both"),
                             host=host, p={"hook_event_name": "PostToolUse"},
                             ctx=SimpleNamespace(repo=SimpleNamespace(root="/r"), env={}))
         c.knowledge_on_prompt = MethodType(LiveController.knowledge_on_prompt, c)

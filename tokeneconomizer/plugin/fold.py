@@ -650,6 +650,11 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
                     workdir=workdir, prompts=prompts, imported=imported)
             record["injection"] = inj
             record["knowledge"] = knowledge
+            if not imported and sess.get("knowledge_injected_cards"):
+                if not isinstance(record["knowledge"], dict):
+                    record["knowledge"] = {}
+                record["knowledge"]["injected_cards"] = sess["knowledge_injected_cards"]
+                record["knowledge"]["injected_tokens"] = sess.get("knowledge_injected_tokens", 0)
             record["untool"] = unt
             if unt and unt.get("pending") and not imported:
                 schedule_pending(ctx)

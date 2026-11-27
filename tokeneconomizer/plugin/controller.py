@@ -336,6 +336,7 @@ class LiveController:
         """Does this prompt hook bring Knowledge? Only where its output reaches the model and
         can follow the conversation without rewriting its cached prefix."""
         return bool(self.cfg.knowledge and not self.cfg.shadow
+                    and self.cfg.knowledge_injection == "both"
                     and not self.host.knowledge_start_context
                     and self.host.prompt_context and self.host.prompt_knowledge)
 
@@ -363,7 +364,8 @@ class LiveController:
     def _knowledge_at_start(self, s, fresh):
         if self.replaying:
             return ""
-        enabled = self.cfg.knowledge and not self.cfg.shadow
+        enabled = (self.cfg.knowledge and not self.cfg.shadow
+                   and self.cfg.knowledge_injection in ("startup", "both"))
         try:
             if fresh:
                 return self._inject_knowledge(s, "startup") if enabled else ""
@@ -396,7 +398,8 @@ class LiveController:
         # Old sessions recorded IDs but not the token cost. Keep their deduplication and
         # conservatively wait for a context reset before giving more cards.
         tokens_used = s.get("knowledge_tokens", self.cfg.knowledge_max_tokens if given else 0)
-        share = self.cfg.knowledge_startup_share if trigger == "startup" else 1
+        share = (self.cfg.knowledge_startup_share
+                 if trigger == "startup" and self.cfg.knowledge_injection == "both" else 1)
         facts = int(self.cfg.knowledge_max_cards * share) - len(given)
         tokens = int(self.cfg.knowledge_max_tokens * share) - tokens_used
         if facts <= 0 or tokens <= 0:
@@ -412,6 +415,11 @@ class LiveController:
                           **(extra(stage, fact, signal) if extra else {}))
             if text:
                 cost = knowledge_tokens(text)
+                delivered = s.setdefault("knowledge_injected_cards", [])
+                for fact, _ in chosen:
+                    if fact.id not in delivered:
+                        delivered.append(fact.id)
+                s["knowledge_injected_tokens"] = s.get("knowledge_injected_tokens", 0) + cost
                 s["knowledge_given"] = given
                 s["knowledge_tokens"] = tokens_used + cost
                 if trigger == "startup":
@@ -566,7 +574,8 @@ class LiveController:
     def knowledge_on_tool(self):
         """Does this tool hook bring Knowledge? Only when the call names a covered file, on a
         host verified to put its context after the result without rewriting the cached prefix."""
-        return bool(not self.cfg.shadow and self.host.tool_context and self._reports_named())
+        return bool(not self.cfg.shadow and self.cfg.knowledge_injection in ("tools", "both")
+                    and self.host.tool_context and self._reports_named())
 
     def _reports_named(self):
         """Did the host report a tool call that names a Knowledge's file, whether or not it

@@ -19,8 +19,8 @@ def workspace_id(repo, workspace):
 SYMBOL, PATH, FILE_NAME = 3, 2, 1      # strength of a match; 0 means the request does not name it
 KNOWLEDGE_HEADER = (
     "# Knowledge from earlier sessions\n"
-    "Sources are checked against code; explanations may be wrong. "
-    "Use as guidance; read code when needed."
+    "Use Knowledge if it covers the point and sources match code. "
+    "Read code for gaps or contradictions."
 )
 # The digest the proposer reads: the work sequences, the catalogue of the code they read, the
 # agent's own comments, and the counts and pairs that are signals only -- in that order.

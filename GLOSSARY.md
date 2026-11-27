@@ -8,6 +8,7 @@ This context describes reusable knowledge derived from sessions in a workspace.
 A durable understanding of how the code works, grounded in one observed file or symbol, or in several observed sources that explain one coherent mechanism. The engine proves each source a proposal references, so a Knowledge is admitted and available in the cycle that proposes it; one sufficient observation is enough, with no second session and no confirmation count.
 Knowledge is distinct from a native Fact and from a collection of separate file summaries.
 Several Knowledge entries can cover the same file when they describe different mechanisms.
+_Avoid_: Knowledge card, carte Knowledge
 
 **Multi-source Knowledge**:
 Knowledge supported by more than one observed source file or symbol, all explaining one mechanism. Each source has its own evidence, and the Knowledge is valid only while every one of them is.
@@ -58,7 +59,7 @@ What the conversation may receive of Knowledge in total: how many Knowledge entr
 _Avoid_: knowledge budget, knowledge quota
 
 **Startup Share**:
-The fraction of the Knowledge Allowance a session may be given at session start. What the startup does not use stays available for Knowledge given after a read.
+In `knowledge_injection=both` mode, the fraction of the Knowledge Allowance a session may be given at session start. What the startup does not use stays available for Knowledge given after a tool call. The `startup` mode uses the full allowance at session start; `tools` reserves it for tool calls.
 
 **Knowledge Revision**:
 A marker identifying a particular revision of a Knowledge entry, separate from its stable identity.
