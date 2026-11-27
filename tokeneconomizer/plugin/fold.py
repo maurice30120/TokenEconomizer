@@ -162,7 +162,9 @@ class _SharedProposer:
                   + native._proposal_prompt(self.max_candidates)
                   + "\n\nKnowledge context:\n" + knowledge_prompt
                   + f"\nReturn one facts list with up to {self.max_candidates} candidates TOTAL. "
-                  "Mix native Facts and Knowledge freely. Include sources only on Knowledge.")
+                  "Mix native Facts and Knowledge freely. Include sources only on Knowledge. "
+                  "Return one JSON object {extractors, facts}; preserve any native extractors "
+                  "in extractors, even though Knowledge alone needs none.")
         try:
             raw, tokens = native.runner(prompt, native.model)
         except Exception:

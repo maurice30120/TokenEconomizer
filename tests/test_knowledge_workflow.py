@@ -169,6 +169,7 @@ def test_read_only_knowledge_has_its_own_proposal_contract(
         knowledge_start = prompt.index("Knowledge context:")
         assert native_start < prompt.index(">=2 iids") < knowledge_start
         assert ">=2 iids" not in prompt[knowledge_start:]
+        assert "preserve any native extractors" in prompt
     assert "source.txt contains observed" in json.dumps(call(enabled, {
         "hook_event_name": "PostToolUse", "session_id": "read-only-inject", "cwd": repo,
         "tool_name": "Read", "tool_input": {"file_path": "source.txt"},
