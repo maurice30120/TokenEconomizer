@@ -18,7 +18,7 @@ Everything here is deterministic: no filesystem order, no set iteration, no wall
 from ..trace.claude import claude_prompts
 from ..trace.copilot import copilot_prompts
 from ..trace.pi import pi_prompts
-from .observation import _merge_read, reads, records
+from .observation import reads, records
 from .proof import symbol_proof
 
 SEQUENCES = 8        # work sequences in the digest, newest by message emission time
@@ -87,15 +87,25 @@ def _context(text):
     return text if len(text) <= MESSAGE_CAP else text[:MESSAGE_CAP - 1] + "\u2026"
 
 
+def _identity(unit):
+    """What makes two reads of a file the same observation: the same path, the same version of
+    it, and the same lines of it (the whole file for a complete read)."""
+    if unit.get("partial"):
+        return (unit["path"], unit.get("version"),
+                tuple((read["offset"], read["lines"]) for read in unit["observed"]["reads"]))
+    return (unit["path"], (unit.get("proof") or {}).get("sha256"), None)
+
+
 def _read_into(sequence, read):
-    """Add one read to a sequence, deduplicated locally: a later read of a path the sequence
-    already read merges with it (`_merge_read` keeps the first read's position), so one path is
-    one unit of that sequence."""
-    for previous in sequence["units"]:
-        if previous["path"] == read["path"]:
-            previous["record"] = _merge_read(previous["record"], read)
-            return
-    sequence["units"].append({"path": read["path"], "record": read["record"]})
+    """Add one read to a sequence as its own unit, unless the sequence already made exactly that
+    read. Local deduplication goes no further: a unit carries its own read's text, version and
+    symbols, so what it proves is what it showed. Ranges of one file across a sequence are
+    merged by #344, not here."""
+    unit = {key: value for key, value in read["record"].items() if key != "excerpt"}
+    unit["path"] = read["path"]
+    if any(_identity(unit) == _identity(other) for other in sequence["units"]):
+        return
+    sequence["units"].append(unit)
 
 
 def _retain(sequence, units):
@@ -107,8 +117,7 @@ def _retain(sequence, units):
     """
     kept, used = [], len(sequence["message"])
     for index, unit in enumerate(units):
-        retained = dict(unit["record"], path=unit["path"],
-                        ref=f"{sequence['id']}.{index}")
+        retained = dict(unit, ref=f"{sequence['id']}.{index}")
         size = unit_chars(retained)
         if used + size > BUDGET:
             break
@@ -125,14 +134,16 @@ def _order(sequence):
     return (0, sequence["emitted"], sequence["session"], sequence["index"])
 
 
-def _excerpt(unit):
+def _observation(unit):
+    """One retained observation as the proposer reads it: the code the sequence's budget kept
+    (`content`), which is what `unit_chars` counted, under its ref, path and version."""
     version = unit["version"] if unit.get("partial") else unit["proof"]["sha256"]
-    excerpt = {"ref": unit["ref"], "path": unit["path"], "version": version[:VERSION_CHARS]}
+    shown = {"ref": unit["ref"], "path": unit["path"], "version": version[:VERSION_CHARS]}
     if unit.get("partial"):
-        excerpt["observed_lines"] = observed_lines(unit)
-        excerpt["symbols"] = sorted(unit.get("symbols") or {})
-    excerpt["text"] = unit["excerpt"]
-    return excerpt
+        shown["observed_lines"] = observed_lines(unit)
+        shown["symbols"] = sorted(unit.get("symbols") or {})
+    shown["text"] = unit["content"]
+    return shown
 
 
 class Digest:
@@ -159,7 +170,7 @@ class Digest:
         return {"sequences": [{"id": s["id"], "session": s["session"], "message": s["message"],
                                "refs": [unit["ref"] for unit in s["units"] if citable(unit)]}
                               for s in self.sequences],
-                "excerpts": [_excerpt(unit) for s in self.sequences for unit in s["units"]
+                "excerpts": [_observation(unit) for s in self.sequences for unit in s["units"]
                              if citable(unit)]}
 
     def evidence(self, entry, root):

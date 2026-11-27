@@ -675,10 +675,12 @@ def test_a_partial_observation_never_stores_the_captured_file(tmp_path):
     assert "beta marker" not in stored and SOURCE.decode() not in stored
     (unit,) = [unit for unit in state["digest"]["sequences"][0]["units"]
                if unit["path"] == "source.py"]
+    # Only what the read returned is kept, and that text is what the proposer is shown.
     assert unit["content"] == "    return 1"
-    assert unit["excerpt"].startswith("    return 1")
     assert unit["observed"]["total_lines"] == 7
-    assert "proof" not in unit
+    assert "proof" not in unit and "excerpt" not in unit
+    shown = stage.digest.view()["excerpts"][0]
+    assert shown["text"] == "    return 1" and shown["observed_lines"] == "2-2 of 7"
 
 
 def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
@@ -1141,3 +1143,16 @@ def test_eleven_reads_stay_in_the_digest_although_the_session_view_keeps_ten(tmp
         *[entry for n, name in enumerate(names) for entry in claude_read(tmp_path, name, n)]])
     assert list(observations(transcript, tmp_path)) == names[:10]     # the session view
     assert [e["path"] for e in digest_view(stage)["excerpts"]] == names  # the digest
+
+
+def test_the_digest_shows_the_code_its_budget_counted(tmp_path):
+    """The text shown is the retained code itself, not a shorter prompt excerpt: what the budget
+    counted is what the proposer can read and cite."""
+    (tmp_path / "long.txt").write_text("".join(f"line {n}\n" for n in range(400)))
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read long.txt"), *claude_read(tmp_path, "long.txt")])
+    (shown,) = digest_view(stage)["excerpts"]
+    content = (tmp_path / "long.txt").read_text()
+    assert len(content) > 2000 and shown["text"] == content

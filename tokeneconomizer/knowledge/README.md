@@ -36,10 +36,11 @@ from the eight newest messages by emission time across every session folded so f
 session folded late with older prompts lands where its times put it and two prompts of one
 session are two sequences. A message that read nothing still takes its slot; an injected
 message (Pi's extension sends its steering that way) and a `system` message open none. A
-sequence keeps its message, bounded, and the observations its reads made, in read order, up
-to 16 000 characters each -- the first observation that would push it past that ends its
-retention, and every sequence has its own budget. Repeated reads of one file within a
-sequence merge as everywhere else.
+sequence keeps its message, bounded, and what each of its reads observed -- the code as the
+read returned it, in read order -- up to 16 000 characters; the first observation that would
+push it past that ends its retention, and every sequence has its own budget. Each read is its
+own observation: a unit proves only the text and the symbols of that read, and an identical
+repeat of one read (same file, version and lines) is the only thing that collapses.
 
 The proposer is shown each retained observation with its `ref`, its path, its version and,
 for a partial read, the lines it returned (`observed_lines`) and the declarations they

@@ -44,7 +44,9 @@ def records(transcript, host="claude"):
 
 def observations(transcript, root, host="claude", captures=None):
     """What a session observed, one record per path: the reads `reads` reports, collapsed in read
-    order, keeping the first ten distinct paths and letting the last read of a path win.
+    order, keeping the first ten distinct paths and letting the last read of a path win. This is
+    the per-session view, with the host rules the tests pin; the digest reads `reads` directly,
+    since its own per-sequence budget replaces that path cap.
 
     A Pi read of part of a file (`offset`/`limit`) is taken from its capture, the bytes the
     hook kept at the instant of the read (`captures`, that session's capture directory):
@@ -69,13 +71,19 @@ def reads(events, root, host="claude", captures=None):
     Nothing is capped here: `observations` keeps ten paths, while the digest needs every read in
     order and applies its own per-sequence budget.
     """
+    try:
+        return _host_reads(events, root, host, captures)
+    except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+        # A recording that cannot be read end to end yields no evidence at all.
+        return []
+
+
+def _host_reads(events, root, host, captures):
     if host == "pi":
         return _pi_reads(events, root, captures)
     if host == "copilot":
         return _copilot_reads(events, root)
-    if host != "claude":
-        return []
-    return _claude_reads(events, root)
+    return _claude_reads(events, root) if host == "claude" else []
 
 
 def _claude_reads(events, root):

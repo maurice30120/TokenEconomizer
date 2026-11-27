@@ -113,8 +113,8 @@ class Knowledge(Distiller):
         os.makedirs(directory, exist_ok=True)
         return os.path.join(directory, repo_filename(repo) + ".json")
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, repo, *args, **kwargs):
+        super().__init__(repo, *args, **kwargs)
         self.digest = Digest()
 
     def _state_extra(self):

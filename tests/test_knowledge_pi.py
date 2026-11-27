@@ -514,3 +514,52 @@ def test_a_pi_request_naming_an_issue_or_a_skill_is_an_ordinary_request(tmp_path
     view = pi_digest(stage)
     assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
         ("s0/0", "fix #123 with /codetour", ["s0/0.0"])]
+
+
+def test_each_read_is_its_own_unit_and_proves_only_what_it_showed(tmp_path):
+    """Two partial reads of one file, on the same version, stay two observations: the symbols
+    and the text of a unit are its own, so neither can stand for what the other read."""
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    first = {"path": "source.py", "offset": 2, "limit": 1}
+    second = {"path": "source.py", "offset": 6, "limit": 1}
+    path = tmp_path / "session.jsonl"
+    reads_session(path, tmp_path, [("a", first, pi_read(SOURCE, 2, 1), False),
+                                   ("b", second, pi_read(SOURCE, 6, 1), False)])
+    captures = capture_read(tmp_path, first, pi_read(SOURCE, 2, 1), tool_use_id="a")
+    assert capture_read(tmp_path, second, pi_read(SOURCE, 6, 1), tool_use_id="b") == captures
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0", captures=captures)
+    assert [(e["ref"], e["symbols"], e["text"]) for e in pi_digest(stage)["excerpts"]] == [
+        ("s0/0.0", ["alpha"], "    return 1"),
+        ("s0/0.1", ["beta"], "    return 2")]
+    base = {"id": "k", "claim": "a return", "detector": {"scope": "pytest", "confirm": "passed"}}
+    assert stage._admit(dict(base, sources=[{"ref": "s0/0.0", "symbol": "alpha"}])) == (
+        True, "admitted")
+    assert stage._admit(dict(base, id="k2", claim="b return",
+                             sources=[{"ref": "s0/0.0", "symbol": "beta"}])) == (
+        False, "symbol-not-observed")
+    assert stage._admit(dict(base, id="k3", claim="c return",
+                             sources=[{"ref": "s0/0.1", "symbol": "alpha"}])) == (
+        False, "symbol-not-observed")
+    assert stage._admit(dict(base, id="k4", claim="d return",
+                             sources=[{"ref": "s0/0.1", "symbol": "beta"}])) == (
+        True, "admitted")
+
+
+def test_only_an_identical_repeat_of_a_read_collapses(tmp_path):
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    part = {"path": "source.py", "offset": 2, "limit": 1}
+    whole = {"path": "source.py", "offset": 1, "limit": 99}
+    path = tmp_path / "session.jsonl"
+    reads_session(path, tmp_path, [("a", part, pi_read(SOURCE, 2, 1), False),
+                                   ("b", part, pi_read(SOURCE, 2, 1), False),
+                                   ("c", whole, pi_read(SOURCE, 1, 99), False)])
+    captures = capture_read(tmp_path, part, pi_read(SOURCE, 2, 1), tool_use_id="a")
+    capture_read(tmp_path, part, pi_read(SOURCE, 2, 1), tool_use_id="b")
+    capture_read(tmp_path, whole, pi_read(SOURCE, 1, 99), tool_use_id="c")
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0", captures=captures)
+    # The repeat of line 2 is one unit; the whole-file read that followed is another.
+    assert [e["ref"] for e in pi_digest(stage)["excerpts"]] == ["s0/0.0", "s0/0.1"]
