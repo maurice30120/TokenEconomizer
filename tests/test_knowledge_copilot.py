@@ -136,3 +136,5 @@ def test_each_copilot_request_opens_a_work_sequence(tmp_path):
         ("s0/0", "check source.txt", ["s0/0.0"]),
         ("s0/1", "now support.txt", ["s0/1.0"])]
     assert [e["path"] for e in digest["excerpts"]] == ["source.txt", "support.txt"]
+    # Copilot's log has no assistant message the reader recognizes: no comment is invented.
+    assert digest["comments"] == []

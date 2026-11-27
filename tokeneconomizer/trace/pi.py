@@ -71,6 +71,29 @@ def pi_prompts(entries):
     return out
 
 
+def pi_replies(entries):
+    """Every message the agent itself wrote, in branch order, as `(position, calls, text)`:
+    the `text` blocks of an assistant message joined, and how many `toolCall` blocks it carried.
+    `position` is the entry's index in `entries` -- the same index `pi_prompts` and
+    `knowledge.observation.reads` report, so a comment is placed against the reads it followed.
+    An abandoned branch stays out; a `system`, `custom` or `toolResult` message is not the
+    agent's own writing."""
+    positions = {e["id"]: n for n, e in enumerate(entries) if e.get("id")}
+    out = []
+    for entry in pi_active_branch(entries):
+        message = entry.get("message") or {}
+        if (entry.get("type") != "message" or not isinstance(message, dict)
+                or message.get("role") != "assistant"):
+            continue
+        blocks = message.get("content")
+        if not isinstance(blocks, list):
+            continue
+        calls = sum(1 for block in blocks
+                    if isinstance(block, dict) and block.get("type") == "toolCall")
+        out.append((positions[entry["id"]], calls, _pi_text(blocks)))
+    return out
+
+
 def _pi_usage(u):
     if not isinstance(u, dict):
         return None

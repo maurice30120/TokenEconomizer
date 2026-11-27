@@ -448,6 +448,8 @@ def test_a_recorded_pi_request_opens_the_first_sequence(tmp_path):
         ("s0/0", "Read source.txt and finish.", ["s0/0.0"])]
     assert [(e["refs"], e["path"], len(e["version"])) for e in view["excerpts"]] == [
         (["s0/0.0"], "source.txt", 12)]
+    # What the agent said after that read is shown next to it.
+    assert [(c["text"], c["refs"]) for c in view["comments"]] == [("Done.", ["s0/0.0"])]
 
 
 def test_pi_injected_and_system_messages_open_no_work_sequence(tmp_path):
@@ -651,3 +653,196 @@ def test_a_complete_read_of_one_version_subsumes_a_partial_read_of_it(tmp_path):
                          "sources": [{"ref": "s0/0.0", "symbol": "alpha"}],
                          "detector": {"scope": "pytest", "confirm": "passed"}}) == (
         True, "admitted")
+
+
+# ---- the agent's own comments, attached to the reads they followed -------------------------
+def pi_comment(text):
+    """An assistant message that only writes, as Pi logs it: no tool call, so what it says
+    belongs to the reads of the series before it."""
+    return {"role": "assistant", "content": [{"type": "text", "text": text}]}
+
+
+def comments(stage):
+    """The comments the digest shows the proposer: text, the refs each is about, occurrences."""
+    return [(c["text"], c["refs"], c["occurrences"]) for c in pi_digest(stage)["comments"]]
+
+
+def test_a_pi_comment_after_a_read_attaches_to_that_reads_ref(tmp_path):
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.py"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+        ("2026-11-24T10:00:02.000Z", pi_comment("alpha returns one"), []),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    assert comments(stage) == [("alpha returns one", ["s0/0.0"], 1)]
+
+
+def test_a_pi_comment_written_with_the_next_tool_call_does_not_attach_backwards(tmp_path):
+    """The window closes at the next call: the text an assistant writes beside that call belongs
+    to the work it starts, and a comment after that call's series attaches to nothing."""
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.py"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+        ("2026-11-24T10:00:02.000Z", pi_comment("alpha returns one"), []),
+        ("2026-11-24T10:00:03.000Z",
+         {"role": "assistant", "content": [
+             {"type": "text", "text": "now I will run the tests"},
+             {"type": "toolCall", "id": "t", "name": "bash",
+              "arguments": {"command": "pytest"}}]}, []),
+        ("2026-11-24T10:00:04.000Z",
+         {"role": "toolResult", "toolCallId": "t", "toolName": "bash", "isError": False,
+          "content": [{"type": "text", "text": "passed"}]}, []),
+        ("2026-11-24T10:00:05.000Z", pi_comment("the tests pass"), []),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    assert comments(stage) == [("alpha returns one", ["s0/0.0"], 1)]
+
+
+def test_a_pi_comment_after_a_series_with_no_read_attaches_to_nothing(tmp_path):
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "run the tests"}]}, []),
+        ("2026-11-24T10:00:01.000Z",
+         {"role": "assistant", "content": [
+             {"type": "toolCall", "id": "t", "name": "bash",
+              "arguments": {"command": "pytest"}}]}, []),
+        ("2026-11-24T10:00:02.000Z",
+         {"role": "toolResult", "toolCallId": "t", "toolName": "bash", "isError": False,
+          "content": [{"type": "text", "text": "passed"}]}, []),
+        ("2026-11-24T10:00:03.000Z", pi_comment("the tests pass"), []),
+        ("2026-11-24T10:00:04.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    assert comments(stage) == []
+    assert [e["refs"] for e in pi_digest(stage)["excerpts"]] == [["s0/0.0"]]
+
+
+def test_a_pi_user_message_ends_the_comment_window(tmp_path):
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.py"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+        ("2026-11-24T10:00:02.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "and now explain it"}]}, []),
+        ("2026-11-24T10:00:03.000Z", pi_comment("alpha returns one"), []),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    assert comments(stage) == []
+    assert [(s["id"], s["refs"]) for s in pi_digest(stage)["sequences"]] == [
+        ("s0/0", ["s0/0.0"]), ("s0/1", [])]
+
+
+def test_a_comment_survives_the_whole_file_read_that_subsumes_its_read(tmp_path):
+    """A complete read of the same version absorbs the partial read a comment followed: one unit
+    keeps both refs and the comment, and the text is charged once."""
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    part = {"path": "source.py", "offset": 2, "limit": 1}
+    whole = {"path": "source.py", "offset": 1, "limit": 99}
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.py"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None,
+         [("a", part, pi_read(SOURCE, 2, 1), False)]),
+        ("2026-11-24T10:00:02.000Z", pi_comment("alpha returns one"), []),
+        ("2026-11-24T10:00:03.000Z", None,
+         [("b", whole, pi_read(SOURCE, 1, 99), False)]),
+    ]))))
+    captures = capture_read(tmp_path, part, pi_read(SOURCE, 2, 1), tool_use_id="a")
+    capture_read(tmp_path, whole, pi_read(SOURCE, 1, 99), tool_use_id="b")
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0", captures=captures)
+    (entry,) = pi_digest(stage)["excerpts"]
+    assert entry["refs"] == ["s0/0.0", "s0/0.1"]
+    assert entry["text"] == SOURCE.decode() and "observed_lines" not in entry
+    assert comments(stage) == [("alpha returns one", ["s0/0.0"], 1)]
+
+
+def test_a_comment_on_one_call_series_survives_the_merge_of_its_reads(tmp_path):
+    """Two overlapping partial reads of one version are one unit: the comment the agent wrote
+    after that call series names both refs, is shown once, and costs its text once."""
+    from tokeneconomizer.knowledge.digest import unit_chars
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    first = {"path": "source.py", "offset": 2, "limit": 2}
+    second = {"path": "source.py", "offset": 3, "limit": 2}
+    entries = [
+        {"type": "session", "version": 3, "id": "s", "cwd": str(tmp_path)},
+        {"type": "message", "id": "p", "parentId": None,
+         "timestamp": "2026-11-24T10:00:00.000Z",
+         "message": {"role": "user", "content": [{"type": "text", "text": "read it"}]}},
+        {"type": "message", "id": "a", "parentId": "p", "message": {"role": "assistant",
+         "content": [{"type": "toolCall", "id": "a1", "name": "read", "arguments": first},
+                     {"type": "toolCall", "id": "a2", "name": "read", "arguments": second}]}},
+        {"type": "message", "id": "b1", "parentId": "a", "message": {
+            "role": "toolResult", "toolCallId": "a1", "toolName": "read", "isError": False,
+            "content": [{"type": "text", "text": pi_read(SOURCE, 2, 2)}]}},
+        {"type": "message", "id": "b2", "parentId": "b1", "message": {
+            "role": "toolResult", "toolCallId": "a2", "toolName": "read", "isError": False,
+            "content": [{"type": "text", "text": pi_read(SOURCE, 3, 2)}]}},
+        {"type": "message", "id": "c", "parentId": "b2",
+         "timestamp": "2026-11-24T10:00:03.000Z",
+         "message": pi_comment("lines two to four are one declaration")},
+    ]
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, entries)))
+    captures = capture_read(tmp_path, first, pi_read(SOURCE, 2, 2), tool_use_id="a1")
+    assert capture_read(tmp_path, second, pi_read(SOURCE, 3, 2), tool_use_id="a2") == captures
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0", captures=captures)
+    (entry,) = pi_digest(stage)["excerpts"]
+    assert entry["refs"] == ["s0/0.0", "s0/0.1"] and entry["observed_lines"] == "2-4 of 7"
+    assert comments(stage) == [("lines two to four are one declaration",
+                                ["s0/0.0", "s0/0.1"], 1)]
+    # The comment costs its text once, in the unit the two reads merged into.
+    (unit,) = stage.digest.sequences[0]["units"]
+    assert unit["comments"] == [{"text": "lines two to four are one declaration",
+                                 "refs": ["s0/0.0", "s0/0.1"], "position": 5}]
+    assert unit_chars(unit) == (len("source.py") + len("s0/0.0") + len("s0/0.1")
+                                + len(entry["text"])
+                                + len("lines two to four are one declaration"))
+
+
+def test_a_comment_about_a_read_that_proves_nothing_is_not_shown(tmp_path):
+    """A partial read of a file with no declaration is retained but not citable, so the comment
+    about it names no ref the digest shows: it is left out rather than pointing at nothing."""
+    (tmp_path / "notes.txt").write_bytes(b"first\nsecond\n")
+    part = {"path": "notes.txt", "offset": 2, "limit": 1}
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read notes.txt"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None, [("r", part, pi_read(b"first\nsecond\n", 2, 1),
+                                              False)]),
+        ("2026-11-24T10:00:02.000Z", pi_comment("line two says second"), []),
+    ]))))
+    captures = capture_read(tmp_path, part, pi_read(b"first\nsecond\n", 2, 1))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0", captures=captures)
+    view = pi_digest(stage)
+    assert len(stage.digest.sequences[0]["units"]) == 1     # retained
+    assert view["excerpts"] == [] and view["comments"] == []

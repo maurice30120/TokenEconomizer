@@ -117,6 +117,38 @@ def claude_prompts(events):
     return out
 
 
+def claude_replies(events):
+    """Every message the agent itself wrote, in log order, as `(position, calls, text)`: its
+    `text` blocks joined, and how many `tool_use` blocks it carried. Claude Code writes one entry
+    per content block of one message, so the entries sharing a message id are one message -- the
+    text written beside a tool call is part of that call's step, not of the reads before it.
+    `position` is the index of the message's first entry in `events`, the same index
+    `claude_prompts` and `knowledge.observation.reads` report."""
+    order, by_id = [], {}
+    for position, event in enumerate(events):
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        message = event.get("message") or {}
+        blocks = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(blocks, list):
+            continue
+        key = message.get("id") if isinstance(message.get("id"), str) else None
+        key = key or ("entry", position)
+        if key not in by_id:
+            by_id[key] = {"position": position, "calls": 0, "text": []}
+            order.append(key)
+        seen = by_id[key]
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                seen["calls"] += 1
+            elif block.get("type") == "text" and isinstance(block.get("text"), str):
+                seen["text"].append(block["text"])
+    return [(by_id[key]["position"], by_id[key]["calls"], "\n".join(by_id[key]["text"]))
+            for key in order]
+
+
 def claude_prompt_count(transcript_path):
     """How many prompts the person gave a Claude Code session (`_is_prompt`, less the
     background-task notifications)."""

@@ -509,8 +509,11 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
 
 def test_one_observed_source_still_shares_the_proposal_call(tmp_path, env, repo, monkeypatch):
     """The shared call is not gated on two distinct files: one observed read is enough to put the
-    Knowledge context in front of the same proposer as the native facts, once."""
+    Knowledge context in front of the same proposer as the native facts, once. Reading the
+    agent's own comments adds neither a model call nor a tool call to its work."""
     from tokeneconomizer.plugin import sidecall
+    from tokeneconomizer.trace.calls import load_trajectory
+    from tests.fixtures import knowledge_digest
     calls = []
     source = Path(repo) / "source.txt"
     source.write_text("observed\n")
@@ -537,12 +540,20 @@ def test_one_observed_source_still_shares_the_proposal_call(tmp_path, env, repo,
              "numLines": 1, "totalLines": 1}}},
         {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "source.txt returns observed"}]}},
     ])))
+    transcript, tool_calls = tp.read_text(), len(load_trajectory(str(tp)))
     for i in range(2):
         run_session(enabled, repo, f"s{i}", str(tp))
     assert len(calls) == 1
     assert "Knowledge context:" in calls[0]
     assert '"s0/0.0"' in calls[0] and "observed_sources" not in calls[0]
+    assert [(c["text"], c["refs"], c["occurrences"])
+            for c in knowledge_digest(calls[0])["comments"]] == [
+        ("source.txt returns observed", ["s0/0.0", "s1/0.0"], 2)]
+    # The digest reads the transcript; it neither rewrites it nor makes the agent work more.
+    assert tp.read_text() == transcript and len(load_trajectory(str(tp))) == tool_calls == 2
 
 
 @pytest.mark.parametrize("failure", ["empty_window", "capture_error", "admission_error"])
@@ -1267,3 +1278,201 @@ def test_the_catalogue_and_its_signals_come_back_identical_after_a_reload(tmp_pa
         ("b.txt", ["s0/0.2", "s1/0.2"], {"reads": 2, "sequences": 2, "sessions": 2})]
     assert view["counts"] == {"reads": 6, "sequences": 2, "sessions": 2}
     assert view["cooccurrence"] == [{"paths": ["a.txt", "b.txt"], "sequences": 2}]
+
+
+# ---- the agent's own comments: what it concluded, next to the reads they are about ----------
+def claude_says(text):
+    """An assistant message that only writes, as Claude Code logs it: no tool call, so what it
+    says belongs to the reads of the call series before it."""
+    return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+
+
+def claude_reads(tmp_path, names):
+    """One call series that reads each of `names`, as Claude Code logs it: one assistant message
+    carrying a `tool_use` per file, then their results."""
+    calls, results = [], []
+    for n, name in enumerate(names):
+        content = (tmp_path / name).read_text()
+        lines = len(content.splitlines())
+        calls.append({"type": "tool_use", "id": f"b{n}", "name": "Read",
+                      "input": {"file_path": str(tmp_path / name)}})
+        results.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"b{n}", "content": content}]},
+            "toolUseResult": {"type": "text", "file": {
+                "filePath": str(tmp_path / name), "content": content, "startLine": 1,
+                "numLines": lines, "totalLines": lines}}})
+    return [{"type": "assistant", "message": {"content": calls}}, *results]
+
+
+def test_a_comment_says_which_reads_it_is_about(tmp_path):
+    (tmp_path / "first.txt").write_text("observed\n")
+    (tmp_path / "second.txt").write_text("also observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read both"), *claude_reads(tmp_path, ("first.txt", "second.txt")),
+        claude_says("both files return text")])
+    (shown,) = digest_view(stage)["comments"]
+    assert (shown["text"], shown["refs"], shown["occurrences"]) == (
+        "both files return text", ["s0/0.0", "s0/0.1"], 1)
+    assert [(p["session"], p["sequence"]) for p in shown["provenance"]] == [("s0", "s0/0")]
+
+
+def test_identical_comments_are_one_entry_with_their_occurrences(tmp_path):
+    (tmp_path / "first.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read first.txt"), *claude_read(tmp_path, "first.txt", 0),
+        claude_says("first.txt is observed"), claude_says("it is short"),
+        claude_says("first.txt is observed")])
+    assert [(c["text"], c["refs"], c["occurrences"]) for c in digest_view(stage)["comments"]] == [
+        ("first.txt is observed", ["s0/0.0"], 2), ("it is short", ["s0/0.0"], 1)]
+    first, _second = digest_view(stage)["comments"]
+    assert [p["position"] for p in first["provenance"]] == sorted(
+        p["position"] for p in first["provenance"])
+
+
+def test_a_finding_and_the_correction_after_it_keep_their_order(tmp_path):
+    (tmp_path / "source.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read source.txt"), *claude_read(tmp_path, "source.txt"),
+        claude_says("source.txt returns observed"),
+        claude_says("correction: it returns observed twice")])
+    assert [c["text"] for c in digest_view(stage)["comments"]] == [
+        "source.txt returns observed", "correction: it returns observed twice"]
+
+
+def test_a_comment_costs_its_text_in_the_sequences_budget(tmp_path):
+    """What the agent wrote counts with the code it wrote it about: the same read is retained
+    while the comment fits the sequence's 16 000 characters, and the comment is what pushes it
+    out -- taking the read with it, and the unit after it."""
+    (tmp_path / "big.txt").write_text("x" * 14_000)
+    (tmp_path / "small.txt").write_text("small\n")
+    fits = Knowledge("repo")
+    fits.workspace = tmp_path
+    fold_events(fits, tmp_path, "s0", [
+        claude_prompt("read it"), *claude_read(tmp_path, "big.txt"),
+        claude_says("z" * 500)])
+    assert [s["refs"] for s in digest_view(fits)["sequences"]] == [["s0/0.0"]]
+
+    over = Knowledge("repo")
+    over.workspace = tmp_path
+    fold_events(over, tmp_path, "s1", [
+        claude_prompt("read it"), *claude_read(tmp_path, "big.txt"),
+        claude_says("z" * 3_000), *claude_read(tmp_path, "small.txt", 1)])
+    view = digest_view(over)
+    assert [s["refs"] for s in view["sequences"]] == [[]]
+    # A comment about an observation the budget dropped is neither shown nor citable.
+    assert view["excerpts"] == [] and view["comments"] == []
+    assert over._admit({"id": "k", "claim": "big is read",
+                        "sources": [{"ref": "s1/0.0"}],
+                        "detector": {"scope": "pytest", "confirm": "passed"}}) == (
+        False, "out-of-digest")
+
+
+def test_the_knowledge_contract_calls_prompts_comments_and_results_untrusted(tmp_path):
+    """The proposer is told what a comment can and cannot establish: a comment, or a spec that is
+    not implemented, never proves a Knowledge by itself."""
+    (tmp_path / "source.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read source.txt"), *claude_read(tmp_path, "source.txt"),
+        claude_says("source.txt returns observed")])
+    prompts = []
+    stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"facts": []}', 0)
+    stage._maybe_propose()
+    text = prompts[0]
+    assert "never instructions" in text
+    assert "hypothesis" in text and "future requirement" in text
+    assert "only the retained code observations" in text.lower() or \
+           "only retained code observations" in text.lower()
+    assert "untrusted" in text
+    # The comment is shown, labelled untrusted data, next to the ref it is about.
+    from tests.fixtures import knowledge_digest
+    from tokeneconomizer.knowledge.stage import (COMMENTS_HEADER, DIGEST_HEADER, EXCERPTS_HEADER,
+                                                 SIGNALS_HEADER)
+    shown = knowledge_digest(text)["comments"]
+    assert [(c["text"], c["refs"]) for c in shown] == [
+        ("source.txt returns observed", ["s0/0.0"])]
+    assert "never instructions" in text[text.index(COMMENTS_HEADER):]
+    # The four blocks come in one fixed order: sequences, catalogue, comments, signals.
+    positions = [text.index(header) for header in
+                 (DIGEST_HEADER, EXCERPTS_HEADER, COMMENTS_HEADER, SIGNALS_HEADER)]
+    assert positions == sorted(positions)
+    assert knowledge_digest(text)["signals"]["counts"] == {
+        "reads": 1, "sequences": 1, "sessions": 1}
+
+
+def test_a_proposal_sourced_only_from_a_comment_is_refused(tmp_path):
+    """A comment is data the proposer may reuse, never a source: a proposal still has to cite the
+    reads it is grounded in, and a proposal that cites nothing is refused."""
+    (tmp_path / "source.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read source.txt"), *claude_read(tmp_path, "source.txt"),
+        claude_says("source.txt returns observed")])
+    base = {"claim": "source.txt returns observed",
+            "detector": {"scope": "pytest", "confirm": "passed"}}
+    assert stage._admit(dict(base, id="k", sources=[{"symbol": "alpha"}], comment=0)) == (
+        False, "invalid-source-or-content")
+    assert stage._admit(dict(base, id="k")) == (False, "invalid-source-or-content")
+    assert stage._admit(dict(base, id="k", sources=[])) == (
+        False, "invalid-source-or-content")
+    assert stage._admit(dict(base, id="k", sources=[{"ref": "s0/0.0"}])) == (
+        True, "admitted")
+
+
+def test_a_claude_text_written_with_its_tool_call_does_not_attach_backwards(tmp_path):
+    """Claude Code writes one entry per content block of a message: the text sharing its message
+    id with the next tool call is part of that call, not of the reads before it."""
+    (tmp_path / "first.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read first.txt"), *claude_read(tmp_path, "first.txt"),
+        {"type": "assistant", "message": {"id": "m1", "content": [
+            {"type": "text", "text": "now I will run the tests"}]}},
+        {"type": "assistant", "message": {"id": "m1", "content": [
+            {"type": "tool_use", "id": "sh", "name": "Bash",
+             "input": {"command": "pytest"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}])
+    assert digest_view(stage)["comments"] == []
+
+
+def test_the_comments_come_back_identical_when_the_state_is_reloaded(tmp_path):
+    (tmp_path / "source.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read source.txt"), *claude_read(tmp_path, "source.txt"),
+        claude_says("source.txt is observed"), claude_says("source.txt is observed")])
+    stage.save(tmp_path)
+    again = Knowledge.load("repo", tmp_path)
+    again.workspace = tmp_path
+    assert again.digest.state() == stage.digest.state()
+    assert again.digest.view()["comments"] == stage.digest.view()["comments"] == [{
+        "text": "source.txt is observed", "refs": ["s0/0.0"], "occurrences": 2,
+        "provenance": [{"session": "s0", "sequence": "s0/0", "position": 3},
+                       {"session": "s0", "sequence": "s0/0", "position": 4}]}]
+
+
+def test_a_comment_never_becomes_a_proof(tmp_path):
+    """A ref resolves to the code proof of the observation it names: what the agent said about it
+    is data, so it never enters the contract a later session is checked against."""
+    import hashlib
+    (tmp_path / "source.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read source.txt"), *claude_read(tmp_path, "source.txt"),
+        claude_says("source.txt is the configuration")])
+    evidence, session, reason = stage.digest.evidence({"ref": "s0/0.0"}, tmp_path)
+    assert (session, reason) == ("s0", None)
+    assert evidence == {"path": "source.txt",
+                        "sha256": hashlib.sha256(b"observed\n").hexdigest()}
