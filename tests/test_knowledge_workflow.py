@@ -407,6 +407,9 @@ def test_a_reference_must_resolve_to_one_observation_of_one_source(tmp_path):
                     r"dir\uncovered.py", ".github/workflows/test.yml", "dir/my.file.ts"):
         assert stage._admit(dict(base, id="k3", claim="a.py calls " + mention, sources=[
             {"source": "a.py", "source_session": "s0"}])) == (False, "uncovered-file")
+    # The legacy single-source form has no reader: a proposal names `sources`.
+    assert stage._admit({"id": "legacy", "claim": "alpha returns one", "source": "a.py",
+                         "symbol": "alpha"}) == (False, "invalid-source-or-content")
     assert stage._admit(dict(base, id="k4", sources=[])) == (False, "invalid-source-or-content")
     assert stage._admit(dict(base, id="k5", sources=[
         {"source": "a.py", "source_session": "s0"},
