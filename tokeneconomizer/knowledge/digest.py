@@ -191,6 +191,21 @@ def _said(first, second):
     return {"comments": comments} if comments else {}
 
 
+def _consolidate(candidates):
+    """The units a list of reads becomes: each takes the first existing unit it merges with
+    (`_merge`), and opens its own when it merges with none."""
+    merged = []
+    for unit in candidates:
+        for index, existing in enumerate(merged):
+            combined = _merge(existing, unit)
+            if combined is not None:
+                merged[index] = combined
+                break
+        else:
+            merged.append(unit)
+    return merged
+
+
 def _units(sequence, found):
     """A sequence's reads as the units it may retain, in read order.
 
@@ -199,21 +214,15 @@ def _units(sequence, found):
     repeated read costs its characters once and keeps its own ref and provenance. The comments a
     read was followed by travel with it, so a unit that absorbed it keeps them (`_merge`).
     """
-    units = []
+    candidates = []
     for rank, read in enumerate(found):
         unit = {key: value for key, value in read["record"].items() if key != "excerpt"}
         unit["path"] = read["path"]
         unit["refs"] = [f"{sequence['id']}.{rank}"]
         if read.get("comments"):
             unit["comments"] = list(read["comments"])
-        for index, existing in enumerate(units):
-            merged = _merge(existing, unit)
-            if merged is not None:
-                units[index] = merged
-                break
-        else:
-            units.append(unit)
-    return units
+        candidates.append(unit)
+    return _consolidate(candidates)
 
 
 def _attach(sequence, found, position, text, ranks):
@@ -268,16 +277,8 @@ def _fragment(fragment):
 def _fragments(members):
     """The disjoint regions of one entry: the partial reads of one version whose ranges touch
     share a fragment, and a fragment that does not touch another stays its own."""
-    merged = []
-    for _sequence, unit in members:
-        for index, fragment in enumerate(merged):
-            combined = _merge(fragment, unit)
-            if combined is not None:
-                merged[index] = combined
-                break
-        else:
-            merged.append(dict(unit))
-    return [_fragment(fragment) for fragment in merged]
+    return [_fragment(fragment)
+            for fragment in _consolidate(dict(unit) for _sequence, unit in members)]
 
 
 def _read_rank(ref):
@@ -328,25 +329,27 @@ def _catalogue(shown):
     return [_entry(members) for members in groups.values()]
 
 
-def _counts(sequences):
-    """What the digest holds, distinguished: the reads the catalogue kept, the work sequences it
-    covers (a sequence that read nothing is still one), and the sessions they came from."""
-    return {"reads": sum(len(unit["refs"]) for sequence in sequences
-                         for unit in sequence["units"] if citable(unit)),
+def _counts(shown, sequences):
+    """What the digest holds, distinguished: the reads the shown observations kept, the work
+    sequences it covers (a sequence that read nothing is still one), and the sessions they came
+    from."""
+    return {"reads": sum(len(unit["refs"]) for _sequence, unit in shown),
             "sequences": len(sequences),
             "sessions": len(dict.fromkeys(sequence["session"] for sequence in sequences))}
 
 
-def _cooccurrence(sequences):
+def _cooccurrence(shown):
     """Which paths were read in the same work sequence, and in how many sequences.
 
     A signal that two files were explored together -- converging explorations worth a look --
     never evidence that they are related: nothing here can back a proposal, and `evidence` never
     reads it. Most recurrent first, then by path, so the list is deterministic.
     """
+    by_sequence = {}
+    for sequence, unit in shown:
+        by_sequence.setdefault(sequence["id"], set()).add(unit["path"])
     counts = {}
-    for sequence in sequences:
-        paths = sorted({unit["path"] for unit in sequence["units"] if citable(unit)})
+    for paths in (sorted(group) for group in by_sequence.values()):
         for index, first in enumerate(paths):
             for second in paths[index + 1:]:
                 counts[(first, second)] = counts.get((first, second), 0) + 1
@@ -355,19 +358,23 @@ def _cooccurrence(sequences):
     return sorted(pairs, key=lambda pair: (-pair["sequences"], pair["paths"]))[:PAIRS]
 
 
-def _comments(sequences):
+def _comments(sequences, shown):
     """The agent's own comments as the proposer reads them: what it wrote, the refs of the
-    retained observations it is about, how many times it wrote exactly that, and where. A comment
-    about no citable retained observation cannot be shown -- its refs would point at text the
-    digest does not hold -- so it is left out, and one written twice is one entry with two
-    occurrences. Nothing a comment says is a proof.
+    shown observations it is about, how many times it wrote exactly that, and where. A comment
+    about no shown observation cannot be shown -- its refs would point at text the digest does
+    not hold -- so it is left out, and one written twice is one entry with two occurrences.
+    Nothing a comment says is a proof, and a comment owned by an observation that could not be
+    shown is still kept when another ref of its series is shown.
     """
+    refs_shown = {}
+    for sequence, unit in shown:
+        refs_shown.setdefault(sequence["id"], set()).update(unit["refs"])
     entries, found = [], {}
     for sequence in sequences:
-        shown = [ref for unit in sequence["units"] if citable(unit) for ref in unit["refs"]]
+        shown_refs = refs_shown.get(sequence["id"], set())
         for unit in sequence["units"]:
             for comment in unit.get("comments") or ():
-                refs = [ref for ref in comment["refs"] if ref in shown]
+                refs = [ref for ref in comment["refs"] if ref in shown_refs]
                 if not refs:
                     continue
                 entry = found.get(comment["text"])
@@ -399,22 +406,30 @@ class Digest:
 
     def retained(self):
         """Whether any retained observation could back a proposal."""
-        return any(citable(unit) for sequence in self.sequences for unit in sequence["units"])
+        return bool(self._shown())
+
+    def _shown(self):
+        """The retained observations a proposal may cite, as `(sequence, unit)` pairs in digest
+        order: the one place `citable` is asked, so the catalogue, the comments, the counts and
+        the pairs all speak of the same units."""
+        return [(sequence, unit) for sequence in self.sequences
+                for unit in sequence["units"] if citable(unit)]
 
     def view(self):
         """What the proposer sees: the sequences (id, session, bounded message, ordered refs), the
         catalogue of the code they read, oldest first, the agent's own comments next to the refs
         they are about, and the counts and pairs that are signals only."""
-        shown = [(sequence, unit) for sequence in self.sequences
-                 for unit in sequence["units"] if citable(unit)]
+        shown = self._shown()
+        refs = {}
+        for sequence, unit in shown:
+            refs.setdefault(sequence["id"], []).extend(unit["refs"])
         return {"sequences": [{"id": s["id"], "session": s["session"], "message": s["message"],
-                               "refs": sorted((ref for unit in s["units"] if citable(unit)
-                                               for ref in unit["refs"]), key=_read_rank)}
+                               "refs": sorted(refs.get(s["id"], ()), key=_read_rank)}
                               for s in self.sequences],
                 "excerpts": _catalogue(shown),
-                "comments": _comments(self.sequences),
-                "counts": _counts(self.sequences),
-                "cooccurrence": _cooccurrence(self.sequences)}
+                "comments": _comments(self.sequences, shown),
+                "counts": _counts(shown, self.sequences),
+                "cooccurrence": _cooccurrence(shown)}
 
     def evidence(self, entry, root):
         """Resolve one proposal entry (`{ref, symbol?}`) against the retained digest: the contract

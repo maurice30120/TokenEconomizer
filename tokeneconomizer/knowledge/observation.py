@@ -18,6 +18,13 @@ def _visible_complete(raw, visible, total):
                for lines in variants)
 
 
+def _complete(path, proof, text, content):
+    """One complete observation: the proof the read yielded, the excerpt the per-session view
+    shows, and the content the budget counts and the proposer reads."""
+    return {"path": path, "record": {"proof": proof, "excerpt": text[:2000],
+                                     "content": content}}
+
+
 def records(transcript, host="claude"):
     """A transcript's events in file order, read as its host requires: Pi and Copilot strictly
     (a corrupted recording attests nothing), Claude leniently (its own readers skip what does
@@ -123,9 +130,7 @@ def _claude_reads(events, root):
                 continue
             proof = file_proof(root, path, content.encode("utf-8"), complete=True)
             if proof:
-                found.append((position, {"path": proof["path"],
-                                         "record": {"proof": proof, "excerpt": content[:2000],
-                                                    "content": content}}))
+                found.append((position, _complete(proof["path"], proof, content, content)))
     return found
 
 
@@ -138,7 +143,7 @@ def _strict_records(transcript):
 
 
 def _pi_reads(events, root, captures=None):
-    from ..trace.pi import pi_active_branch
+    from ..trace.pi import pi_active_branch, pi_positions
     header = events[0] if events and events[0].get("type") == "session" else {}
     cwd = header.get("cwd") if isinstance(header.get("cwd"), str) else None
     if not isinstance(cwd, str) or not os.path.isabs(cwd):
@@ -146,7 +151,7 @@ def _pi_reads(events, root, captures=None):
     branch = pi_active_branch(events)
     if not branch or branch[0].get("parentId") is not None:
         return []
-    positions = {entry["id"]: n for n, entry in enumerate(events) if entry.get("id")}
+    positions = pi_positions(events)
     calls, found = {}, []
     captured = load_captures(captures) if captures else {}
     for event in branch:
@@ -186,9 +191,7 @@ def _pi_reads(events, root, captures=None):
             proof = file_proof(root, os.path.join(cwd, args["path"]),
                                text.encode("utf-8"), complete=True)
             if proof:
-                found.append((position, {"path": proof["path"],
-                                         "record": {"proof": proof, "excerpt": text[:2000],
-                                                    "content": text}}))
+                found.append((position, _complete(proof["path"], proof, text, text)))
     return found
 
 
@@ -211,8 +214,7 @@ def _captured_read(root, capture, text):
     lines = data.decode("utf-8").split("\n")
     body = "\n".join(lines[match["offset"] - 1:match["offset"] - 1 + match["lines"]])
     if match["complete"]:
-        return {"path": file["path"], "record": {"proof": file, "excerpt": text[:2000],
-                                                 "content": body}}
+        return _complete(file["path"], file, text, body)
     first = match["offset"]
     last = first + match["lines"] - 1
     return {"path": file["path"], "record": {
@@ -284,7 +286,5 @@ def _copilot_reads(events, root):
             proof = file_proof(root, os.path.join(cwd, args["path"]),
                                text.encode("utf-8"), complete=True)
             if proof:
-                found.append((position, {"path": proof["path"],
-                                         "record": {"proof": proof, "excerpt": text[:2000],
-                                                    "content": text}}))
+                found.append((position, _complete(proof["path"], proof, text, text)))
     return found

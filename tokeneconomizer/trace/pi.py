@@ -48,6 +48,12 @@ def pi_prompt_count(path):
                if e.get("type") == "message" and (e.get("message") or {}).get("role") == "user")
 
 
+def pi_positions(entries):
+    """Each entry's own index in `entries`, by id: the position the prompt, reply and read
+    readers all report, so the digest can place a message against the reads it followed."""
+    return {entry["id"]: n for n, entry in enumerate(entries) if entry.get("id")}
+
+
 def pi_prompts(entries):
     """Every prompt the conversation ran, in branch order, as `(position, emitted_at, text)`:
     a `user` message on the active branch. A message the extension injected carries a
@@ -55,7 +61,7 @@ def pi_prompts(entries):
     timestamp in epoch seconds, else its message's (milliseconds), None when neither is there;
     `position` is the entry's index in `entries` -- the same index
     `knowledge.observation.reads` reports."""
-    positions = {e["id"]: n for n, e in enumerate(entries) if e.get("id")}
+    positions = pi_positions(entries)
     out = []
     for entry in pi_active_branch(entries):
         message = entry.get("message") or {}
@@ -78,7 +84,7 @@ def pi_replies(entries):
     `knowledge.observation.reads` report, so a comment is placed against the reads it followed.
     An abandoned branch stays out; a `system`, `custom` or `toolResult` message is not the
     agent's own writing."""
-    positions = {e["id"]: n for n, e in enumerate(entries) if e.get("id")}
+    positions = pi_positions(entries)
     out = []
     for entry in pi_active_branch(entries):
         message = entry.get("message") or {}

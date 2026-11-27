@@ -199,7 +199,7 @@ class Knowledge(Distiller):
             return False, "invalid-source-or-content"
         proofs, sources, observed, covered = [], [], {}, set()
         for entry in entries:
-            evidence, session, reason = self._source_evidence(entry)
+            evidence, session, reason = self.digest.evidence(entry, self.workspace)
             if evidence is None:
                 return False, reason
             if evidence.get("observed"):
@@ -222,13 +222,6 @@ class Knowledge(Distiller):
                                       "injection": spec.get("injection", spec["claim"]),
                                       "detector": spec.get("detector", {}),
                                       "proof": proofs, "provenance": provenance})
-
-    def _source_evidence(self, entry):
-        """Resolve one proposal entry (`{ref, symbol?}`) against the digest's retained
-        observations: the contract proving what the source says and the session it was observed
-        in, or the reason it cannot back the fact. See `digest.Digest.evidence` for the refusals
-        (`out-of-digest`, `partial-needs-symbol`, `symbol-not-observed`)."""
-        return self.digest.evidence(entry, self.workspace)
 
     def _admit_knowledge(self, spec):
         original_id = spec["id"]

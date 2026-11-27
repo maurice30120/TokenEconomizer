@@ -214,7 +214,7 @@ the explanation is correct.
 
 Copilot CLI gives Knowledge less than Pi and Claude Code, and the gap is in what the host
 records, not in a missing parser. The refusing predicates live in
-`knowledge/observation.py::_copilot_observations`; each limit below has a test in
+`knowledge/observation.py::_copilot_reads`; each limit below has a test in
 `tests/test_knowledge_copilot.py`.
 
 - **One session format only.** A tool result is read only when
@@ -300,7 +300,8 @@ entries. The engine resolves each ref against the observations the digest retain
 one it does not show -- unknown, ambiguous, dropped by a sequence's budget, or never citable
 (`out-of-digest`) -- a partial read without a symbol (`partial-needs-symbol`), a symbol the
 read did not cross (`symbol-not-observed`), and a proof that no longer verifies
-(`stale-proof`); two refs that resolve to the same file are one source, not two. The
+(`stale-proof`); two refs of one file are one covered file for the uncovered-file check,
+while each ref keeps its own provenance entry. The
 stored spec keeps only the business fields, the revision, and the engine's own `proof` list
 and `provenance` -- never the proposal's entries. One complete read, or one symbol a partial
 read crossed, is enough; several sources are allowed when they explain one mechanism, and the
