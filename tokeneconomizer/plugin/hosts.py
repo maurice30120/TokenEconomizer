@@ -135,17 +135,44 @@ class Host:
     def session_id(self, p):
         return str(p.get("session_id") or "")
 
-    def read_path(self, p):
-        """The file a PostToolUse payload's file-reading tool (`Read`, `read`, `view`) read, as
-        the tool was given it; "" for any other call."""
+    def named_files(self, p, signals=(), cwd="", root=""):
+        """The workspace files this tool call names, strongest mention first, as
+        `(path, strength)` pairs; [] when the call names none. THE seam both callers share: the
+        gate that admits Knowledge after a tool call and the recorder of what the session named
+        take their answer from here, nowhere else.
+
+        A mention is a Knowledge Signal found in the call's text -- its symbol as a whole
+        identifier, its path, or its bare file name -- whatever the tool: a shell `grep`, `sed`
+        or `cat` naming a covered file, an edit or a write naming it, a host tool with its own
+        name for reading. `signals` pairs each nameable signal with the workspace-relative file
+        it belongs to. A mention is never a parsed command: no shell parser lives here, so an
+        `ls` naming a covered file and a `cat > file` writing over one name it too, and a
+        search that shows three lines of a file names as much as a full read; the Contract
+        check at injection time, not this trigger, covers the stale card that can follow.
+
+        A failed call names nothing. The one mention whose location the seam knows without
+        parsing is a file-reading tool's (`Read`, `read`, `view`) own path: outside the
+        workspace, that mention is ignored and the call names nothing.
+        """
+        from ..knowledge.stage import match_strength
         name, args, _text, _code = self.tool_call(p)
         response = p.get("tool_response") or p.get("tool_result")
-        if (name not in ("Read", "read", "view")
-                or (isinstance(response, dict)
-                    and (response.get("isError") or response.get("is_error")))):
-            return ""
-        path = args.get("file_path") or args.get("path")
-        return path if isinstance(path, str) else ""
+        if isinstance(response, dict) and (response.get("isError") or response.get("is_error")):
+            return []
+        if name in ("Read", "read", "view"):
+            path = args.get("file_path") or args.get("path")
+            if isinstance(path, str) and path:
+                full = os.path.realpath(os.path.join(cwd, path))
+                rel = os.path.relpath(full, os.path.realpath(root))
+                if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+                    return []
+        text = " ".join(str(v) for v in args.values() if isinstance(v, str))
+        named = {}
+        for signal, file in signals:
+            strength = match_strength(text, signal)
+            if strength and strength > named.get(file, 0):
+                named[file] = strength
+        return sorted(named.items(), key=lambda pair: -pair[1])
 
     def transcript(self, p):
         return p.get("transcript_path") or ""

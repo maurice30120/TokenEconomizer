@@ -294,6 +294,28 @@ class Knowledge(Distiller):
                     out.append(path)
         return out
 
+    def nameable(self):
+        """Every signal a tool call can name, as `(signal, workspace file)` pairs: for each
+        injectable Knowledge and each source, the contract's signal -- the symbol when it has
+        one, else the file -- and the source's file itself, so a call names a covered file by its
+        path or bare name even when the Knowledge's signal is a symbol. The plugin's tool-call
+        seam matches these against a call's text; what counts is the pair, never a parsed
+        command."""
+        out = []
+        for fact in self.facts.values():
+            if not fact.injectable():
+                continue
+            for proof in proofs_of(fact.spec):
+                path = proof.get("path")
+                if not isinstance(path, str) or not path:
+                    continue
+                path = os.path.normpath(path).replace("\\", "/")
+                symbol = proof.get("symbol") if proof.get("kind") == "symbol" else None
+                if symbol:
+                    out.append((symbol, path))
+                out.append((path, path))
+        return out
+
     def covering(self, path):
         """The eligible Knowledge covering a file the agent read (a workspace-relative path), as
         `(fact, path)` pairs, highest firing rate first, then registration order."""

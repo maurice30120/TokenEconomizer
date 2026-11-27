@@ -54,8 +54,8 @@ def test_reading_a_covered_file_injects_its_knowledge_once_after_the_read(
     assert CLAIM in json.dumps(out)
     assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
     (entry,) = _logged(enabled, repo)
-    assert (entry["signal"], entry["trigger"], entry["when"], entry["read_before"]) == (
-        "source.txt", "read", "after_read", False)
+    assert (entry["signal"], entry["trigger"], entry["when"], entry["tool"],
+            entry["read_before"]) == ("source.txt", "tool", "after_call", "Read", False)
     assert CLAIM not in json.dumps(_read(enabled, repo, "r1", source))      # once per session
     assert len(_logged(enabled, repo)) == 1
 
@@ -149,7 +149,7 @@ def test_startup_reserves_budget_and_does_not_repeat_cards(tmp_path, env, repo, 
     assert "card for c.txt" in read("c.txt")    # the unused startup budget is still available
     assert "card for d.txt" not in read("d.txt")
     assert [e["trigger"] for e in dst.store.read_lines("events.jsonl") if e["kind"] == "knowledge"] == [
-        "startup", "read", "read"]
+        "startup", "tool", "tool"]
     if host == "pi":
         # Pi retains its startup section and can keep recent read messages after compaction.
         assert start_with(enabled, source="compact", retained_knowledge_reads=["a.txt"]) == "{}"
@@ -229,7 +229,7 @@ def test_a_later_read_flags_the_file_read_earlier_on_an_unverified_host(
         out = _read(enabled, repo, sid, source)
         assert CLAIM in json.dumps(out)
         entry = _logged(enabled, repo)[-1]
-        assert entry["trigger"] == "read"
+        assert entry["trigger"] == "tool"
         return entry["read_before"]
     assert read_before("p1") is False
     # A host whose read cannot inject still reports the read, and the flag follows it.

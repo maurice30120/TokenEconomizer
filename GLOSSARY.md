@@ -47,10 +47,10 @@ What a session actually read of a source: the whole file for a complete read, th
 The bytes of a file kept by the hook as a Pi `read` returned them, so a partial read can be proved against the version it observed. Bounded per session, discarded once the session is folded, and never shown to the model as reading.
 
 **Knowledge Signal**:
-The symbol a Knowledge is about or, failing that, the file it is about, taken from its contract. A user request shares a signal when it names that symbol (as a whole identifier) or that file (by path or by file name). A Knowledge with several sources has one signal per source.
+The symbol a Knowledge is about or, failing that, the file it is about, taken from its contract. A user request shares a signal when it names that symbol (as a whole identifier) or that file (by path or by file name). A tool call names it the same way: the signal found in the call's text, never a parsed command. A Knowledge with several sources has one signal per source.
 
 **Relevant Knowledge**:
-Knowledge that shares a Knowledge Signal with the user's current request, or that covers a file the agent has read. Only Relevant Knowledge is ever given to the agent. It is given at session start, up to the startup share of the Knowledge allowance, and again when a successful read covers it; when none is relevant, none is given.
+Knowledge that shares a Knowledge Signal with the user's current request, or that covers a file a tool call named (the signal found in the call's text, whatever the tool). Only Relevant Knowledge is ever given to the agent. It is given at session start, up to the startup share of the Knowledge allowance, and again when a request shares a signal or a tool call names a covered file; when none is relevant, none is given.
 _Avoid_: matching knowledge, applicable knowledge
 
 **Knowledge Allowance**:

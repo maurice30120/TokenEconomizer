@@ -9,11 +9,11 @@
     UserPromptSubmit  open a prompt-turn for the loop guard; on a session's first prompt, add
                       the repository map (`repomap=on`); with `knowledge=on`, add the
                       Knowledge whose symbol or file the prompt names (never at session start)
-    PostToolUse       with `knowledge=on`, after a read, add the Knowledge covering the file
-                      (once per session, after the result: no host accepts context before);
-                      fold the call into the turn's guard; keep the bytes a Pi `read`
-                      returned, for the fold; a redirect when it first says the turn is stuck,
-                      then a notice to the person saying how to stop it
+    PostToolUse       with `knowledge=on`, when the call names a Knowledge's file, add the
+                      Knowledge covering it (once per session, after the result: no host
+                      accepts context before); fold the call into the turn's guard; keep the
+                      bytes a Pi `read` returned, for the fold; a redirect when it first says
+                      the turn is stuck, then a notice to the person saying how to stop it
     Stop              close the turn; an ended-green turn feeds the repository's envelope
     SessionEnd        hand the session to a detached `te fold`
 
@@ -38,7 +38,7 @@ from .hosts import merge_outputs
 from .paths import ensure_launcher
 
 TURN_HISTORY = 200
-KNOWLEDGE_READS = 500          # files a session remembers having read
+KNOWLEDGE_NAMED = 500          # files a session remembers having named
 
 # Droid versions whose PostToolUse drops failed tool calls (#231), as [first,
 # past-last): 1.12.0 and 1.12.1 are the versions verified to drop them. 0.233.0
@@ -146,7 +146,8 @@ class LiveController:
             s.pop("knowledge_tokens", None)
             s.pop("knowledge_startup", None)
             s.pop("knowledge_read_blocks", None)
-            s.pop("files_read", None)
+            s.pop("files_named", None)
+            s.pop("files_read", None)   # the pre-tool-trigger name of the same list
         s.setdefault("cwd", self.host.cwd(self.p, self.ctx.env))
         outputs = []
         seen = self.store.read("notices.json") or {}
@@ -418,7 +419,7 @@ class LiveController:
                         "cards": [(fact.id, fact.spec.get("rev", 1)) for fact, _ in chosen],
                         "tokens": cost,
                     }
-                if trigger == "read" and self.host.name == "pi" and self.p.get("tool_use_id"):
+                if trigger == "tool" and self.host.name == "pi" and self.p.get("tool_use_id"):
                     s.setdefault("knowledge_read_blocks", {})[self.p["tool_use_id"]] = {
                         "cards": [fact.id for fact, _ in chosen], "tokens": cost,
                     }
@@ -426,16 +427,16 @@ class LiveController:
 
     def _knowledge_from_prompt(self, s, prompt):
         """The Knowledge block for a prompt that names a Knowledge's symbol or file; "" when none
-        is relevant. A Knowledge whose own file was read earlier in the session is logged with
+        is relevant. A Knowledge whose own file was named earlier in the session is logged with
         `read_before`. A failure leaves the hook's output as it would be without Knowledge."""
         if self.replaying or not prompt:     # a replayed hook's answer reaches no one
             return ""
-        read = s.get("files_read") or []
+        named = self._named_files(s)
         try:
             return self._inject_knowledge(
                 s, "prompt", task=prompt,
                 extra=lambda stage, fact: {
-                    "read_before": any(f in read for f in stage.files(fact))})
+                    "read_before": any(f in named for f in stage.files(fact))})
         except Exception:
             self._record_error()
             return ""
@@ -562,44 +563,54 @@ class LiveController:
             return NoVerdict()
         return AsyncJudge(self.ctx, self.sid, thr.get("judge_confidence"))
 
-    def knowledge_on_read(self):
-        """Does this tool hook bring Knowledge? Only after a read, on a host verified to put
-        its context after the result without rewriting the cached prefix."""
-        return bool(not self.cfg.shadow and self.host.tool_context and self._reports_read())
+    def knowledge_on_tool(self):
+        """Does this tool hook bring Knowledge? Only when the call names a covered file, on a
+        host verified to put its context after the result without rewriting the cached prefix."""
+        return bool(not self.cfg.shadow and self.host.tool_context and self._reports_named())
 
-    def _workspace_path(self, path):
-        """A read's path relative to the workspace, "" when it lies outside."""
-        cwd = self.host.cwd(self.p, self.ctx.env)
-        full = os.path.realpath(os.path.join(cwd, path))
-        root = os.path.realpath(self.ctx.repo.root)
-        rel = os.path.relpath(full, root)
-        return "" if rel == os.pardir or rel.startswith(os.pardir + os.sep) \
-            or os.path.isabs(rel) else rel.replace(os.sep, "/")
-
-    def _reports_read(self):
-        """Did the host report a successful read of a file, whether or not it could inject?"""
-        return bool(self.cfg.knowledge and self.p.get("hook_event_name") == "PostToolUse"
-                    and self.host.read_path(self.p))
-
-    def _knowledge_from_read(self):
-        """Remember the file just read (`files_read`), and where the host allows it give the
-        Knowledge covering it, logged with the file as its signal, `after_read` and whether the
-        file had been read earlier in the session. {} when none is given; a failure leaves the
-        output as it would be without Knowledge."""
+    def _reports_named(self):
+        """Did the host report a tool call that names a Knowledge's file, whether or not it
+        could inject? A state that cannot be read answers no and the hook moves on."""
         try:
-            rel = self._workspace_path(self.host.read_path(self.p))
-            if not rel:
+            return bool(self.cfg.knowledge and self.p.get("hook_event_name") == "PostToolUse"
+                        and self.host.named_files(self.p, self._knowledge_stage().nameable(),
+                                                  cwd=self.host.cwd(self.p, self.ctx.env),
+                                                  root=self.ctx.repo.root))
+        except Exception:
+            self._record_error()
+            return False
+
+    def _named_files(self, s):
+        """The files this session named, whichever way an older state recorded them."""
+        named = s.get("files_named")
+        return list(named) if isinstance(named, list) else list(s.get("files_read") or [])
+
+    def _knowledge_from_tool(self):
+        """Remember the files the call named (`files_named`), and where the host allows it give
+        the Knowledge covering the strongest one, logged with the file as its signal, the tool
+        that named it, `after_call` and whether the file had been named earlier in the session.
+        {} when none is given; a failure leaves the output as it would be without Knowledge."""
+        try:
+            files = self.host.named_files(self.p, self._knowledge_stage().nameable(),
+                                          cwd=self.host.cwd(self.p, self.ctx.env),
+                                          root=self.ctx.repo.root)
+            if not files:
                 return {}
+            rel = files[0][0]
+            tool, _args, _text, _code = self.host.tool_call(self.p)
             s = self._session()
-            read = list(s.get("files_read") or [])
+            read = self._named_files(s)
             read_before = rel in read
-            if not read_before:
-                s["files_read"] = (read + [rel])[-KNOWLEDGE_READS:]
+            named = [path for path, _strength in files if path not in read]
+            if named or s.get("files_read") is not None:
+                s["files_named"] = (read + named)[-KNOWLEDGE_NAMED:]
+                s.pop("files_read", None)   # the pre-tool-trigger name of the same list
             block = ""
-            if self.knowledge_on_read() and not self.replaying:
+            if self.knowledge_on_tool() and not self.replaying:
                 block = self._inject_knowledge(
-                    s, "read", read=rel,
-                    extra=lambda stage, fact: {"when": "after_read", "read_before": read_before})
+                    s, "tool", read=rel,
+                    extra=lambda stage, fact: {"when": "after_call",
+                                               "read_before": read_before, "tool": tool})
             self._save(s)
             return self.host.context("PostToolUse", block) if block else {}
         except Exception:
@@ -609,7 +620,7 @@ class LiveController:
     def post_tool(self):
         if self.host.is_subagent(self.p):
             return {}
-        out = self._knowledge_from_read() if self._reports_read() else {}
+        out = self._knowledge_from_tool() if self._reports_named() else {}
         return merge_outputs(out, self._guard_tool()) if out else self._guard_tool()
 
     def _guard_tool(self):

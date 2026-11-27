@@ -153,13 +153,16 @@ def test_a_prompt_that_may_carry_context_is_not_queued():
         """A controller enough for `_queues`: the real predicates, over the host's flags."""
         host = SimpleNamespace(prompt_context=prompt_context, prompt_knowledge=prompt_knowledge,
                                knowledge_start_context=False, tool_context=tool_context,
-                               read_path=lambda p: "/r/a.py")
+                               named_files=lambda p, signals=(), cwd="", root="": [("/r/a.py", 0)],
+                               cwd=lambda p, env: "/r")
         c = SimpleNamespace(cfg=SimpleNamespace(repomap=repomap, knowledge=knowledge,
                                                shadow=shadow),
-                            host=host, p={"hook_event_name": "PostToolUse"})
+                            host=host, p={"hook_event_name": "PostToolUse"},
+                            ctx=SimpleNamespace(repo=SimpleNamespace(root="/r"), env={}))
         c.knowledge_on_prompt = MethodType(LiveController.knowledge_on_prompt, c)
-        c.knowledge_on_read = MethodType(LiveController.knowledge_on_read, c)
-        c._reports_read = MethodType(LiveController._reports_read, c)
+        c.knowledge_on_tool = MethodType(LiveController.knowledge_on_tool, c)
+        c._reports_named = MethodType(LiveController._reports_named, c)
+        c._knowledge_stage = lambda: SimpleNamespace(nameable=lambda: [])
         return c
     assert hookqueue._queues(ctrl("off"), "UserPromptSubmit")
     assert hookqueue._queues(ctrl("start"), "UserPromptSubmit")

@@ -105,8 +105,8 @@ saved lifecycle; injection still requires a valid proof and an unretired lifecyc
 
 On Pi and Copilot CLI, the session-start hook can give eligible Knowledge alongside native
 facts, ordered by firing rate and then registration order. Both hosts can also deliver Relevant
-Knowledge after a successful read of any covered file. Hosts that support the earlier prompt
-trigger keep it, while Pi and Copilot use startup and read triggers for this experiment.
+Knowledge after a tool call names a covered file. Hosts that support the earlier prompt
+trigger keep it, while Pi and Copilot use startup and tool-call triggers for this experiment.
 Stored Knowledge is read in one format only: the engine's proofs and provenance, with no
 compatibility reader and no migration, so an old-format state file is simply absent.
 
@@ -115,8 +115,9 @@ The engine keeps the sources and their proofs out of the injected text.
 Knowledge has a total budget for the conversation context. Set `knowledge_max_cards` (default
 4), `knowledge_max_tokens` (default 300 estimated tokens) and `knowledge_startup_share`
 (default 0.5, from 0 to 1) via the regular `te config` settings. The startup share applies to
-both limits, rounded down. At 0, Knowledge only arrives after a read on Pi and Copilot. Unused
-startup capacity is available later. Native facts use their own budget. A map must fit in full.
+both limits, rounded down. At 0, Knowledge only arrives after a tool call that names a covered
+file, on Pi and Copilot. Unused startup capacity is available later. Native facts use their own
+budget. A map must fit in full.
 
 An already delivered card consumes its allowance only once while it remains in context.
 Duplicate start hooks for the same event are ignored for both native facts and Knowledge.
@@ -145,27 +146,35 @@ keeps registration order, so the choice is deterministic and makes no model call
 
 Delivery is the host's own prompt context, after what the cached prefix holds.
 
-### The read trigger
+### The tool-call trigger
 
-The second trigger is the agent reading a file a Knowledge covers (any of the
-files it is about), even when the request never named it. It
-runs on `PostToolUse` after a file-reading tool (`Read`, `read`, `view`) succeeds, with
+The second trigger is a tool call naming the signal a Knowledge covers: its symbol as a whole
+identifier, its path, or its bare file name, whatever the tool — a shell `grep`, `sed` or `cat`
+naming the file, an edit or a write naming it, a host tool with its own name for reading, or
+the file-reading tools themselves (`Read`, `read`, `view`). It runs on `PostToolUse`, with
 `knowledge=on`, also when the loop guard is off, and only on a host verified to put that
 context after the tool's result at the end of the conversation (`tool_context`: Claude Code,
-Copilot, Pi). A host not verified gets nothing from this trigger. The same once-per-session
-memory (`knowledge_given`) and the same budget, proof, lifecycle and forgotten gates apply. A
-Knowledge already given in the context is skipped. The file must lie
-inside the workspace. Every match is an exact path, so covering Knowledge is ordered by firing rate, then
-registration order. A subagent's read, a failed
-read, a shadow run and a replayed (queued) hook inject nothing.
+Copilot, Pi). A host not verified gets nothing from this trigger. A mention is a Knowledge
+Signal found in the call's text, never a parsed command: an `ls` naming a covered file and a
+`cat > file` writing over one name it too, and a search that shows three lines of a file names
+as much as a full read; the Contract check at injection time, not the trigger, covers the
+stale card that can follow. The same once-per-session memory (`knowledge_given`) and the same
+budget, proof, lifecycle and forgotten gates apply. A Knowledge already given in the context
+is skipped. When a call names several covered files, the strongest mention comes first (a
+symbol outranks a path, which outranks a bare name, as for the prompt trigger), and the
+covering Knowledge of the strongest named file is what the trigger injects. A subagent's call,
+a failed call, a shadow run and a replayed (queued) hook inject nothing.
 
-**The read trigger cannot save its own read.** It injects only after the tool result
-(`when: "after_read"`). A card delivered at startup can already be in context at that point.
-The session state remembers the files read (`files_read`, emptied with
-`knowledge_given`), so the log says when the file had been read earlier in the session
-(`read_before`): then the Knowledge came too late for that read as well. The reads are
-remembered whenever the host reports one, also where it cannot inject after a read. Reads are
-recognized by tool name (`Read`, `read`, `view`); a host with another name for it reports none.
+**The tool trigger cannot save its own call.** It injects only after the tool result
+(`when: "after_call"`). A card delivered at startup can already be in context at that point.
+The session state remembers the files the session named (`files_named`, emptied with
+`knowledge_given`), so the log says when the file had been named earlier in the session
+(`read_before`): then the Knowledge came too late for that call as well. The files are
+remembered whenever the host reports the call, also where it cannot inject after one. A
+mention outside the workspace is ignored: the one mention whose location the hook knows
+without parsing, a file-reading tool's own path, resolves against the workspace first. A card
+already given in the session is not given again, and the shared card and token budget — the
+startup share included — is the only cap.
 
 #### Verified hosts: hook before the tool call (probe, 2026-11-24)
 
@@ -195,12 +204,16 @@ file-reading tool), Cursor, Antigravity, Grok, Droid, opencode, Hermes.
 
 Each Knowledge actually injected is logged, one line per Knowledge, in the repository's
 `events.jsonl` (the log of the native `inject` events) as `kind: "knowledge"` with
-`knowledge_id`, `signal` (the symbol or file the prompt named, or the file that was read),
-`trigger` (`"startup"`, `"prompt"` or `"read"`), plus the usual `at`, `session_id` and `shadow`. A read
-adds `when` (`"after_read"`). Both triggers add `read_before`: on a read, the file had been read
-earlier in the session; on a prompt, one of the Knowledge's own files had been. Nothing is logged when nothing is injected, and
+`knowledge_id`, `signal` (the symbol or file the prompt or the call named), `trigger`
+(`"startup"`, `"prompt"` or `"tool"`), plus the usual `at`, `session_id` and `shadow`. A
+tool-call trigger adds `tool` (the tool that named the file — `read` for a full read, `bash`
+for a search — so a reader of the log tells the two apart without guessing) and `when`
+(`"after_call"`: the block lands after the tool result, too late to credit that call). The
+prompt and tool triggers add `read_before`: on a tool call, the file had been named earlier in
+the session; on a prompt, one of the Knowledge's own files had been. Nothing is logged when nothing is injected, and
 forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers share this one kind; the ledger has no
-`injection` field for Knowledge, which belongs to the paid optimizer.
+`injection` field for Knowledge, which belongs to the paid optimizer. The two places to look
+are `te microskills` for the stored Knowledge and this event log for what a session was given.
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
