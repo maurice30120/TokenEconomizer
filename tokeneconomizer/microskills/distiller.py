@@ -898,7 +898,7 @@ class Distiller(Forgetting):
         self.opt_tokens = d.get("opt_tokens", 0.0)
         self.last_propose = d.get("last_propose", -1)
         self.extractors = {k: Extractor(v) for k, v in d.get("extractors", {}).items()}
-        self.facts = {k: Fact.from_dict(v) for k, v in d.get("facts", {}).items()}
+        self.facts = {k: cls.FACT_CLS.from_dict(v) for k, v in d.get("facts", {}).items()}
         self.window = list(d.get("window") or [])[-WINDOW:]
         self.raw_window = [[(c, "") for c in cmds] for cmds in d.get("raw_cmds") or []]
         self.forgotten = dict(d.get("forgotten") or {})

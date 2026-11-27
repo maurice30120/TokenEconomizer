@@ -15,6 +15,53 @@ def test_knowledge_is_independent_and_disabled_by_default(tmp_path):
     assert cfg.knowledge and cfg.microskills == "off"
 
 
+def observed_stage(tmp_path, names=("source.txt",), sessions=1, command="pytest",
+                  output="passed"):
+    """A `Knowledge` whose window holds a complete read of each of `names`, plus one command
+    run, for each of `sessions` sessions (the host is Claude, one digest per session)."""
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    for i in range(sessions):
+        uses, results = [], []
+        for n, name in enumerate(names):
+            content = (tmp_path / name).read_text()
+            lines = len(content.splitlines())
+            uses.append({"type": "tool_use", "id": f"r{n}", "name": "Read",
+                         "input": {"file_path": str(tmp_path / name)}})
+            results.append({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": f"r{n}", "content": content}]},
+                "toolUseResult": {"type": "text", "file": {
+                    "filePath": str(tmp_path / name), "content": content,
+                    "startLine": 1, "numLines": lines, "totalLines": lines}}})
+        uses.append({"type": "tool_use", "id": "sh", "name": "Bash",
+                     "input": {"command": command}})
+        events = [{"type": "assistant", "message": {"content": uses}}, *results,
+                  {"type": "user", "message": {"content": [
+                      {"type": "tool_result", "tool_use_id": "sh", "content": output}]}}]
+        path = tmp_path / f"observed{i}.jsonl"
+        path.write_text("\n".join(map(json.dumps, events)))
+        stage.update(path, iid=f"s{i}")
+    return stage
+
+
+def test_one_complete_read_admits_and_injects_a_knowledge_in_the_same_cycle(tmp_path):
+    (tmp_path / "source.txt").write_text("observed\n")
+    stage = observed_stage(tmp_path)
+    assert stage.render() == ""
+    assert stage._admit({
+        "id": "k", "claim": "Source is observed",
+        "injection": "source.txt holds the observed value",
+        "sources": [{"source": "source.txt"}],
+        "detector": {"scope": "pytest", "confirm": "passed"}}) == (True, "admitted")
+    fact = next(iter(stage.facts.values()))
+    assert set(fact.spec) == {"id", "claim", "injection", "detector", "rev", "proof",
+                              "provenance"}
+    assert (fact.spec["rev"], fact.state) == (1, "ACTIVE")
+    assert [proof["path"] for proof in fact.spec["proof"]] == ["source.txt"]
+    assert fact.spec["provenance"] == {"sources": [{"path": "source.txt", "session": "s0"}]}
+    assert "source.txt holds the observed value" in stage.render()
+
+
 def _learn_source_knowledge(tmp_path, env, repo, monkeypatch):
     from tokeneconomizer.plugin import sidecall
     source = Path(repo) / "source.txt"
