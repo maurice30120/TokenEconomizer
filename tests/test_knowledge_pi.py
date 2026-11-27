@@ -446,8 +446,8 @@ def test_a_recorded_pi_request_opens_the_first_sequence(tmp_path):
     # The recording's own `system` message opens nothing; its one real prompt does.
     assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
         ("s0/0", "Read source.txt and finish.", ["s0/0.0"])]
-    assert [(e["ref"], e["path"], len(e["version"])) for e in view["excerpts"]] == [
-        ("s0/0.0", "source.txt", 12)]
+    assert [(e["refs"], e["path"], len(e["version"])) for e in view["excerpts"]] == [
+        (["s0/0.0"], "source.txt", 12)]
 
 
 def test_pi_injected_and_system_messages_open_no_work_sequence(tmp_path):
@@ -516,9 +516,10 @@ def test_a_pi_request_naming_an_issue_or_a_skill_is_an_ordinary_request(tmp_path
         ("s0/0", "fix #123 with /codetour", ["s0/0.0"])]
 
 
-def test_each_read_is_its_own_unit_and_proves_only_what_it_showed(tmp_path):
-    """Two partial reads of one file, on the same version, stay two observations: the symbols
-    and the text of a unit are its own, so neither can stand for what the other read."""
+def test_disjoint_fragments_of_one_version_are_one_entry_with_their_own_lines(tmp_path):
+    """Two partial reads of one file, on the same version, are one catalogue entry: their ranges
+    do not touch, so each stays a fragment with its own lines, its own declarations and its own
+    ref. A symbol one fragment crossed cannot be cited through the other."""
     (tmp_path / "source.py").write_bytes(SOURCE)
     first = {"path": "source.py", "offset": 2, "limit": 1}
     second = {"path": "source.py", "offset": 6, "limit": 1}
@@ -530,9 +531,13 @@ def test_each_read_is_its_own_unit_and_proves_only_what_it_showed(tmp_path):
     stage = Knowledge("repo")
     stage.workspace, stage.host = tmp_path, "pi"
     stage.update(path, iid="s0", captures=captures)
-    assert [(e["ref"], e["symbols"], e["text"]) for e in pi_digest(stage)["excerpts"]] == [
-        ("s0/0.0", ["alpha"], "    return 1"),
-        ("s0/0.1", ["beta"], "    return 2")]
+    (entry,) = pi_digest(stage)["excerpts"]
+    assert entry["path"] == "source.py" and entry["refs"] == ["s0/0.0", "s0/0.1"]
+    assert entry["counts"] == {"reads": 2, "sequences": 1, "sessions": 1}
+    assert [(f["refs"], f["symbols"], f["observed_lines"], f["text"])
+            for f in entry["fragments"]] == [
+        (["s0/0.0"], ["alpha"], "2-2 of 7", "    return 1"),
+        (["s0/0.1"], ["beta"], "6-6 of 7", "    return 2")]
     base = {"id": "k", "claim": "a return", "detector": {"scope": "pytest", "confirm": "passed"}}
     assert stage._admit(dict(base, sources=[{"ref": "s0/0.0", "symbol": "alpha"}])) == (
         True, "admitted")
@@ -547,7 +552,63 @@ def test_each_read_is_its_own_unit_and_proves_only_what_it_showed(tmp_path):
         True, "admitted")
 
 
-def test_only_an_identical_repeat_of_a_read_collapses(tmp_path):
+def test_overlapping_partial_reads_of_one_version_merge_their_ranges(tmp_path):
+    """Lines 2-3 and lines 3-4 of one version are one fragment: the entry keeps the lines either
+    read returned, once, with both refs and both reads' declarations."""
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    first = {"path": "source.py", "offset": 2, "limit": 2}
+    second = {"path": "source.py", "offset": 3, "limit": 2}
+    path = tmp_path / "session.jsonl"
+    reads_session(path, tmp_path, [("a", first, pi_read(SOURCE, 2, 2), False),
+                                   ("b", second, pi_read(SOURCE, 3, 2), False)])
+    captures = capture_read(tmp_path, first, pi_read(SOURCE, 2, 2), tool_use_id="a")
+    capture_read(tmp_path, second, pi_read(SOURCE, 3, 2), tool_use_id="b")
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0", captures=captures)
+    (entry,) = pi_digest(stage)["excerpts"]
+    assert entry["refs"] == ["s0/0.0", "s0/0.1"]
+    assert (entry["observed_lines"], entry["symbols"], entry["text"]) == (
+        "2-4 of 7", ["alpha", "beta"], "    return 1\n\ndef beta():")
+    # The merged range is what both refs now answer for, and it is what admission records.
+    assert stage._admit({"id": "k", "claim": "alpha returns one",
+                         "sources": [{"ref": "s0/0.1", "symbol": "alpha"}],
+                         "detector": {"scope": "pytest", "confirm": "passed"}}) == (
+        True, "admitted")
+    assert next(iter(stage.facts.values())).spec["provenance"]["observed"] == {
+        "source.py": {"reads": [{"offset": 2, "lines": 3}], "total_lines": 7}}
+
+
+def test_two_versions_are_two_entries_even_when_the_symbol_is_unchanged(tmp_path):
+    """A line shift leaves alpha's tokens -- and so its fingerprint -- identical, but the file's
+    bytes are another snapshot: the same fingerprint is not proof of the same version."""
+    from tokeneconomizer.knowledge.proof import symbol_proof
+    shifted = b"# header\n" + SOURCE
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    assert (symbol_proof(tmp_path, "source.py", SOURCE, "alpha")["sha256"]
+            == symbol_proof(tmp_path, "source.py", shifted, "alpha")["sha256"])
+    first = {"path": "source.py", "offset": 2, "limit": 1}
+    second = {"path": "source.py", "offset": 3, "limit": 1}
+    path = tmp_path / "session.jsonl"
+    reads_session(path, tmp_path, [("a", first, pi_read(SOURCE, 2, 1), False),
+                                   ("b", second, pi_read(shifted, 3, 1), False)])
+    captures = capture_read(tmp_path, first, pi_read(SOURCE, 2, 1), tool_use_id="a")
+    (tmp_path / "source.py").write_bytes(shifted)
+    capture_read(tmp_path, second, pi_read(shifted, 3, 1), tool_use_id="b")
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0", captures=captures)
+    entries = pi_digest(stage)["excerpts"]
+    assert [(e["refs"], e["symbols"], e["observed_lines"], e["text"])
+            for e in entries] == [
+        (["s0/0.0"], ["alpha"], "2-2 of 7", "    return 1"),
+        (["s0/0.1"], ["alpha"], "3-3 of 8", "    return 1")]
+    assert len({e["version"] for e in entries}) == 2
+
+
+def test_a_repeat_of_a_read_only_adds_its_ref(tmp_path):
+    """An identical read is the same code: it adds its own ref to the unit, and the whole-file
+    read that follows subsumes both -- one entry, three refs, the file shown once."""
     (tmp_path / "source.py").write_bytes(SOURCE)
     part = {"path": "source.py", "offset": 2, "limit": 1}
     whole = {"path": "source.py", "offset": 1, "limit": 99}
@@ -561,5 +622,32 @@ def test_only_an_identical_repeat_of_a_read_collapses(tmp_path):
     stage = Knowledge("repo")
     stage.workspace, stage.host = tmp_path, "pi"
     stage.update(path, iid="s0", captures=captures)
-    # The repeat of line 2 is one unit; the whole-file read that followed is another.
-    assert [e["ref"] for e in pi_digest(stage)["excerpts"]] == ["s0/0.0", "s0/0.1"]
+    (entry,) = pi_digest(stage)["excerpts"]
+    assert entry["refs"] == ["s0/0.0", "s0/0.1", "s0/0.2"]
+    assert entry["text"] == SOURCE.decode() and "observed_lines" not in entry
+
+
+def test_a_complete_read_of_one_version_subsumes_a_partial_read_of_it(tmp_path):
+    """A whole-file read answers for everything a partial read of the same version returned: one
+    catalogue entry, both refs, the file shown once -- and the partial ref still answers for the
+    declaration its own lines crossed."""
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    part = {"path": "source.py", "offset": 2, "limit": 1}
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    first = tmp_path / "s0.jsonl"
+    reads_session(first, tmp_path, [("a", part, pi_read(SOURCE, 2, 1), False)])
+    captures = capture_read(tmp_path, part, pi_read(SOURCE, 2, 1), tool_use_id="a")
+    stage.update(first, iid="s0", captures=captures)
+    second = tmp_path / "s1.jsonl"
+    reads_session(second, tmp_path, [("b", {"path": "source.py"}, SOURCE.decode(), False)],
+                  stamp="2026-11-24T10:05:00.000Z")
+    stage.update(second, iid="s1")
+    (entry,) = pi_digest(stage)["excerpts"]
+    assert entry["refs"] == ["s0/0.0", "s1/0.0"]
+    assert entry["counts"] == {"reads": 2, "sequences": 2, "sessions": 2}
+    assert entry["text"] == SOURCE.decode() and "observed_lines" not in entry
+    assert stage._admit({"id": "k", "claim": "alpha returns one",
+                         "sources": [{"ref": "s0/0.0", "symbol": "alpha"}],
+                         "detector": {"scope": "pytest", "confirm": "passed"}}) == (
+        True, "admitted")

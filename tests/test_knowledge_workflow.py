@@ -542,7 +542,7 @@ def test_one_observed_source_still_shares_the_proposal_call(tmp_path, env, repo,
         run_session(enabled, repo, f"s{i}", str(tp))
     assert len(calls) == 1
     assert "Knowledge context:" in calls[0]
-    assert '"ref": "s0/0.0"' in calls[0] and "observed_sources" not in calls[0]
+    assert '"s0/0.0"' in calls[0] and "observed_sources" not in calls[0]
 
 
 @pytest.mark.parametrize("failure", ["empty_window", "capture_error", "admission_error"])
@@ -946,8 +946,8 @@ def test_two_requests_in_one_session_are_two_sequences_with_their_own_reads(tmp_
     assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
         ("s0/0", "read first.txt", ["s0/0.0"]),
         ("s0/1", "now read second.txt", ["s0/1.0"])]
-    assert [(e["ref"], e["path"]) for e in view["excerpts"]] == [
-        ("s0/0.0", "first.txt"), ("s0/1.0", "second.txt")]
+    assert [(e["refs"], e["path"]) for e in view["excerpts"]] == [
+        (["s0/0.0"], "first.txt"), (["s0/1.0"], "second.txt")]
 
 
 def test_a_request_that_read_nothing_still_takes_its_slot(tmp_path):
@@ -962,7 +962,7 @@ def test_a_request_that_read_nothing_still_takes_its_slot(tmp_path):
     assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
         ("s0/0", "read first.txt", ["s0/0.0"]),
         ("s0/1", "now just explain it", [])]
-    assert [e["ref"] for e in view["excerpts"]] == ["s0/0.0"]
+    assert [e["refs"] for e in view["excerpts"]] == [["s0/0.0"]]
 
 
 def test_a_session_folded_late_lands_at_its_own_time_position(tmp_path):
@@ -979,8 +979,8 @@ def test_a_session_folded_late_lands_at_its_own_time_position(tmp_path):
     # s0 is a request older than the other eight, folded first and dropped first.
     assert [s["id"] for s in digest_view(stage)["sequences"]] == [
         f"s{n}/0" for n in range(1, 9)]
-    assert [e["ref"] for e in digest_view(stage)["excerpts"]] == [
-        f"s{n}/0.0" for n in range(1, 9)]
+    assert [e["refs"] for e in digest_view(stage)["excerpts"]] == [
+        [f"s{n}/0.0"] for n in range(1, 9)]
 
 
 def test_a_request_with_no_recorded_time_still_sorts_deterministically(tmp_path):
@@ -1156,3 +1156,28 @@ def test_the_digest_shows_the_code_its_budget_counted(tmp_path):
     (shown,) = digest_view(stage)["excerpts"]
     content = (tmp_path / "long.txt").read_text()
     assert len(content) > 2000 and shown["text"] == content
+
+
+# ---- the catalogue: one entry per path and compatible version -------------------------------
+def test_a_repeated_complete_read_is_shown_and_counted_once(tmp_path):
+    """Two reads of one file return the same code, so the catalogue shows it once, keeps both
+    refs in read order, and the sequence's budget charges its characters once."""
+    (tmp_path / "big.txt").write_text("".join(f"line {n}\n" for n in range(1500)))
+    (tmp_path / "small.txt").write_text("small\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read big.txt, small.txt, then big.txt again"),
+        *claude_read(tmp_path, "big.txt", 0), *claude_read(tmp_path, "small.txt", 1),
+        *claude_read(tmp_path, "big.txt", 2)])
+    view = digest_view(stage)
+    # Each read keeps the ref of its own rank, and the sequence lists them in read order.
+    assert [s["refs"] for s in view["sequences"]] == [["s0/0.0", "s0/0.1", "s0/0.2"]]
+    assert [(e["path"], e["refs"]) for e in view["excerpts"]] == [
+        ("big.txt", ["s0/0.0", "s0/0.2"]), ("small.txt", ["s0/0.1"])]
+    # Charged once, the big file leaves room for the small one; charged twice it would not.
+    assert view["excerpts"][0]["text"] == (tmp_path / "big.txt").read_text()
+    assert stage._admit({"id": "k", "claim": "small is read too",
+                         "sources": [{"ref": "s0/0.1"}],
+                         "detector": {"scope": "pytest", "confirm": "passed"}}) == (
+        True, "admitted")

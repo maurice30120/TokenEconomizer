@@ -9,9 +9,18 @@ nothing still takes its slot.
 Each sequence retains the observations its reads produced, in read order, while they fit its own
 `BUDGET` characters: the first unit that would not fit ends retention, so neither it nor anything
 after it can be cited, and a sequence keeps nothing when its first unit is already too large.
-Every retained observation has a stable `ref`; a Knowledge proposal cites refs, never paths, so
-`evidence` resolves a ref against the retained digest alone and a fragment the budget dropped
-(`out-of-digest`) proves nothing.
+
+Two reads are the same code when the whole-file version they observed is the same, so they share
+one catalogue unit: an identical repeat only adds its ref, an overlapping partial read widens the
+unit's range, and a complete read subsumes the partial reads of that version. The unit is what the
+budget charges and what a proposal cites, so repeated code is neither shown nor charged twice. A
+read of another version is another unit, even when a symbol's tokens survived a line shift: an
+identical symbol fingerprint is not proof of the same snapshot.
+
+Every read has a stable `ref`; a Knowledge proposal cites refs, never paths, so `evidence`
+resolves a ref against the retained digest alone and a fragment the budget dropped (`out-of-digest`)
+proves nothing. The counts of reads, work sequences and sessions, and the pairs of paths read in
+one sequence, are signals for the proposer: nothing in this module lets a pair admit anything.
 
 Everything here is deterministic: no filesystem order, no set iteration, no wall clock.
 """
@@ -25,6 +34,7 @@ SEQUENCES = 8        # work sequences in the digest, newest by message emission 
 BUDGET = 16_000      # characters one sequence may retain, its message context included
 MESSAGE_CAP = 2_000  # characters of a user message kept as its sequence's context
 VERSION_CHARS = 12   # how much of a version the proposer is shown
+PAIRS = 32           # pairs of paths read in one sequence, most recurrent first
 
 
 def session_sequences(transcript, root, iid, host="claude", captures=None):
@@ -41,20 +51,22 @@ def session_sequences(transcript, root, iid, host="claude", captures=None):
                   "message": _context(text), "units": []}
                  for n, (_position, emitted, text) in enumerate(prompts)]
     opened, upcoming = -1, 0
+    observed = [[] for _ in sequences]
     for position, read in sorted(found, key=lambda pair: pair[0]):
         while upcoming < len(prompts) and prompts[upcoming][0] < position:
             opened, upcoming = upcoming, upcoming + 1
         if opened >= 0:
-            _read_into(sequences[opened], read)
-    for sequence in sequences:
-        sequence["units"] = _retain(sequence, sequence["units"])
+            observed[opened].append(read)
+    for sequence, read in zip(sequences, observed):
+        sequence["units"] = _retain(sequence, _units(sequence, read))
     return sequences
 
 
 def unit_chars(unit):
-    """What one retained unit costs its sequence's budget: the code it kept, the path and ref it
+    """What one retained unit costs its sequence's budget: the code it kept, the path and refs it
     names, and the agent's comments once they are attached to it (#345)."""
-    return (len(unit["path"]) + len(unit["ref"]) + len(unit.get("content") or "")
+    return (len(unit["path"]) + sum(len(ref) for ref in unit["refs"])
+            + len(unit.get("content") or "")
             + sum(len(comment) for comment in unit.get("comments") or ()))
 
 
@@ -87,25 +99,77 @@ def _context(text):
     return text if len(text) <= MESSAGE_CAP else text[:MESSAGE_CAP - 1] + "\u2026"
 
 
-def _identity(unit):
-    """What makes two reads of a file the same observation: the same path, the same version of
-    it, and the same lines of it (the whole file for a complete read)."""
-    if unit.get("partial"):
-        return (unit["path"], unit.get("version"),
-                tuple((read["offset"], read["lines"]) for read in unit["observed"]["reads"]))
-    return (unit["path"], (unit.get("proof") or {}).get("sha256"), None)
+def _version(unit):
+    """The whole-file version a unit observed: what a complete read proved, or the version a Pi
+    partial read was captured on. Two units hold the same code only when these are equal."""
+    return unit.get("version") if unit.get("partial") else (unit.get("proof") or {}).get("sha256")
 
 
-def _read_into(sequence, read):
-    """Add one read to a sequence as its own unit, unless the sequence already made exactly that
-    read. Local deduplication goes no further: a unit carries its own read's text, version and
-    symbols, so what it proves is what it showed. Ranges of one file across a sequence are
-    merged by #344, not here."""
-    unit = {key: value for key, value in read["record"].items() if key != "excerpt"}
-    unit["path"] = read["path"]
-    if any(_identity(unit) == _identity(other) for other in sequence["units"]):
-        return
-    sequence["units"].append(unit)
+def _span(unit):
+    """The lines of the file a partial unit kept, as `(first, end)`: one read returns one
+    contiguous range, and a merged unit the range that covers the reads it merged."""
+    read = unit["observed"]["reads"][0]
+    return read["offset"], read["offset"] + read["lines"]
+
+
+def _lines(unit):
+    """A partial unit's retained text by the line number it holds in the file."""
+    first, _end = _span(unit)
+    return dict(enumerate(unit["content"].split("\n"), first))
+
+
+def _merge(existing, unit):
+    """The unit two reads of one path share, or None when they observed different code.
+
+    A complete read answers for the whole file, so it subsumes every partial read of that
+    version. Two partial reads share a unit only when their ranges overlap, and then the unit
+    keeps the lines either of them returned -- the same bytes, since the version is the same.
+    Another version never merges, however little changed: a symbol whose tokens survived a line
+    shift has the same fingerprint and is still another snapshot.
+    """
+    if existing["path"] != unit["path"] or _version(unit) is None \
+            or _version(existing) != _version(unit):
+        return None
+    refs = existing["refs"] + unit["refs"]
+    if not existing.get("partial") or not unit.get("partial"):
+        whole = existing if not existing.get("partial") else unit
+        return dict(whole, refs=refs)
+    first, end = _span(existing)
+    start, last = _span(unit)
+    if start >= end or first >= last:
+        return None
+    kept = _lines(existing)
+    for number, text in _lines(unit).items():
+        kept.setdefault(number, text)
+    start, end = min(first, start), max(end, last)
+    return {"path": existing["path"], "refs": refs, "partial": True,
+            "version": existing["version"],
+            "content": "\n".join(kept[number] for number in range(start, end)),
+            "symbols": dict(existing.get("symbols") or {}, **unit.get("symbols") or {}),
+            "observed": {"reads": [{"offset": start, "lines": end - start}],
+                         "total_lines": unit["observed"]["total_lines"]}}
+
+
+def _units(sequence, found):
+    """A sequence's reads as the units it may retain, in read order.
+
+    Each read takes the ref of its own rank in the sequence -- a unit the budget drops leaves a
+    gap, never a silent replacement -- and reads of one path on one version share a unit, so a
+    repeated read costs its characters once and keeps its own ref and provenance.
+    """
+    units = []
+    for rank, read in enumerate(found):
+        unit = {key: value for key, value in read["record"].items() if key != "excerpt"}
+        unit["path"] = read["path"]
+        unit["refs"] = [f"{sequence['id']}.{rank}"]
+        for index, existing in enumerate(units):
+            merged = _merge(existing, unit)
+            if merged is not None:
+                units[index] = merged
+                break
+        else:
+            units.append(unit)
+    return units
 
 
 def _retain(sequence, units):
@@ -116,13 +180,12 @@ def _retain(sequence, units):
     sequence with no retained observation, and no sequence borrows from another's budget.
     """
     kept, used = [], len(sequence["message"])
-    for index, unit in enumerate(units):
-        retained = dict(unit, ref=f"{sequence['id']}.{index}")
-        size = unit_chars(retained)
+    for unit in units:
+        size = unit_chars(unit)
         if used + size > BUDGET:
             break
         used += size
-        kept.append(retained)
+        kept.append(unit)
     return kept
 
 
@@ -134,16 +197,101 @@ def _order(sequence):
     return (0, sequence["emitted"], sequence["session"], sequence["index"])
 
 
-def _observation(unit):
-    """One retained observation as the proposer reads it: the code the sequence's budget kept
-    (`content`), which is what `unit_chars` counted, under its ref, path and version."""
-    version = unit["version"] if unit.get("partial") else unit["proof"]["sha256"]
-    shown = {"ref": unit["ref"], "path": unit["path"], "version": version[:VERSION_CHARS]}
-    if unit.get("partial"):
-        shown["observed_lines"] = observed_lines(unit)
-        shown["symbols"] = sorted(unit.get("symbols") or {})
-    shown["text"] = unit["content"]
-    return shown
+def _fragment(fragment):
+    """One contiguous region of a catalogue entry, with the lines it holds and the refs of the
+    reads that returned them."""
+    return {"refs": fragment["refs"], "observed_lines": observed_lines(fragment),
+            "symbols": sorted(fragment.get("symbols") or {}), "text": fragment["content"]}
+
+
+def _fragments(members):
+    """The disjoint regions of one entry: the partial reads of one version whose ranges touch
+    share a fragment, and a fragment that does not touch another stays its own."""
+    merged = []
+    for _sequence, unit in members:
+        for index, fragment in enumerate(merged):
+            combined = _merge(fragment, unit)
+            if combined is not None:
+                merged[index] = combined
+                break
+        else:
+            merged.append(dict(unit))
+    return [_fragment(fragment) for fragment in merged]
+
+
+def _read_rank(ref):
+    """The rank of the read a ref names, inside its sequence: what keeps refs in read order."""
+    return int(ref.rsplit(".", 1)[-1])
+
+
+def _refs(members):
+    """Every ref an entry keeps, in read order: sequence by sequence in the digest's own order,
+    and inside a sequence the order the reads were made."""
+    by_sequence = {}
+    for sequence, unit in members:
+        by_sequence.setdefault(sequence["id"], []).extend(unit["refs"])
+    return [ref for refs in by_sequence.values() for ref in sorted(refs, key=_read_rank)]
+
+
+def _entry(members):
+    """One catalogue entry: the code of one path on one compatible version, however many reads
+    and sequences observed it, with the refs of every one of them."""
+    path, version = members[0][1]["path"], _version(members[0][1])
+    refs = _refs(members)
+    counts = {"reads": len(refs),
+              "sequences": len(dict.fromkeys(s["id"] for s, _unit in members)),
+              "sessions": len(dict.fromkeys(s["session"] for s, _unit in members))}
+    whole = next((unit for _sequence, unit in members if not unit.get("partial")), None)
+    if whole is not None:
+        return {"path": path, "version": version[:VERSION_CHARS], "refs": refs,
+                "counts": counts, "text": whole["content"]}
+    fragments = _fragments(members)
+    entry = {"path": path, "version": version[:VERSION_CHARS], "refs": refs, "counts": counts}
+    if len(fragments) == 1:
+        entry.update(fragments[0])
+    else:
+        entry["fragments"] = fragments
+    return entry
+
+
+def _catalogue(shown):
+    """The retained observations as the catalogue the proposer reads: one entry per path and
+    compatible version, in first-appearance order, sequence then read.
+
+    The same code appears once and keeps every ref, in read order, so a proposal still names the
+    read and the session it means and each ref resolves to the observation it was taken from.
+    """
+    groups = {}
+    for sequence, unit in shown:
+        groups.setdefault((unit["path"], _version(unit)), []).append((sequence, unit))
+    return [_entry(members) for members in groups.values()]
+
+
+def _counts(sequences):
+    """What the digest holds, distinguished: the reads the catalogue kept, the work sequences it
+    covers (a sequence that read nothing is still one), and the sessions they came from."""
+    return {"reads": sum(len(unit["refs"]) for sequence in sequences
+                         for unit in sequence["units"] if citable(unit)),
+            "sequences": len(sequences),
+            "sessions": len(dict.fromkeys(sequence["session"] for sequence in sequences))}
+
+
+def _cooccurrence(sequences):
+    """Which paths were read in the same work sequence, and in how many sequences.
+
+    A signal that two files were explored together -- converging explorations worth a look --
+    never evidence that they are related: nothing here can back a proposal, and `evidence` never
+    reads it. Most recurrent first, then by path, so the list is deterministic.
+    """
+    counts = {}
+    for sequence in sequences:
+        paths = sorted({unit["path"] for unit in sequence["units"] if citable(unit)})
+        for index, first in enumerate(paths):
+            for second in paths[index + 1:]:
+                counts[(first, second)] = counts.get((first, second), 0) + 1
+    pairs = [{"paths": [first, second], "sequences": count}
+             for (first, second), count in counts.items()]
+    return sorted(pairs, key=lambda pair: (-pair["sequences"], pair["paths"]))[:PAIRS]
 
 
 class Digest:
@@ -165,13 +313,18 @@ class Digest:
         return any(citable(unit) for sequence in self.sequences for unit in sequence["units"])
 
     def view(self):
-        """What the proposer sees: the sequences (id, session, bounded message, ordered refs) and
-        the retained observations they cite, oldest first."""
+        """What the proposer sees: the sequences (id, session, bounded message, ordered refs), the
+        catalogue of the code they read, oldest first, and the counts and pairs that are signals
+        only."""
+        shown = [(sequence, unit) for sequence in self.sequences
+                 for unit in sequence["units"] if citable(unit)]
         return {"sequences": [{"id": s["id"], "session": s["session"], "message": s["message"],
-                               "refs": [unit["ref"] for unit in s["units"] if citable(unit)]}
+                               "refs": sorted((ref for unit in s["units"] if citable(unit)
+                                               for ref in unit["refs"]), key=_read_rank)}
                               for s in self.sequences],
-                "excerpts": [_observation(unit) for s in self.sequences for unit in s["units"]
-                             if citable(unit)]}
+                "excerpts": _catalogue(shown),
+                "counts": _counts(self.sequences),
+                "cooccurrence": _cooccurrence(self.sequences)}
 
     def evidence(self, entry, root):
         """Resolve one proposal entry (`{ref, symbol?}`) against the retained digest: the contract
@@ -187,7 +340,7 @@ class Digest:
         """
         units = [(sequence["session"], unit) for sequence in self.sequences
                  for unit in sequence["units"]
-                 if unit["ref"] == entry["ref"] and citable(unit)]
+                 if entry["ref"] in unit["refs"] and citable(unit)]
         if len(units) != 1:
             return None, None, "out-of-digest"
         session, unit = units[0]
