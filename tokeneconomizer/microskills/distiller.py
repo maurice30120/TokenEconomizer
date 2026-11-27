@@ -870,6 +870,14 @@ class Distiller(Forgetting):
         os.makedirs(d, exist_ok=True)
         return os.path.join(d, repo_filename(repo) + ".json")
 
+    def _state_extra(self):
+        """A subclass's own state, written to its state file under its own keys (`Knowledge`
+        keeps its sequence digest there)."""
+        return {}
+
+    def _restore_extra(self, state):
+        """Take back what `_state_extra` wrote; `state` is the loaded state file."""
+
     def save(self, root):
         # The window goes with the facts: a proposer reloaded for each session (the plugin's
         # fold) must see the recent sessions, as one kept in memory over a stream (the
@@ -878,14 +886,16 @@ class Distiller(Forgetting):
         window = [dict(dg, _cmd_blob=dg.get("_cmd_blob", "")[-BLOB_CAP:],
                        _out_blob=dg.get("_out_blob", "")[-2 * BLOB_CAP:])
                   for dg in self.window[-WINDOW:]]
-        write_json_atomic(self._path(root, self.repo), {
+        state = {
             "repo": self.repo, "now": self.now, "opt_tokens": self.opt_tokens,
             "last_propose": self.last_propose,
             "extractors": {k: e.to_dict() for k, e in self.extractors.items()},
             "facts": {k: f.to_dict() for k, f in self.facts.items()},
             "forgotten": self.forgotten,
             "window": window,
-            "raw_cmds": [[c for c, _ in cmds] for cmds in self.raw_window[-WINDOW:]]})
+            "raw_cmds": [[c for c, _ in cmds] for cmds in self.raw_window[-WINDOW:]]}
+        state.update(self._state_extra())
+        write_json_atomic(self._path(root, self.repo), state)
 
     @classmethod
     def load(cls, repo, root, runner=None, model="agent", external_facts=None, vocab=None):
@@ -902,6 +912,7 @@ class Distiller(Forgetting):
         self.window = list(d.get("window") or [])[-WINDOW:]
         self.raw_window = [[(c, "") for c in cmds] for cmds in d.get("raw_cmds") or []]
         self.forgotten = dict(d.get("forgotten") or {})
+        self._restore_extra(d)
         self.drop_forgotten()
         return self
 

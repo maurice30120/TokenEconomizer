@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from tokeneconomizer.knowledge.observation import observations
+from tokeneconomizer.knowledge.stage import Knowledge
 
 
 def test_real_pi_session_recordings(tmp_path):
@@ -55,7 +56,7 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     (repo / "support.txt").write_text("support\n")
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1", "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off", "TE_LOOPGUARD": "off"}
     candidate = {"id": "k", "claim": "Pi observation",
-                 "sources": [{"source": "source.txt", "source_session": "s1"}],
+                 "sources": [{"ref": "s1/0.0"}],
                  "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
     counts = []
@@ -137,10 +138,15 @@ def capture_read(root, args, text, tool_use_id="r", session_id="s"):
     return session_dir(store, session_id)
 
 
-def reads_session(path, root, reads, bash=None, details=None):
-    """A Pi session log: one assistant turn per (id, args) and its tool result."""
-    entries = [{"type": "session", "version": 3, "id": "s", "cwd": str(root)}]
-    parent = None
+def reads_session(path, root, reads, bash=None, details=None,
+                  message="Work on the files.", stamp="2026-11-24T10:00:00.000Z"):
+    """A Pi session log: one real user message, then an assistant turn per (id, args) and its
+    tool result. The message opens the session's first work sequence, so the reads are its
+    first units (`<iid>/0.0`, `<iid>/0.1`...)."""
+    entries = [{"type": "session", "version": 3, "id": "s", "cwd": str(root)},
+               {"type": "message", "id": "p", "parentId": None, "timestamp": stamp,
+                "message": {"role": "user", "content": [{"type": "text", "text": message}]}}]
+    parent = "p"
     for i, (call_id, args, text, failed) in enumerate(reads):
         call = {"type": "message", "id": f"a{i}", "parentId": parent,
                 "message": {"role": "assistant", "content": [
@@ -292,8 +298,7 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
            "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off",
            "TE_LOOPGUARD": "off"}
     candidate = {"id": "k", "claim": "Alpha returns one",
-                 "sources": [{"source": "source.py", "symbol": "alpha",
-                              "source_session": "s1"}],
+                 "sources": [{"ref": "s1/0.0", "symbol": "alpha"}],
                  "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for",
                         lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
@@ -388,3 +393,124 @@ def test_partial_reads_of_two_versions_of_a_file_do_not_merge():
     changed = _merge_read(read("v1", 1)["record"], read("v2", 4))
     assert sorted(changed["symbols"]) == ["v2"]
     assert changed["observed"]["reads"] == [{"offset": 4, "lines": 1}]
+
+
+# ---- the digest on Pi: real messages, the active branch, one sequence each ------------------
+def pi_session(root, turns):
+    """A Pi session log on one branch: `turns` is [(stamp, message, reads)], where `message` is
+    the entry-level `message` dict to write (None for none) and `reads` are the reads it made,
+    `(call_id, args, text, failed)`."""
+    entries = [{"type": "session", "version": 3, "id": "s", "cwd": str(root)}]
+    parent, n = None, 0
+    for stamp, message, reads in turns:
+        if message is not None:
+            entry = {"type": "message", "id": f"m{n}", "parentId": parent,
+                     "message": message}
+            if stamp:
+                entry["timestamp"] = stamp
+            entries.append(entry)
+            parent, n = entry["id"], n + 1
+        for call_id, args, text, failed in reads:
+            entries += [
+                {"type": "message", "id": f"a{n}", "parentId": parent,
+                 "message": {"role": "assistant", "content": [
+                     {"type": "toolCall", "id": call_id, "name": "read",
+                      "arguments": args}]}},
+                {"type": "message", "id": f"b{n}", "parentId": f"a{n}",
+                 "message": {"role": "toolResult", "toolCallId": call_id, "toolName": "read",
+                             "isError": failed,
+                             "content": [{"type": "text", "text": text}]}}]
+            parent, n = f"b{n}", n + 1
+    return entries
+
+
+def pi_digest(stage):
+    """Write the session's log and return the digest its proposer is shown."""
+    from tests.fixtures import knowledge_digest
+    prompts = []
+    stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"facts": []}', 0)
+    stage._maybe_propose()
+    return knowledge_digest(prompts[0])
+
+
+def test_a_recorded_pi_request_opens_the_first_sequence(tmp_path):
+    fixtures = Path(__file__).parent / "fixtures" / "knowledge"
+    transcript = tmp_path / "complete.jsonl"
+    transcript.write_text((fixtures / "pi-complete.jsonl").read_text()
+                          .replace("__WORKSPACE__", str(tmp_path)))
+    (tmp_path / "source.txt").write_text("observed\nsecond\n")
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(transcript, iid="s0")
+    view = pi_digest(stage)
+    # The recording's own `system` message opens nothing; its one real prompt does.
+    assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
+        ("s0/0", "Read source.txt and finish.", ["s0/0.0"])]
+    assert [(e["ref"], e["path"], len(e["version"])) for e in view["excerpts"]] == [
+        ("s0/0.0", "source.txt", 12)]
+
+
+def test_pi_injected_and_system_messages_open_no_work_sequence(tmp_path):
+    (tmp_path / "source.txt").write_text("observed\n")
+    path = tmp_path / "pi.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z", {"role": "system", "content": ""}, []),
+        ("2026-11-24T10:00:01.000Z",
+         {"role": "custom", "customType": "tokeneconomizer",
+          "content": [{"type": "text", "text": "steering after a read"}]}, []),
+        ("2026-11-24T10:00:02.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.txt"}]},
+         [("r", {"path": "source.txt"}, "observed\n", False)]),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    view = pi_digest(stage)
+    assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
+        ("s0/0", "read source.txt", ["s0/0.0"])]
+
+
+def test_pi_follows_the_active_branch_only(tmp_path):
+    """An abandoned exchange stays in the log; its message opens no sequence."""
+    (tmp_path / "first.txt").write_text("first\n")
+    (tmp_path / "second.txt").write_text("second\n")
+    (tmp_path / "abandoned.txt").write_text("abandoned\n")
+    path = tmp_path / "pi.jsonl"
+    entries = pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read first.txt"}]},
+         [("r1", {"path": "first.txt"}, "first\n", False)]),
+        ("2026-11-24T10:01:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read second.txt"}]},
+         [("r2", {"path": "second.txt"}, "second\n", False)]),
+    ])
+    # An abandoned request hangs off the first result: the active branch never reaches it.
+    entries.insert(-2, {"type": "message", "id": "gone", "parentId": "b1",
+                        "timestamp": "2026-11-24T10:00:30.000Z",
+                        "message": {"role": "user", "content": [
+                            {"type": "text", "text": "read abandoned.txt"}]}})
+    path.write_text("\n".join(map(json.dumps, entries)))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    view = pi_digest(stage)
+    assert [(s["id"], s["message"]) for s in view["sequences"]] == [
+        ("s0/0", "read first.txt"), ("s0/1", "read second.txt")]
+    assert [e["path"] for e in view["excerpts"]] == ["first.txt", "second.txt"]
+
+
+def test_a_pi_request_naming_an_issue_or_a_skill_is_an_ordinary_request(tmp_path):
+    (tmp_path / "source.txt").write_text("observed\n")
+    path = tmp_path / "pi.jsonl"
+    path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text",
+                                       "text": "fix #123 with /codetour"}]},
+         [("r", {"path": "source.txt"}, "observed\n", False)]),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(path, iid="s0")
+    view = pi_digest(stage)
+    assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
+        ("s0/0", "fix #123 with /codetour", ["s0/0.0"])]

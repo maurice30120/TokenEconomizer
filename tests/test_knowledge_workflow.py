@@ -15,9 +15,16 @@ def test_knowledge_is_independent_and_disabled_by_default(tmp_path):
     assert cfg.knowledge and cfg.microskills == "off"
 
 
+def claude_prompt(text, stamp="2026-11-24T10:00:00.000Z"):
+    """A real user message, as Claude Code writes one."""
+    return {"type": "user", "timestamp": stamp,
+            "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+
+
 def fold_session(stage, tmp_path, i, names=("source.txt",), command="pytest",
                  output="passed"):
-    """Fold one Claude session that read each of `names` completely and ran `command`."""
+    """Fold one Claude session whose request read each of `names` completely and ran
+    `command`; its reads are the units `s<i>/0.0`, `s<i>/0.1`... of sequence `s<i>/0`."""
     uses, results = [], []
     for n, name in enumerate(names):
         content = (tmp_path / name).read_text()
@@ -31,7 +38,8 @@ def fold_session(stage, tmp_path, i, names=("source.txt",), command="pytest",
                 "startLine": 1, "numLines": lines, "totalLines": lines}}})
     uses.append({"type": "tool_use", "id": "sh", "name": "Bash",
                  "input": {"command": command}})
-    events = [{"type": "assistant", "message": {"content": uses}}, *results,
+    events = [claude_prompt("work on " + ", ".join(names)),
+              {"type": "assistant", "message": {"content": uses}}, *results,
               {"type": "user", "message": {"content": [
                   {"type": "tool_result", "tool_use_id": "sh", "content": output}]}}]
     path = tmp_path / f"fold{i}.jsonl"
@@ -56,7 +64,7 @@ def test_one_complete_read_admits_and_injects_a_knowledge_in_the_same_cycle(tmp_
     assert stage._admit({
         "id": "k", "claim": "Source is observed",
         "injection": "source.txt holds the observed value",
-        "sources": [{"source": "source.txt"}],
+        "sources": [{"ref": "s0/0.0"}],
         "detector": {"scope": "pytest", "confirm": "passed"}}) == (True, "admitted")
     fact = next(iter(stage.facts.values()))
     assert set(fact.spec) == {"id", "claim", "injection", "detector", "rev", "proof",
@@ -77,7 +85,7 @@ def test_one_observed_read_is_proposed_admitted_and_injected_in_the_next_cycle(
     source = Path(repo) / "source.txt"
     source.write_text("observed\n")
     candidate = {"id": "k", "claim": "Source is observed",
-                 "sources": [{"source": "source.txt", "source_session": "s0"}],
+                 "sources": [{"ref": "s0/0.0"}],
                  "detector": {"scope": "pytest", "confirm": "passed"}}
     prompts = []
 
@@ -91,6 +99,7 @@ def test_one_observed_read_is_proposed_admitted_and_injected_in_the_next_cycle(
     for i in range(2):
         tp = tmp_path / f"one{i}.jsonl"
         tp.write_text("\n".join(map(json.dumps, [
+            claude_prompt("read source.txt"),
             {"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "id": "r", "name": "Read",
                  "input": {"file_path": str(source)}},
@@ -107,7 +116,7 @@ def test_one_observed_read_is_proposed_admitted_and_injected_in_the_next_cycle(
         ])))
         run_session(enabled, repo, f"s{i}", str(tp))
     assert len(prompts) == 1
-    assert "one or more {source, symbol?, source_session?}" in prompts[0]
+    assert "one or more {ref, symbol?}" in prompts[0]
     ctx = LiveContext.build(ClaudeCode(), repo, enabled)
     stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
     (fact,) = stage.facts.values()
@@ -126,14 +135,14 @@ def _learn_source_knowledge(tmp_path, env, repo, monkeypatch):
     other = Path(repo) / "support.txt"
     other.write_text("support\n")
     candidate = {"id": "k", "claim": "Source is observed",
-                 "sources": [{"source": "source.txt", "source_session": "s1"},
-                             {"source": "support.txt", "source_session": "s1"}],
+                 "sources": [{"ref": "s1/0.0"}, {"ref": "s1/0.1"}],
                  "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
     enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="off", TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
     for i in range(5):
         tp = tmp_path / f"hook{i}.jsonl"
         events = [
+            claude_prompt("read both files"),
             {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "r2", "name": "Read", "input": {"file_path": str(other)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "     1→observed"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r2", "content": "     1→support"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(other), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
@@ -237,8 +246,7 @@ def test_a_revision_replaces_the_stored_contract_at_once(tmp_path, monkeypatch):
 
     def candidate(claim="Source contains observed", session="s0", fid="suggestion"):
         return {"id": fid, "claim": claim,
-                "sources": [{"source": name, "source_session": session}
-                            for name in names],
+                "sources": [{"ref": f"{session}/0.{n}"} for n in range(len(names))],
                 "detector": {"scope": "pytest", "confirm": "passed"}}
 
     stage = Knowledge("repo")
@@ -275,7 +283,7 @@ def test_a_detector_revision_bumps_the_revision_and_stays_injectable(tmp_path, m
 
     def candidate(fid="suggestion", **detector):
         return {"id": fid, "claim": "Source contains observed",
-                "sources": [{"source": "source.txt", "source_session": "s0"}],
+                "sources": [{"ref": "s0/0.0"}],
                 "detector": dict({"scope": "pytest", "confirm": "passed"}, **detector)}
 
     stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": [candidate()]}), 0))
@@ -312,8 +320,7 @@ def test_symbol_requested_in_session_survives_unrelated_edits_and_fails_closed(t
     support = tmp_path / "support.txt"
     support.write_text("support\n")
     candidate = {"id": "s", "claim": "Target returns one",
-                 "sources": [{"source": "source.py", "symbol": "target", "source_session": "s0"},
-                             {"source": "support.txt", "source_session": "s0"}],
+                 "sources": [{"ref": "s0/0.0", "symbol": "target"}, {"ref": "s0/0.1"}],
                  "detector": {"scope": "pytest", "confirm": "passed"}}
     stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": [candidate]}), 0))
     stage.workspace = tmp_path
@@ -340,8 +347,7 @@ def test_a_knowledge_about_several_files_holds_while_all_of_them_do(tmp_path, mo
     for name in ("a.txt", "b.txt"):
         (tmp_path / name).write_text(f"{name} observed\n")
     candidates = [{"id": "both", "claim": "a and b agree",
-                   "sources": [{"source": "a.txt", "source_session": "s0"},
-                               {"source": "b.txt", "source_session": "s1"}],
+                   "sources": [{"ref": "s0/0.0"}, {"ref": "s1/0.0"}],
                    "detector": {"scope": "pytest", "confirm": "passed"}}]
     stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": candidates}), 0))
     stage.workspace = tmp_path
@@ -377,26 +383,23 @@ def test_a_knowledge_that_synthesizes_other_knowledge_is_refused(tmp_path, monke
     assert stage._admit({"id": "synthesis", "claim": "combined", "dependencies": ["x", "y"]}) == (False, "invalid-source-or-content")
 
 
-def test_a_reference_must_resolve_to_one_observation_of_one_source(tmp_path):
-    """The engine resolves each reference against the window and keeps its own proof, never
-    the proposal's entries: a source no observation backs, an ambiguous one, an unobserved
-    file named in the claim, and a duplicated reference are refused; two entries resolving to
-    the same file are one source, not two."""
+def test_a_reference_must_resolve_to_one_retained_observation(tmp_path):
+    """The engine resolves each ref against the digest and keeps its own proof, never the
+    proposal's entries: a ref the digest does not retain is refused, an unobserved file named in
+    the claim is refused, and a duplicated ref is refused; two refs resolving to the same file
+    are one source, not two."""
     (tmp_path / "a.py").write_text("def alpha():\n    return 1\n")
     (tmp_path / "link.py").hardlink_to(tmp_path / "a.py")
     stage = observed_stage(tmp_path, names=("a.py", "link.py"), sessions=2)
     base = {"id": "k", "claim": "alpha returns one"}
-    assert stage._admit(dict(base, sources=[{"source": "b.py"}])) == (
-        False, "source-not-observed")
-    assert stage._admit(dict(base, sources=[{"source": "a.py"}])) == (False, "ambiguous-source")
-    assert stage._admit(dict(base, sources=[{"source": "a.py", "source_session": "s9"}])) == (
-        False, "source-not-observed")
-    assert stage._admit(dict(base, sources=[{"source": "a.py", "source_session": "s0"}])) == (
+    # No session is s9, and no sequence s0 has a second unit: both refs are out of the digest.
+    assert stage._admit(dict(base, sources=[{"ref": "s9/0.0"}])) == (False, "out-of-digest")
+    assert stage._admit(dict(base, sources=[{"ref": "s0/0.7"}])) == (False, "out-of-digest")
+    assert stage._admit(dict(base, sources=[{"ref": "s0/0.0"}])) == (True, "admitted")
+    # Two refs that resolve to the same file are one source, not two -- and one is enough.
+    assert stage._admit(dict(base, id="k2", claim="alpha is one",
+                             sources=[{"ref": "s1/0.0"}, {"ref": "s1/0.1"}])) == (
         True, "admitted")
-    # Two entries that resolve to the same file are one source, not two -- and one is enough.
-    assert stage._admit(dict(base, id="k2", claim="alpha is one", sources=[
-        {"source": "a.py", "source_session": "s1"},
-        {"source": "link.py", "source_session": "s1"}])) == (True, "admitted")
     (tmp_path / "uncovered.py").write_text("pass\n")
     (tmp_path / "dir").mkdir()
     (tmp_path / "dir" / "uncovered.py").write_text("pass\n")
@@ -405,15 +408,17 @@ def test_a_reference_must_resolve_to_one_observation_of_one_source(tmp_path):
     (tmp_path / "dir" / "my.file.ts").write_text("export {}\n")
     for mention in ("uncovered.py", "./uncovered.py", "It calls uncovered.py.",
                     r"dir\uncovered.py", ".github/workflows/test.yml", "dir/my.file.ts"):
-        assert stage._admit(dict(base, id="k3", claim="a.py calls " + mention, sources=[
-            {"source": "a.py", "source_session": "s0"}])) == (False, "uncovered-file")
-    # The legacy single-source form has no reader: a proposal names `sources`.
+        assert stage._admit(dict(base, id="k3", claim="a.py calls " + mention,
+                                 sources=[{"ref": "s0/0.0"}])) == (False, "uncovered-file")
+    # The legacy path forms have no reader: a proposal cites the digest's refs.
     assert stage._admit({"id": "legacy", "claim": "alpha returns one", "source": "a.py",
                          "symbol": "alpha"}) == (False, "invalid-source-or-content")
+    assert stage._admit(dict(base, id="k4", sources=[{"source": "a.py"}])) == (
+        False, "invalid-source-or-content")
     assert stage._admit(dict(base, id="k4", sources=[])) == (False, "invalid-source-or-content")
-    assert stage._admit(dict(base, id="k5", sources=[
-        {"source": "a.py", "source_session": "s0"},
-        {"source": "a.py", "source_session": "s0"}])) == (False, "invalid-source-or-content")
+    assert stage._admit(dict(base, id="k5", sources=[{"ref": "s0/0.0"},
+                                                     {"ref": "s0/0.0"}])) == (
+        False, "invalid-source-or-content")
 
 
 def test_two_observed_symbols_in_distinct_files_are_admitted(tmp_path):
@@ -431,15 +436,16 @@ def test_two_observed_symbols_in_distinct_files_are_admitted(tmp_path):
             results.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": f"r{n}", "content": content}]},
                             "toolUseResult": {"type": "text", "file": {"filePath": str(path), "content": content, "startLine": 1, "numLines": 2, "totalLines": 2}}})
         uses.append({"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}})
-        events = [{"type": "assistant", "message": {"content": uses}}, *results,
+        events = [claude_prompt("read both modules"),
+                  {"type": "assistant", "message": {"content": uses}}, *results,
                   {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}]
         transcript = tmp_path / f"symbols{i}.jsonl"
         transcript.write_text("\n".join(map(json.dumps, events)))
         stage.update(transcript, iid=f"s{i}")
     candidate = {"id": "k", "claim": "both return one",
                  "detector": {"scope": "pytest", "confirm": "passed"},
-                 "sources": [{"source": "a.py", "symbol": "alpha", "source_session": "s1"},
-                             {"source": "b.py", "symbol": "beta", "source_session": "s1"}]}
+                 "sources": [{"ref": "s1/0.0", "symbol": "alpha"},
+                             {"ref": "s1/0.1", "symbol": "beta"}]}
     assert stage._admit(candidate) == (True, "admitted")
     fact = next(iter(stage.facts.values()))
     assert [(p["path"], p["symbol"]) for p in fact.spec["proof"]] == [("a.py", "alpha"), ("b.py", "beta")]
@@ -461,8 +467,7 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
     detector = {"scope": "pytest", "confirm": "passed"}
     facts = [{"id": "native", "claim": "native claim", "cite": ["s0", "s1"], "detector": detector}]
     facts += [{"id": f"k{i}", "claim": f"knowledge {i}",
-               "sources": [{"source": "source.txt" if i != 1 else "invalid\0.txt",
-                            "source_session": "s1"}],
+               "sources": [{"ref": "s1/0.0" if i != 1 else "invalid\0ref"}],
                "detector": detector}
               for i in range(8)]
     def runner(prompt, model):
@@ -474,6 +479,7 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
     for i in range(3):
         path = tmp_path / f"shared{i}.jsonl"
         events = [
+            claude_prompt("read both files"),
             {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "other", "name": "Read", "input": {"file_path": str(support)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": "observed\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": "observed\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "other", "content": "support\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(support), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
@@ -482,7 +488,7 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
         path.write_text("\n".join(map(json.dumps, events)))
         run_session(enabled, repo, f"s{i}", str(path))
     assert len(calls) == 1
-    assert "observed_sources" in calls[0]
+    assert "to be cited by ref" in calls[0] and "observed_sources" not in calls[0]
     assert "up to 8 candidates TOTAL" in calls[0] and "<=4" not in calls[0]
     from tokeneconomizer.plugin.context import LiveContext
     from tokeneconomizer.plugin.hosts import ClaudeCode
@@ -518,6 +524,7 @@ def test_one_observed_source_still_shares_the_proposal_call(tmp_path, env, repo,
                    TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
     tp = tmp_path / "one-source.jsonl"
     tp.write_text("\n".join(map(json.dumps, [
+        claude_prompt("read source.txt"),
         {"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "r", "name": "Read",
              "input": {"file_path": str(source)}},
@@ -534,7 +541,8 @@ def test_one_observed_source_still_shares_the_proposal_call(tmp_path, env, repo,
     for i in range(2):
         run_session(enabled, repo, f"s{i}", str(tp))
     assert len(calls) == 1
-    assert "Knowledge context:" in calls[0] and "observed_sources" in calls[0]
+    assert "Knowledge context:" in calls[0]
+    assert '"ref": "s0/0.0"' in calls[0] and "observed_sources" not in calls[0]
 
 
 @pytest.mark.parametrize("failure", ["empty_window", "capture_error", "admission_error"])
@@ -607,9 +615,10 @@ def partial_stage(tmp_path, sessions=2):
 
 
 def partial_candidate(**fields):
-    """A proposal about one partial read: the symbol its lines crossed, from session s0."""
+    """A proposal about one partial read: the ref of the first read of session s0's sequence,
+    with the symbol its lines crossed."""
     symbol = fields.pop("symbol", "alpha")
-    source = {"source": "source.py", "source_session": "s0"}
+    source = {"ref": "s0/0.0"}
     if symbol is not None:
         source["symbol"] = symbol
     candidate = {"id": "alpha-one", "claim": "Alpha returns one", "sources": [source],
@@ -664,11 +673,12 @@ def test_a_partial_observation_never_stores_the_captured_file(tmp_path):
     state = json.loads((tmp_path / "knowledge_state" / "repo.json").read_text())
     stored = json.dumps(state)
     assert "beta marker" not in stored and SOURCE.decode() not in stored
-    observation = state["window"][-1]["_observations"]["source.py"]
-    assert observation["content"] == "    return 1"
-    assert observation["excerpt"].startswith("    return 1")
-    assert observation["observed"]["total_lines"] == 7
-    assert "proof" not in observation
+    (unit,) = [unit for unit in state["digest"]["sequences"][0]["units"]
+               if unit["path"] == "source.py"]
+    assert unit["content"] == "    return 1"
+    assert unit["excerpt"].startswith("    return 1")
+    assert unit["observed"]["total_lines"] == 7
+    assert "proof" not in unit
 
 
 def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
@@ -682,7 +692,7 @@ def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
     assert "observed_lines" in prompts[0]
     assert "coherent, reusable mechanism" in prompts[0]
     # One observed source is enough; the proposal names the references and nothing else.
-    assert "one or more {source, symbol?, source_session?}" in prompts[0]
+    assert "one or more {ref, symbol?}" in prompts[0]
     assert "is enough" in prompts[0]
     assert "at least two distinct files" not in prompts[0]
     assert "Do not add flow, role or cite to a Knowledge" in prompts[0]
@@ -709,12 +719,13 @@ def symbol_less_partial_stage(tmp_path, sessions=2):
 
 def test_a_partial_source_no_symbol_proves_is_not_offered_to_the_proposer(tmp_path):
     stage, _ = symbol_less_partial_stage(tmp_path)
-    dg = stage._featurize({}, [])
-    # the read crossed no declaration: nothing the proposer could propose survives admission
-    assert [s["path"] for s in dg["observed_sources"]] == ["support.txt"]
-    # the observation is kept, so the refusal names the real reason and nothing else
-    assert dg["_observations"]["source.py"]["symbols"] == {}
-    assert stage._admit(partial_candidate(symbol="alpha")) == (False, "symbol-not-observed")
+    view = stage.digest.view()
+    # the read crossed no declaration: it stays out of the refs and excerpts the proposer sees
+    assert {excerpt["path"] for excerpt in view["excerpts"]} == {"support.txt"}
+    assert [sequence["refs"] for sequence in view["sequences"]] == [["s0/0.1"], ["s1/0.1"]]
+    # the observation is kept, so a proposal that cites it is refused for that and nothing else
+    assert stage.digest.sequences[0]["units"][0]["path"] == "source.py"
+    assert stage._admit(partial_candidate(symbol="alpha")) == (False, "out-of-digest")
     assert not stage.facts
 
 
@@ -778,8 +789,9 @@ def test_a_failed_fold_keeps_the_captures_for_a_retry(tmp_path, env, repo, monke
 
 
 def learn_knowledge(tmp_path, env, repo, monkeypatch, files, candidates, also=()):
-    """Learn Knowledge through five live sessions that read every file and pass a test run.
-    Each candidate names one `source`; `also` names further observed sources to add to each."""
+    """Learn Knowledge through five live sessions whose request reads every file and passes a
+    test run. Each candidate names one `source`; `also` names further files read to add to it.
+    Every one of them cites the ref of the unit the first session's sequence retained."""
     from tokeneconomizer.plugin import sidecall
     files = dict(files, **{"support.txt": "support\n"})
     paths = {}
@@ -788,13 +800,13 @@ def learn_knowledge(tmp_path, env, repo, monkeypatch, files, candidates, also=()
         paths[name].parent.mkdir(parents=True, exist_ok=True)
         paths[name].write_text(content)
     facts = []
+    order = list(paths)
     for candidate in candidates:
         fact = dict(candidate)
-        source = {"source": fact.pop("source"), "source_session": "s0"}
+        source = {"ref": f"s0/0.{order.index(fact.pop('source'))}"}
         if "symbol" in fact:
             source["symbol"] = fact.pop("symbol")
-        fact.update(sources=[source] + [{"source": name, "source_session": "s0"}
-                                        for name in also],
+        fact.update(sources=[source] + [{"ref": f"s0/0.{order.index(name)}"} for name in also],
                     detector={"scope": "pytest", "confirm": "passed"})
         facts.append(fact)
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": facts}), 0))
@@ -807,7 +819,8 @@ def learn_knowledge(tmp_path, env, repo, monkeypatch, files, candidates, also=()
             uses.append({"type": "tool_use", "id": f"r{n}", "name": "Read", "input": {"file_path": str(path)}})
             results.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": f"r{n}", "content": content}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(path), "content": content, "startLine": 1, "numLines": lines, "totalLines": lines}}})
         uses.append({"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}})
-        events = [{"type": "assistant", "message": {"content": uses}}, *results,
+        events = [claude_prompt("read every file and run the tests"),
+                  {"type": "assistant", "message": {"content": uses}}, *results,
                   {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}]
         tp = tmp_path / f"rank{i}.jsonl"
         tp.write_text("\n".join(map(json.dumps, events)))
@@ -885,3 +898,218 @@ def test_a_symbol_named_in_the_prompt_outranks_a_file_match(tmp_path, env, repo,
          {"id": "sym", "claim": "target returns one", "source": "second.py", "symbol": "target"}])
     text = prompt(enabled, repo, "a", "in first.txt look at target", TE_KNOWLEDGE_MAX_CARDS="1")
     assert "target returns one" in text and "first.txt is observed" not in text
+
+
+# ---- the digest: work sequences, their budget, and the refs a proposal cites ---------------
+def claude_read(tmp_path, name, n=0):
+    """A complete `Read` of a workspace file, as Claude Code logs it."""
+    content = (tmp_path / name).read_text()
+    lines = len(content.splitlines())
+    return [{"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": f"r{n}", "name": "Read",
+                 "input": {"file_path": str(tmp_path / name)}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": f"r{n}", "content": content}]},
+             "toolUseResult": {"type": "text", "file": {
+                 "filePath": str(tmp_path / name), "content": content, "startLine": 1,
+                 "numLines": lines, "totalLines": lines}}}]
+
+
+def fold_events(stage, tmp_path, iid, events):
+    """Fold one session's Claude transcript under `iid`."""
+    path = tmp_path / f"{iid}.jsonl"
+    path.write_text("\n".join(map(json.dumps, events)))
+    stage.update(path, iid=iid)
+
+
+def digest_view(stage):
+    """The digest the proposer is shown for this stage: the sequences and their excerpts."""
+    from tests.fixtures import knowledge_digest
+    prompts = []
+    stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"facts": []}', 0)
+    stage._maybe_propose()
+    return knowledge_digest(prompts[0])
+
+
+def test_two_requests_in_one_session_are_two_sequences_with_their_own_reads(tmp_path):
+    for name in ("first.txt", "second.txt"):
+        (tmp_path / name).write_text(f"{name} observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read first.txt"), *claude_read(tmp_path, "first.txt"),
+        claude_prompt("now read second.txt", "2026-11-24T10:05:00.000Z"),
+        *claude_read(tmp_path, "second.txt")])
+    view = digest_view(stage)
+    assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
+        ("s0/0", "read first.txt", ["s0/0.0"]),
+        ("s0/1", "now read second.txt", ["s0/1.0"])]
+    assert [(e["ref"], e["path"]) for e in view["excerpts"]] == [
+        ("s0/0.0", "first.txt"), ("s0/1.0", "second.txt")]
+
+
+def test_a_request_that_read_nothing_still_takes_its_slot(tmp_path):
+    """A work sequence is a message and the work that follows it; no work is still a sequence."""
+    (tmp_path / "first.txt").write_text("observed\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read first.txt"), *claude_read(tmp_path, "first.txt"),
+        claude_prompt("now just explain it", "2026-11-24T10:05:00.000Z")])
+    view = digest_view(stage)
+    assert [(s["id"], s["message"], s["refs"]) for s in view["sequences"]] == [
+        ("s0/0", "read first.txt", ["s0/0.0"]),
+        ("s0/1", "now just explain it", [])]
+    assert [e["ref"] for e in view["excerpts"]] == ["s0/0.0"]
+
+
+def test_a_session_folded_late_lands_at_its_own_time_position(tmp_path):
+    """One fold is one process, so a session can be folded long after a newer one: the window is
+    the eight newest requests by message time, never by fold order."""
+    for n in range(9):
+        (tmp_path / f"f{n}.txt").write_text(f"file {n}\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    for n in (0, 2, 4, 6, 8, 1, 3, 5, 7):
+        fold_events(stage, tmp_path, f"s{n}", [
+            claude_prompt(f"read f{n}", f"2026-11-24T1{n}:00:00.000Z"),
+            *claude_read(tmp_path, f"f{n}.txt")])
+    # s0 is a request older than the other eight, folded first and dropped first.
+    assert [s["id"] for s in digest_view(stage)["sequences"]] == [
+        f"s{n}/0" for n in range(1, 9)]
+    assert [e["ref"] for e in digest_view(stage)["excerpts"]] == [
+        f"s{n}/0.0" for n in range(1, 9)]
+
+
+def test_a_request_with_no_recorded_time_still_sorts_deterministically(tmp_path):
+    for n in range(3):
+        (tmp_path / f"f{n}.txt").write_text(f"file {n}\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read f0", "2026-11-24T10:00:00.000Z"),
+        *claude_read(tmp_path, "f0.txt")])
+    for n in (1, 2):
+        fold_events(stage, tmp_path, f"s{n}", [
+            {"type": "user", "message": {"role": "user",
+                                         "content": [{"type": "text", "text": f"read f{n}"}]}},
+            *claude_read(tmp_path, f"f{n}.txt")])
+    # The dated request comes first; the two undated ones follow, ordered by session.
+    assert [s["id"] for s in digest_view(stage)["sequences"]] == ["s0/0", "s1/0", "s2/0"]
+
+
+def test_a_sequence_stops_at_the_first_unit_that_does_not_fit(tmp_path):
+    """The first unit that would push a sequence past its 16 000 characters ends retention: it is
+    dropped, and so is a later, smaller one -- nothing is packed out of order."""
+    (tmp_path / "big.txt").write_text("".join(f"line {n}\n" for n in range(1000)))
+    (tmp_path / "huge.txt").write_text("".join(f"line {n}\n" for n in range(800)))
+    (tmp_path / "small.txt").write_text("small\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read all three"),
+        *claude_read(tmp_path, "big.txt", 0), *claude_read(tmp_path, "huge.txt", 1),
+        *claude_read(tmp_path, "small.txt", 2)])
+    view = digest_view(stage)
+    assert view["sequences"][0]["refs"] == ["s0/0.0"]
+    assert [e["path"] for e in view["excerpts"]] == ["big.txt"]
+    # The small unit after the overflow cannot be cited either: its ref is not in the digest.
+    assert stage._admit({"id": "k", "claim": "small is read", "sources": [{"ref": "s0/0.2"}],
+                         "detector": {"scope": "pytest", "confirm": "passed"}}) == (
+        False, "out-of-digest")
+
+
+def test_a_first_unit_too_large_leaves_the_sequence_with_nothing_to_cite(tmp_path):
+    (tmp_path / "huge.txt").write_text("".join(f"line {n}\n" for n in range(2000)))
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read the huge file"), *claude_read(tmp_path, "huge.txt")])
+    view = digest_view(stage)
+    assert [(s["id"], s["refs"]) for s in view["sequences"]] == [("s0/0", [])]
+    assert view["excerpts"] == []
+    assert not stage.has_proposal_sources()
+    assert stage._admit({"id": "k", "claim": "huge is read", "sources": [{"ref": "s0/0.0"}],
+                         "detector": {"scope": "pytest", "confirm": "passed"}}) == (
+        False, "out-of-digest")
+
+
+def test_each_sequence_keeps_its_own_budget(tmp_path):
+    (tmp_path / "big.txt").write_text("".join(f"line {n}\n" for n in range(1000)))
+    (tmp_path / "even.txt").write_text("".join(f"line {n}\n" for n in range(900)))
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read big.txt"), *claude_read(tmp_path, "big.txt", 0),
+        claude_prompt("now read even.txt", "2026-11-24T10:05:00.000Z"),
+        *claude_read(tmp_path, "even.txt", 1)])
+    # Each fits its own sequence: had they shared one budget, the second would not be there.
+    assert [s["refs"] for s in digest_view(stage)["sequences"]] == [["s0/0.0"], ["s0/1.0"]]
+    assert stage._admit({"id": "k", "claim": "both files are read",
+                         "sources": [{"ref": "s0/0.0"}, {"ref": "s0/1.0"}],
+                         "detector": {"scope": "pytest", "confirm": "passed"}}) == (
+        True, "admitted")
+
+
+def test_a_sequences_request_counts_against_its_budget(tmp_path):
+    """The bounded message context is part of what a sequence keeps: the same read fits a short
+    request and not a long one."""
+    (tmp_path / "big.txt").write_text("".join(f"line {n}\n" for n in range(1550)))
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    fold_events(stage, tmp_path, "s0", [
+        claude_prompt("read big.txt"), *claude_read(tmp_path, "big.txt", 0)])
+    fold_events(stage, tmp_path, "s1", [
+        claude_prompt("read big.txt " + "please " * 400),
+        *claude_read(tmp_path, "big.txt", 1)])
+    view = digest_view(stage)
+    assert [len(s["message"]) for s in view["sequences"]] == [12, 2000]   # bounded context
+    assert [s["refs"] for s in view["sequences"]] == [["s0/0.0"], []]
+
+
+def test_a_request_appended_after_a_session_is_folded_stays_out(tmp_path, env, repo, monkeypatch):
+    """A session is folded once, so messages a resume appends never re-enter the digest."""
+    from tokeneconomizer.plugin import sidecall
+    from tokeneconomizer.plugin.context import LiveContext
+    from tokeneconomizer.plugin.hosts import ClaudeCode
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: ('{"facts": []}', 0))
+    root = Path(repo)
+    (root / "logged.txt").write_text("logged\n")
+    (root / "later.txt").write_text("later\n")
+    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="off", TE_LOOPGUARD="off",
+                   TE_TOOLPRUNE="off")
+    transcript = tmp_path / "resumed.jsonl"
+    transcript.write_text("\n".join(map(json.dumps, [
+        claude_prompt("read logged.txt"), *claude_read(root, "logged.txt")])))
+    run_session(enabled, repo, "resumed", str(transcript))
+    ctx = LiveContext.build(ClaudeCode(), repo, enabled)
+
+    def stored():
+        stage = Knowledge.load(workspace_id(ctx.repo.label, repo), ctx.mech_dir)
+        return [s["id"] for s in stage.digest.sequences], stage.digest.state()
+    ids, before = stored()
+    with transcript.open("a") as stream:
+        stream.write("\n" + "\n".join(map(json.dumps, [
+            claude_prompt("now read later.txt", "2026-11-24T11:00:00.000Z"),
+            *claude_read(root, "later.txt")])))
+    run_session(enabled, repo, "resumed", str(transcript))
+    assert stored() == (ids, before) == (["resumed/0"], before)
+    assert "later.txt" not in json.dumps(before)
+
+
+def test_the_digest_comes_back_identical_when_the_state_is_reloaded(tmp_path):
+    for n in range(9):
+        (tmp_path / f"f{n}.txt").write_text(f"file {n}\n")
+    stage = Knowledge("repo")
+    stage.workspace = tmp_path
+    for n in range(9):
+        fold_events(stage, tmp_path, f"s{n}", [
+            claude_prompt(f"read f{n}", f"2026-11-24T1{n}:00:00.000Z"),
+            *claude_read(tmp_path, f"f{n}.txt")])
+    stage.save(tmp_path)
+    state = json.loads((tmp_path / "knowledge_state" / "repo.json").read_text())
+    again = Knowledge.load("repo", tmp_path)
+    again.workspace = tmp_path
+    assert again.digest.state() == stage.digest.state() == {"sequences": state["digest"]["sequences"]}
+    assert again.digest.view() == stage.digest.view()
+    assert [s["id"] for s in again.digest.sequences] == [f"s{n}/0" for n in range(1, 9)]
