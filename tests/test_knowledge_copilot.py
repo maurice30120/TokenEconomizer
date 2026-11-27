@@ -72,16 +72,18 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
     (repo / "support.txt").write_text("observed\n")
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1", "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off", "TE_LOOPGUARD": "off"}
     candidate = {"id": "k", "claim": "Copilot observation",
-                 "sources": [{"source": "source.txt", "source_session": "s0"}],
+                 "sources": [{"ref": "s0/0.0"}],
                  "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
     for i in range(5):
         transcript = tmp_path / f"s{i}.jsonl"
         text = (FIXTURES / "copilot-complete.jsonl").read_text().replace("__WORKSPACE__", str(repo))
-        lines = text.splitlines()
-        text += "\n" + "\n".join(line.replace("source.txt", "support.txt").replace("call_1", "call_2") for line in lines[1:]) + "\n"
+        # The recorded session starts with its request; the fixture begins at the view.
+        text = json.dumps({"type": "user.message", "timestamp": "2026-11-24T10:00:00.000Z",
+                           "data": {"content": "check"}}) + "\n" + text
+        lines = text.splitlines()      # the request, the session header, then the view
+        text += "\n" + "\n".join(line.replace("source.txt", "support.txt").replace("call_1", "call_2") for line in lines[2:]) + "\n"
         extra = [
-            {"type": "user.message", "data": {"content": "check"}},
             {"type": "tool.execution_start", "data": {"toolCallId": "sh", "toolName": "bash", "arguments": {"command": "pytest"}}},
             {"type": "tool.execution_complete", "data": {"toolCallId": "sh", "success": True, "result": {"content": "passed"}}},
             {"type": "session.shutdown", "data": {}},
@@ -101,3 +103,36 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
     assert call(env, read, host="copilot") == {}
     (repo / "source.txt").write_text("changed\n")
     assert "Copilot observation" not in json.dumps(call(env, dict(start, source="resume"), host="copilot"))
+
+
+def test_each_copilot_request_opens_a_work_sequence(tmp_path):
+    """A `user.message` opens a sequence; the `view` that follows it is that sequence's read."""
+    from tests.fixtures import knowledge_digest
+    from tokeneconomizer.knowledge.stage import Knowledge
+    (tmp_path / "source.txt").write_text("observed\n")
+    (tmp_path / "support.txt").write_text("observed\n")
+    events = [json.loads(line) for line in
+              replay(tmp_path, "complete").read_text().splitlines()]
+    header, view = events[0], events[1:]
+    second = json.loads(json.dumps(view))
+    for event in second:
+        event["data"]["toolCallId"] = "call_2"
+        event["data"]["arguments"] = {"path": str(tmp_path / "support.txt")}
+    request = {"type": "user.message", "timestamp": "2026-11-24T10:00:00.000Z",
+               "data": {"content": "check source.txt"}}
+    later = {"type": "user.message", "timestamp": "2026-11-24T10:05:00.000Z",
+             "data": {"content": "now support.txt"}}
+    transcript = tmp_path / "two.jsonl"
+    transcript.write_text("\n".join(map(json.dumps,
+                                        [header, request, *view, later, *second])))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "copilot"
+    stage.update(transcript, iid="s0")
+    prompts = []
+    stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"facts": []}', 0)
+    stage._maybe_propose()
+    digest = knowledge_digest(prompts[0])
+    assert [(s["id"], s["message"], s["refs"]) for s in digest["sequences"]] == [
+        ("s0/0", "check source.txt", ["s0/0.0"]),
+        ("s0/1", "now support.txt", ["s0/1.0"])]
+    assert [e["path"] for e in digest["excerpts"]] == ["source.txt", "support.txt"]

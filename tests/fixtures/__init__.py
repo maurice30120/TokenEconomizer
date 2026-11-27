@@ -20,6 +20,18 @@ def write_claude_transcript(path, calls):
     return path
 
 
+def knowledge_digest(prompt):
+    """The digest a Knowledge proposal prompt shows, parsed back out of its two labelled JSON
+    blocks: the work sequences the proposer may draw on, and the retained observations it cites
+    by ref (`tokeneconomizer.knowledge.stage.DIGEST_HEADER`/`EXCERPTS_HEADER`)."""
+    from tokeneconomizer.knowledge.stage import DIGEST_HEADER, EXCERPTS_HEADER
+    decoder = json.JSONDecoder()
+    view = {}
+    for key, header in (("sequences", DIGEST_HEADER), ("excerpts", EXCERPTS_HEADER)):
+        view[key], _end = decoder.raw_decode(prompt[prompt.index(header) + len(header):])
+    return view
+
+
 def write_codex_transcript(path, items):
     """Write a minimal Codex-schema transcript.jsonl.
     `items` is a list of dicts merged into an `item.completed` event's `item`."""

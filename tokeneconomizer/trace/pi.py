@@ -13,7 +13,7 @@ fields is direct, and `cacheWrite1h` is their 1-hour share (`cache_creation_1h_i
 import json
 import os
 
-from .jsonl import records
+from .jsonl import epoch, records
 
 
 def _pi_entries(path):
@@ -46,6 +46,29 @@ def pi_prompt_count(path):
     """How many prompts the conversation ran: `user` messages on its active branch."""
     return sum(1 for e in pi_active_branch(_pi_entries(path))
                if e.get("type") == "message" and (e.get("message") or {}).get("role") == "user")
+
+
+def pi_prompts(entries):
+    """Every prompt the conversation ran, in branch order, as `(position, emitted_at, text)`:
+    a `user` message on the active branch. A message the extension injected carries a
+    `customType` (and the `custom` role), so it opens nothing. `emitted_at` is the entry's own
+    timestamp in epoch seconds, else its message's (milliseconds), None when neither is there;
+    `position` is the entry's index in `entries` -- the same index
+    `knowledge.observation.reads` reports."""
+    positions = {e["id"]: n for n, e in enumerate(entries) if e.get("id")}
+    out = []
+    for entry in pi_active_branch(entries):
+        message = entry.get("message") or {}
+        if (entry.get("type") != "message" or not isinstance(message, dict)
+                or message.get("role") != "user" or message.get("customType")):
+            continue
+        emitted = epoch(entry.get("timestamp"))
+        if emitted is None:
+            stamp = message.get("timestamp")
+            if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+                emitted = stamp / 1000.0
+        out.append((positions[entry["id"]], emitted, _pi_text(message.get("content"))))
+    return out
 
 
 def _pi_usage(u):
