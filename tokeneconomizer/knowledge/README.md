@@ -270,11 +270,14 @@ the sequences, catalogue entries and reads the digest offered, the units its bud
 the proposal tick was due and whether it fired, and what admission answers for a minimal candidate
 built from the first observation offered -- the candidate itself, the same claim twice
 (`duplicate`), and the same candidate after the file changed (`stale-proof`, probed against a copy:
-the real workspace is never touched). `--control <dir>` writes and measures a synthetic witness for
-the cases real logs do not exercise; `--arm current` skips the baseline. The JSON goes to `--out`,
-which defaults to a temporary file outside the checkout. State lives in temporary directories, so
-`~/.tokeneconomizer` is never written. `tests/test_knowledge_digest_measure.py` pins the report's
-shape, the cadence, the two-session window and the determinism.
+the real workspace is never touched) -- plus the lifecycle of an admitted fact whose detector then
+contradicts a later fold: its state and what `render()` returns before and after, or `not measured`
+with the reason where a trace cannot be cited. `--control <dir>` writes and measures a synthetic
+witness for the cases real logs do not exercise; `--arm current` skips the baseline. The JSON goes
+to `--out`, which defaults to a temporary file outside the checkout. State lives in temporary
+directories, so `~/.tokeneconomizer` is never written. `tests/test_knowledge_digest_measure.py`
+pins the report's shape, the cadence, the two-session window, the contradiction probe and the
+determinism.
 
 ## Symbol contracts
 

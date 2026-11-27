@@ -14,7 +14,11 @@ no captures) with a stub proposer: the stub records the prompt and answers `{"fa
 model is called and nothing is generated. The harness then records what that fold put in front of
 the proposer and probes admission with three minimal candidates built from the first observation
 the arm offers -- the candidate itself, the same claim twice (`duplicate`), and the same candidate
-after the file changed (`stale-proof`).
+after the file changed (`stale-proof`). It also probes the lifecycle end to end: it folds a
+session the probe's own detector confirms, admits a Knowledge carrying that detector, folds a
+session the same detector contradicts, and records the fact's state and what `render()` returns
+before and after (expected: `RETIRED`, and no longer rendered). A probe that cannot run on a trace
+-- nothing citable, a proof that no longer verifies -- is `not measured`, never a zero.
 
 Two arms:
 
@@ -40,6 +44,10 @@ import tempfile
 ANNEX = "\nFor Knowledge candidates only"        # where every Knowledge prompt starts its annex
 CLAIM = "the first observation this digest offers still holds"
 DETECTOR = {"scope": "pytest", "confirm": "passed"}
+# The contradiction probe's own detector: one command the two synthetic sessions both run, whose
+# output decides the verdict. The tokens cannot appear in a real trace.
+PROBE_DETECTOR = {"scope": "te-measure-probe", "confirm": "te-measure-held",
+                 "contradict": "te-measure-broken"}
 # A measurement leaves no run output in the repository: the report goes to a temporary path.
 DEFAULT_OUT = os.path.join(tempfile.gettempdir(), "knowledge-digest-measure.json")
 SUMS = ("prompts", "reads", "paths", "prompt.chars", "prompt.tokens", "observation_chars",
@@ -289,6 +297,65 @@ def _probe(stage, workspace, digest_arm, workdir):
             "stale": _stale(stage, workspace, candidate, path, workdir)}
 
 
+def _contradiction_probe(stage, workdir, digest_arm):
+    """Does a Knowledge already stored retire when the same detector contradicts it?
+
+    A campaign folds sessions after the fact, so the probe does the same: it folds one synthetic
+    session whose shell output the probe's detector confirms, admits a Knowledge carrying that
+    detector (admission needs proofs, not confirmations), records its lifecycle, then folds a
+    session whose output the detector contradicts and records it again. The expected end state is
+    `RETIRED`, and a retired fact is no longer rendered. Nothing is written outside `workdir`, no
+    model is called, and the sessions carry their own two command tokens, so the answer cannot
+    depend on the traces.
+    """
+    if not digest_arm:
+        return {"measured": False,
+                "reason": "the previous mechanism stores no sequence digest"}
+    entry, path = _first_offer(stage, True)
+    if entry is None:
+        return {"measured": False, "reason": "no observation offered"}
+    stage.update(_probe_session(os.path.join(workdir, "probe-confirm.jsonl"),
+                                "probe-confirm", "te-measure-held"), iid="probe-confirm")
+    detector = dict(PROBE_DETECTOR)
+    candidate = {"id": "measure-contradiction", "claim": CLAIM, "sources": [entry],
+                 "detector": detector}
+    admitted, reason = stage._admit(candidate)
+    if not admitted:
+        return {"measured": False, "reason": reason, "entry": entry, "path": path}
+    fact = next(f for f in stage.facts.values() if f.claim == CLAIM)
+    before = {"state": fact.state, "rendered": bool(stage.render())}
+    confirmed = _verdicts(stage, detector, "confirm")
+    stage.update(_probe_session(os.path.join(workdir, "probe-contradict.jsonl"),
+                                "probe-contradict", "te-measure-broken"),
+                 iid="probe-contradict")
+    after = {"state": fact.state, "rendered": bool(stage.render())}
+    return {"measured": True, "entry": entry, "path": path, "detector": detector,
+            "confirmed": confirmed, "contradicted": _verdicts(stage, detector, "contradict"),
+            "before": before, "after": after, "expected": "RETIRED",
+            "holds": after["state"] == "RETIRED" and not after["rendered"]}
+
+
+def _probe_session(path, iid, output):
+    """One synthetic session as a Claude Code transcript: the probe's command, and its output."""
+    entries = [{"type": "user", "message": {"role": "user", "content": f"probe {iid}"}},
+               {"type": "assistant", "message": {"content": [
+                   {"type": "tool_use", "id": "p", "name": "Bash",
+                    "input": {"command": "te-measure-probe --check"}}]}},
+               {"type": "user", "message": {"content": [
+                   {"type": "tool_result", "tool_use_id": "p", "content": output}]}}]
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    return path
+
+
+def _verdicts(stage, detector, wanted):
+    """The folded sessions whose digest this detector answers `wanted` for: the probe's evidence
+    that the two folds it made really confirmed and really contradicted."""
+    from tokeneconomizer.microskills.distiller import DetectorV3Scope
+    return [dg["iid"] for dg in stage.window
+            if DetectorV3Scope(detector, dg.get("features", {})).verdict(dg)[0] == wanted]
+
+
 # ---- the control trace, for what the real logs do not exercise ----------------------------
 CONTROL_WORKSPACE = "ws"
 CONTROL_TRACE = "control.jsonl"
@@ -447,6 +514,9 @@ def _fold(trace, workspace, root, repo_id, workdir, digest_arm):
     probe = Knowledge.load(repo_id, root)
     probe.workspace, probe.host = workspace, "pi"
     record["admission"] = _probe(probe, workspace, digest_arm, workdir)
+    against = Knowledge.load(repo_id, root)
+    against.workspace, against.host = workspace, "pi"
+    record["probes"] = {"contradiction": _contradiction_probe(against, workdir, digest_arm)}
     return record
 
 
@@ -489,7 +559,40 @@ def _totals(records):
         reason = _at(record, "admission.reason") or "none"
         reasons[reason] = reasons.get(reason, 0) + 1
     totals["admission"] = dict(sorted(reasons.items()))
+    totals["probes"] = _probe_totals(records)
     return totals
+
+
+def _probe_totals(records):
+    """How the contradiction probe answered across the folds, and why it could not run where it
+    did not: a probe that never applied is `not measured`, never a zero."""
+    tally = {"measured": 0, "not measured": 0, "retired": 0, "rendered after retirement": 0,
+             "reasons": {}}
+    for record in records:
+        probe = _at(record, "probes.contradiction") or {}
+        if not probe.get("measured"):
+            tally["not measured"] += 1
+            reason = probe.get("reason") or "no probe recorded"
+            tally["reasons"][reason] = tally["reasons"].get(reason, 0) + 1
+            continue
+        after = probe["after"]
+        tally["measured"] += 1
+        tally["retired"] += int(after["state"] == "RETIRED")
+        tally["rendered after retirement"] += int(bool(after["rendered"]))
+    return {"contradiction": tally}
+
+
+def _probe_line(probes):
+    """The contradiction probe as the printed summary says it."""
+    tally = (probes or {}).get("contradiction") or {"measured": 0, "not measured": 0,
+                                                   "reasons": {}}
+    if not tally["measured"]:
+        reasons = ", ".join(f"{reason} x{count}"
+                            for reason, count in sorted(tally["reasons"].items()))
+        return (f"contradiction probe: not measured ({tally['not measured']} fold(s); "
+                f"{reasons or 'no reason recorded'})")
+    return (f"contradiction probe: {tally['measured']} fold(s) measured, {tally['retired']} "
+            f"retired by the contradiction, {tally['rendered after retirement']} still rendered")
 
 
 def _short(trace, width=26):
@@ -567,6 +670,7 @@ def print_arm(report):
           f"{totals['ticks']['cadence']} / {totals['ticks']['sources']} / "
           f"{totals['ticks']['ran']}")
     print(f"   admission of the first offered observation: {totals['admission']}")
+    print(f"   {_probe_line(totals.get('probes'))}")
     if "digest.retention.max_used" in totals:
         print(f"   retention: {totals['digest.retention.dropped']} unit(s) dropped by a budget "
               f"({totals['digest.retention.dropped_chars']} chars refused), "

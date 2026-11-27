@@ -100,3 +100,39 @@ def test_the_same_traces_give_the_same_report(harness, tmp_path):
     assert [t["prompt"] for t in first["traces"]] == [t["prompt"] for t in second["traces"]]
     assert [t["digest"] for t in first["traces"]] == [t["digest"] for t in second["traces"]]
     assert [t["admission"] for t in first["traces"]] == [t["admission"] for t in second["traces"]]
+
+
+def test_the_contradiction_probe_retires_the_fact_it_admitted(report):
+    """The lifecycle run end to end: one folded session the detector confirms on, a Knowledge
+    admitted on its proofs, then a session the same detector contradicts -- the fact goes
+    `RETIRED` and `render()` stops returning it."""
+    (trace,) = report["traces"]
+    probe = trace["probes"]["contradiction"]
+    assert probe["measured"] is True
+    assert probe["confirmed"] == ["probe-confirm"]
+    assert probe["contradicted"] == ["probe-contradict"]
+    assert probe["before"] == {"state": "ACTIVE", "rendered": True}
+    assert probe["after"] == {"state": "RETIRED", "rendered": False}
+    assert probe["expected"] == "RETIRED" and probe["holds"] is True
+    assert report["totals"]["probes"]["contradiction"] == {
+        "measured": 1, "not measured": 0, "retired": 1,
+        "rendered after retirement": 0, "reasons": {}}
+
+
+def test_a_probe_that_cannot_run_is_not_measured_never_zero(harness, tmp_path):
+    """On traces where no observation can be cited (nothing retained, or a proof that no longer
+    verifies) the probe says `not measured` with its reason, and the summary line says so instead
+    of printing a zero that would read as "no contradiction found"."""
+    from tokeneconomizer.knowledge.stage import Knowledge
+    stage = Knowledge("repo")
+    stage.workspace = str(tmp_path)
+    assert harness._contradiction_probe(stage, str(tmp_path), True) == {
+        "measured": False, "reason": "no observation offered"}
+    assert harness._contradiction_probe(stage, str(tmp_path), False) == {
+        "measured": False, "reason": "the previous mechanism stores no sequence digest"}
+    totals = harness._probe_totals([{"probes": {"contradiction": {
+        "measured": False, "reason": "no observation offered"}}}])
+    assert harness._probe_line(totals) == (
+        "contradiction probe: not measured (1 fold(s); no observation offered x1)")
+    assert harness._probe_line(None) == (
+        "contradiction probe: not measured (0 fold(s); no reason recorded)")
