@@ -54,7 +54,9 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
     (repo / "source.txt").write_text("observed\nsecond\n")
     (repo / "support.txt").write_text("support\n")
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1", "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off", "TE_LOOPGUARD": "off"}
-    candidate = {"id": "k", "claim": "Pi observation", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
+    candidate = {"id": "k", "claim": "Pi observation",
+                 "sources": [{"source": "source.txt", "source_session": "s1"}],
+                 "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
     counts = []
     from tokeneconomizer.plugin.context import LiveContext
@@ -73,7 +75,8 @@ def test_pi_hook_learns_from_recorded_active_sessions(tmp_path, monkeypatch):
         stage = Knowledge.load(workspace_id(ctx.repo.label, str(repo)), ctx.mech_dir)
         stage.workspace = repo
         counts.append((len(stage.facts), int("Pi observation" in stage.render())))
-    assert counts == [(0, 0), (1, 0), (1, 0), (1, 1), (1, 1)]
+    # Admitted on the fold that proposes it, and injectable at once: no confirmation to earn.
+    assert counts == [(0, 0), (1, 1), (1, 1), (1, 1), (1, 1)]
     start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "next", "cwd": str(repo)}
     assert "Pi observation" in call(env, start, host="pi")["hookSpecificOutput"]["additionalContext"]
     payload = dict(start, hook_event_name="UserPromptSubmit", prompt="explain source.txt")
@@ -288,8 +291,9 @@ def test_a_pi_partial_read_reaches_the_fold_creates_and_invalidates_knowledge(tm
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1",
            "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off",
            "TE_LOOPGUARD": "off"}
-    candidate = {"id": "k", "claim": "Alpha returns one", "flow": "source and support",
-                 "sources": [{"source": "source.py", "symbol": "alpha", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"],
+    candidate = {"id": "k", "claim": "Alpha returns one",
+                 "sources": [{"source": "source.py", "symbol": "alpha",
+                              "source_session": "s1"}],
                  "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for",
                         lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))

@@ -353,13 +353,12 @@ def cmd_microskills(args):
         from tokeneconomizer.knowledge.proof import verify_proof, available_languages
         print("\nknowledge symbol grammars: " + (", ".join(f"{ext}={lang}" for ext, lang in sorted(available_languages().items())) or "none"))
     if stage and (stage.facts or stage.forgotten):
-        from tokeneconomizer.microskills.distiller import Fact
         from tokeneconomizer.knowledge.stage import proofs_of
         print("\nknowledge tracked:")
         entries = [(fid, fact, False) for fid, fact in stage.facts.items()]
         for fid, record in stage.forgotten.items():
             try:
-                entries.append((fid, Fact.from_dict(record["record"]), True))
+                entries.append((fid, stage.FACT_CLS.from_dict(record["record"]), True))
             except (KeyError, TypeError, ValueError):
                 continue
         for fid, fact, forgotten in sorted(entries, key=lambda item: item[0]):
@@ -368,14 +367,15 @@ def cmd_microskills(args):
                 if proof.get("fallback"):
                     print(f"  fallback {fid}: {proof['fallback']}")
             provenance = fact.spec.get("provenance") or {}
+            sources = [s for s in provenance.get("sources") or [] if isinstance(s, dict)]
             print(f"  {fact.state:9s} rev={fact.spec.get('rev', 1)} "
                   f"proof={'valid' if valid else 'invalid'} "
                   f"{'forgotten ' if forgotten else ''}{fid}  {_short(fact.claim)}")
-            print(f"    source={', '.join(provenance.get('paths') or [provenance.get('path', '?')])} "
-                  f"session={provenance.get('session', '?')}")
-            for source in provenance.get("sources", []):
-                if isinstance(source, dict):
-                    print(f"    evidence={source.get('path', '?')} session={source.get('session', '?')}")
+            print("    sources=" + (", ".join(s.get("path", "?") for s in sources) or "?"))
+            for source in sources:
+                print(f"    evidence={source.get('path', '?')} "
+                      f"session={source.get('session', '?')}"
+                      + (f" symbol={source['symbol']}" if source.get("symbol") else ""))
             # A partial read's real scope: which lines it returned, out of how many.
             if isinstance(provenance.get("observed"), dict):
                 print("    observed=" + json.dumps(provenance["observed"], sort_keys=True))

@@ -71,7 +71,9 @@ def test_copilot_recorded_views_flow_through_hook(tmp_path, monkeypatch):
     (repo / "source.txt").write_text("observed\n")
     (repo / "support.txt").write_text("observed\n")
     env = {"TOKENECONOMIZER_HOME": str(tmp_path / "home"), "TE_FOLD_SYNC": "1", "TE_KNOWLEDGE": "on", "TE_MICROSKILLS": "off", "TE_TOOLPRUNE": "off", "TE_LOOPGUARD": "off"}
-    candidate = {"id": "k", "claim": "Copilot observation", "flow": "source and support", "sources": [{"source": "source.txt", "role": "source"}, {"source": "support.txt", "role": "support"}], "source_session": "s1", "cite": ["s0", "s1"], "detector": {"scope": "pytest", "confirm": "passed"}}
+    candidate = {"id": "k", "claim": "Copilot observation",
+                 "sources": [{"source": "source.txt", "source_session": "s0"}],
+                 "detector": {"scope": "pytest", "confirm": "passed"}}
     monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: lambda *a: (json.dumps({"facts": [candidate]}), 0))
     for i in range(5):
         transcript = tmp_path / f"s{i}.jsonl"
