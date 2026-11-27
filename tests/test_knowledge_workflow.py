@@ -318,20 +318,12 @@ def test_symbol_requested_in_session_survives_unrelated_edits_and_fails_closed(t
     stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": [candidate]}), 0))
     stage.workspace = tmp_path
     for i in range(5):
-        path = tmp_path / f"session{i}.jsonl"
-        events = [
-            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": str(source)}}, {"type": "tool_use", "id": "other", "name": "Read", "input": {"file_path": str(support)}}, {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r", "content": content}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(source), "content": content, "startLine": 1, "numLines": 5, "totalLines": 5}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "other", "content": "support\n"}]}, "toolUseResult": {"type": "text", "file": {"filePath": str(support), "content": "support\n", "startLine": 1, "numLines": 1, "totalLines": 1}}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}
-        ]
-        path.write_text("\n".join(map(json.dumps, events)))
-        stage.update(path, iid=f"s{i}")
+        fold_session(stage, tmp_path, i, ("source.py", "support.txt"))
     assert "Target returns one" in stage.render()
-    evidence = next(iter(stage.facts.values())).spec["proof"][0]
-    assert evidence["kind"] == ("symbol" if parser_available else "file")
     fact = next(iter(stage.facts.values()))
-    # The requested symbol is named on a file proof when it cannot be resolved.
+    evidence = fact.spec["proof"][0]
+    assert evidence["kind"] == ("symbol" if parser_available else "file")
+    # The requested symbol is the signal when it resolves, the file when it cannot.
     assert stage.signals(fact) == (["target", "support.txt"] if parser_available
                                    else ["source.py", "support.txt"])
     if not parser_available:
@@ -353,22 +345,10 @@ def test_a_knowledge_about_several_files_holds_while_all_of_them_do(tmp_path, mo
                    "detector": {"scope": "pytest", "confirm": "passed"}}]
     stage = Knowledge("repo", runner=lambda *args: (json.dumps({"facts": candidates}), 0))
     stage.workspace = tmp_path
-    def session(i):
-        path = tmp_path / f"several{i}.jsonl"
-        names = ("a.txt",) if i == 0 else ("b.txt",) if i == 1 else ("a.txt", "b.txt")
-        reads = [(f"r{n}", tmp_path / name) for n, name in enumerate(names)]
-        events = [{"type": "assistant", "message": {"content": [
-            *({"type": "tool_use", "id": rid, "name": "Read", "input": {"file_path": str(file)}} for rid, file in reads),
-            {"type": "tool_use", "id": "sh", "name": "Bash", "input": {"command": "pytest"}}]}}]
-        for rid, file in reads:
-            text = file.read_text()
-            events.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": rid, "content": text}]},
-                           "toolUseResult": {"type": "text", "file": {"filePath": str(file), "content": text, "startLine": 1, "numLines": 1, "totalLines": 1}}})
-        events.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}})
-        path.write_text("\n".join(map(json.dumps, events)))
-        stage.update(path, iid=f"s{i}")
+    # The two sources are observed in different sessions, then together in the later ones.
     for i in range(5):
-        session(i)
+        fold_session(stage, tmp_path, i,
+                     ("a.txt",) if i == 0 else ("b.txt",) if i == 1 else ("a.txt", "b.txt"))
     assert "a and b agree" in stage.render()
     assert stage.selection(read="a.txt", max_tokens=5) == ("", [])
     stage.save(tmp_path)
