@@ -43,13 +43,15 @@ consolidated before that budget applies: two reads are the same code when the wh
 version they observed is the same, so a repeated read is charged and shown once.
 
 A sequence also keeps what the agent itself wrote: the visible `text` blocks of its assistant
-messages, attached to the reads of the call series they followed. A comment written after a
-series' results belongs to that series' reads until the next tool call or the next user
-message; a comment written beside a tool call belongs to the step that call starts, so it
-attaches to no read, and a series that returned no read owns nothing. A comment costs its
-text in the same 16 000 characters as the code it is about, so a comment that does not fit
-ends the sequence's retention together with the read it was attached to, and a comment about
-a read the budget dropped is neither shown nor citable. Identical comments are one entry,
+messages, attached to the reads of the call series they followed. A reply's text joins the
+series whose results are already there, and then that reply's own tool calls close the series --
+so the text Pi writes beside the next call still belongs to the reads before it, which is how a
+Pi session becomes readable at all, and a comment written after that next series returned
+attaches to nothing. A series that returned no read owns nothing, and a user message ends the
+window: nothing attaches backwards across it. A comment costs its text in the same 16 000
+characters as the code it is about, so a comment that does not fit ends the sequence's retention
+together with the read it was attached to, and a comment about a read the budget dropped is
+neither shown nor citable. Identical comments are one entry,
 oldest first, keeping their occurrences, the refs they are about and their provenance
 (session, sequence, position). They cost neither a model call nor a tool call: they come from
 the transcript the fold already reads. Pi assistant messages and Claude Code assistant

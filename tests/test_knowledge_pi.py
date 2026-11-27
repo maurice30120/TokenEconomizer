@@ -683,9 +683,10 @@ def test_a_pi_comment_after_a_read_attaches_to_that_reads_ref(tmp_path):
     assert comments(stage) == [("alpha returns one", ["s0/0.0"], 1)]
 
 
-def test_a_pi_comment_written_with_the_next_tool_call_does_not_attach_backwards(tmp_path):
-    """The window closes at the next call: the text an assistant writes beside that call belongs
-    to the work it starts, and a comment after that call's series attaches to nothing."""
+def test_a_pi_comment_written_with_the_next_tool_call_joins_the_series_before_it(tmp_path):
+    """Pi writes a reply's text in the same message as its next call, so that text cannot wait for
+    a reply that only writes: it joins the reads whose results are already there, and the reply's
+    own calls then close the series -- a comment after that call's results attaches to nothing."""
     (tmp_path / "source.py").write_bytes(SOURCE)
     path = tmp_path / "session.jsonl"
     path.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
@@ -707,7 +708,8 @@ def test_a_pi_comment_written_with_the_next_tool_call_does_not_attach_backwards(
     stage = Knowledge("repo")
     stage.workspace, stage.host = tmp_path, "pi"
     stage.update(path, iid="s0")
-    assert comments(stage) == [("alpha returns one", ["s0/0.0"], 1)]
+    assert comments(stage) == [("alpha returns one", ["s0/0.0"], 1),
+                               ("now I will run the tests", ["s0/0.0"], 1)]
 
 
 def test_a_pi_comment_after_a_series_with_no_read_attaches_to_nothing(tmp_path):
@@ -846,3 +848,4 @@ def test_a_comment_about_a_read_that_proves_nothing_is_not_shown(tmp_path):
     view = pi_digest(stage)
     assert len(stage.digest.sequences[0]["units"]) == 1     # retained
     assert view["excerpts"] == [] and view["comments"] == []
+

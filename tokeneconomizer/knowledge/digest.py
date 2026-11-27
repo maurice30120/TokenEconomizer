@@ -23,8 +23,10 @@ proves nothing. The counts of reads, work sequences and sessions, and the pairs 
 one sequence, are signals for the proposer: nothing in this module lets a pair admit anything.
 
 A sequence also keeps what the agent itself wrote (GLOSSARY: Knowledge Comment), attached to
-the reads of the call series it followed: its text counts in the same budget, identical comments
-deduplicate with their occurrences and their provenance, and none of them is ever a proof.
+the reads of the call series it followed: a reply's text joins that series before the reply's own
+calls close it, so the text Pi writes beside the next call still belongs to the results before
+it. Its characters count in the same budget, identical comments deduplicate with their occurrences
+and their provenance, and none of them is ever a proof.
 
 Everything here is deterministic: no filesystem order, no set iteration, no wall clock.
 """
@@ -47,7 +49,9 @@ def session_sequences(transcript, root, iid, host="claude", captures=None):
     `transcript` is what the agent logged and `root` the workspace the reads are proved against;
     `captures` is that session's Pi capture directory, if any. A read belongs to the sequence its
     own user message opened -- one before the first message belongs to none and is dropped. A
-    comment belongs to the reads of the call series it followed: see `_attach`.
+    comment belongs to the reads of the last call series that returned reads: its text is attached
+    before that reply's own calls close the series, so the text a host writes beside the next call
+    still belongs to the results before it (see `_attach`).
     """
     events = records(transcript, host)
     prompts = sorted(_prompts(events, host), key=lambda prompt: prompt[0])
@@ -68,10 +72,10 @@ def session_sequences(transcript, root, iid, host="claude", captures=None):
             series = []
         elif opened >= 0 and kind == "reply":
             calls, text = payload
+            if text.strip() and series:
+                _attach(sequences[opened], observed[opened], position, text, series)
             if calls:
                 series = []
-            elif text.strip() and series:
-                _attach(sequences[opened], observed[opened], position, text, series)
         elif opened >= 0:
             observed[opened].append(payload)
             series.append(len(observed[opened]) - 1)

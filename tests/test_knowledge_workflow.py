@@ -1427,9 +1427,10 @@ def test_a_proposal_sourced_only_from_a_comment_is_refused(tmp_path):
         True, "admitted")
 
 
-def test_a_claude_text_written_with_its_tool_call_does_not_attach_backwards(tmp_path):
+def test_a_claude_text_written_with_its_tool_call_joins_the_series_before_it(tmp_path):
     """Claude Code writes one entry per content block of a message: the text sharing its message
-    id with the next tool call is part of that call, not of the reads before it."""
+    id with the next tool call is one reply, and its text joins the reads whose results are
+    already there before that reply's own call closes the series."""
     (tmp_path / "first.txt").write_text("observed\n")
     stage = Knowledge("repo")
     stage.workspace = tmp_path
@@ -1442,7 +1443,8 @@ def test_a_claude_text_written_with_its_tool_call_does_not_attach_backwards(tmp_
              "input": {"command": "pytest"}}]}},
         {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}}])
-    assert digest_view(stage)["comments"] == []
+    assert [(c["text"], c["refs"]) for c in digest_view(stage)["comments"]] == [
+        ("now I will run the tests", ["s0/0.0"])]
 
 
 def test_the_comments_come_back_identical_when_the_state_is_reloaded(tmp_path):

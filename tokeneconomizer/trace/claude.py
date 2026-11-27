@@ -120,10 +120,10 @@ def claude_prompts(events):
 def claude_replies(events):
     """Every message the agent itself wrote, in log order, as `(position, calls, text)`: its
     `text` blocks joined, and how many `tool_use` blocks it carried. Claude Code writes one entry
-    per content block of one message, so the entries sharing a message id are one message -- the
-    text written beside a tool call is part of that call's step, not of the reads before it.
-    `position` is the index of the message's first entry in `events`, the same index
-    `claude_prompts` and `knowledge.observation.reads` report."""
+    per content block of one message, so the entries sharing a message id are one message -- its
+    text and its calls are read together, which is what tells the digest that the text belongs to
+    the series before it. `position` is the index of the message's first entry in `events`, the
+    same index `claude_prompts` and `knowledge.observation.reads` report."""
     order, by_id = [], {}
     for position, event in enumerate(events):
         if not isinstance(event, dict) or event.get("type") != "assistant":
