@@ -518,6 +518,42 @@ def test_paid_native_and_knowledge_share_one_proposal_budget(tmp_path, env, repo
     }]
 
 
+def test_one_observed_source_still_shares_the_proposal_call(tmp_path, env, repo, monkeypatch):
+    """The shared call is not gated on two distinct files: one observed read is enough to put the
+    Knowledge context in front of the same proposer as the native facts, once."""
+    from tokeneconomizer.plugin import sidecall
+    calls = []
+    source = Path(repo) / "source.txt"
+    source.write_text("observed\n")
+
+    def runner(prompt, model):
+        calls.append(prompt)
+        return json.dumps({"facts": []}), 0
+
+    monkeypatch.setattr(sidecall, "runner_for", lambda *a, **kw: runner)
+    enabled = dict(env, TE_KNOWLEDGE="on", TE_MICROSKILLS="distiller",
+                   TE_LOOPGUARD="off", TE_TOOLPRUNE="off")
+    tp = tmp_path / "one-source.jsonl"
+    tp.write_text("\n".join(map(json.dumps, [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "r", "name": "Read",
+             "input": {"file_path": str(source)}},
+            {"type": "tool_use", "id": "sh", "name": "Bash",
+             "input": {"command": "pytest"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "r", "content": "observed\n"}]},
+         "toolUseResult": {"type": "text", "file": {
+             "filePath": str(source), "content": "observed\n", "startLine": 1,
+             "numLines": 1, "totalLines": 1}}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "sh", "content": "passed"}]}},
+    ])))
+    for i in range(2):
+        run_session(enabled, repo, f"s{i}", str(tp))
+    assert len(calls) == 1
+    assert "Knowledge context:" in calls[0] and "observed_sources" in calls[0]
+
+
 @pytest.mark.parametrize("failure", ["empty_window", "capture_error", "admission_error"])
 def test_native_proposal_survives_unavailable_knowledge_context(tmp_path, env, repo, monkeypatch, failure):
     from tokeneconomizer.plugin import sidecall
@@ -657,6 +693,8 @@ def test_the_proposer_is_told_what_a_partial_source_can_support(tmp_path):
     prompts = []
     stage.runner = lambda prompt, model: (prompts.append(prompt) or '{"facts": []}', 0)
     stage._maybe_propose()
+    # An empty proposal is valid: it admits nothing and still uses the tick.
+    assert (stage.last_propose, stage.facts) == (stage.now, {})
     assert "read only in part" in prompts[0]
     assert "observed_lines" in prompts[0]
     assert "coherent, reusable mechanism" in prompts[0]
@@ -725,6 +763,7 @@ def test_the_cli_shows_the_scope_a_partial_knowledge_really_read(tmp_path, env, 
     assert cli.main(["--host", "claude", "--cwd", repo, "microskills"]) == 0
     out = capsys.readouterr().out
     assert "sources=source.py" in out
+    assert "ACTIVE" in out and "rev=1" in out and "proof=valid" in out
     assert "evidence=source.py session=s0 symbol=alpha" in out
     assert '"source.py": {"reads": [{"lines": 1, "offset": 2}], "total_lines": 7}' in out
 

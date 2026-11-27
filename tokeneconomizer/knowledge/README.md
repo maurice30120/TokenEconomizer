@@ -32,17 +32,24 @@ their file paths and Pi system prompt were replaced, while the tool calls and re
 retained.
 
 The proposer sees bounded excerpts of observed reads -- complete ones, and partial ones with
-the lines they returned (`observed_lines`) -- and identifies a source and session. A partial
-read that crossed no declaration has nothing to prove, so it is not offered at all. It runs
-on the existing micro-skills proposal cadence and uses TE's grounding, confirmation,
-contradiction and firing thresholds. When the native proposer is active and enough sources are
-available, one model call proposes up to eight candidates in any mix. The fold ledger records
-proposal and admission counts by type under `injection.shared_proposals`. Verification is local.
+the lines they returned (`observed_lines`) -- each under the digest of the session that made
+it. A partial read that crossed no declaration has nothing to prove, so it is not offered at
+all. A Knowledge proposal names what it observed in `sources`, one or more
+`{source, symbol?, source_session?}` entries; the engine resolves each entry against the
+window's observations and computes the proofs itself, so the proposal never carries one. A
+source observed in several sessions of the window must name its `source_session`. Several
+sources may support one mechanism, but one complete read -- or one symbol a partial read
+crossed -- is enough. It runs on the existing micro-skills proposal cadence, but not on the
+native grounding gate: the proofs are the evidence, so a Knowledge is admitted and injectable
+in the same cycle, with no second session and no confirmation count. When the native proposer
+is active and at least one source is observed, one model call proposes up to eight candidates
+in any mix. The fold ledger records proposal and admission counts by type under
+`injection.shared_proposals`. Verification is local.
 State is isolated by workspace path. `te microskills`
 lists Knowledge identity, revision, lifecycle, proof status, source session and path, and the
 lines a partial read actually returned, including forgotten records. Use
 `te microskills forget ID` to suppress one and `te microskills unforget ID` to restore its
-saved lifecycle; injection still requires a valid proof and the usual lifecycle gates.
+saved lifecycle; injection still requires a valid proof and an unretired lifecycle.
 
 ## When Knowledge is injected
 
@@ -50,10 +57,11 @@ On Pi and Copilot CLI, the session-start hook can give eligible Knowledge alongs
 facts, ordered by firing rate and then registration order. Both hosts can also deliver Relevant
 Knowledge after a successful read of any covered file. Hosts that support the earlier prompt
 trigger keep it, while Pi and Copilot use startup and read triggers for this experiment.
-Stored Knowledge needs no migration: its signals come from its current contract.
+Stored Knowledge is read in one format only: the engine's proofs and provenance, with no
+compatibility reader and no migration, so an old-format state file is simply absent.
 
-An eligible structured Knowledge is a short map: a claim, a flow, and the role of each source
-file, optionally including its symbol. The source proofs are not included in the injected map.
+A Knowledge card is the injection line the proposer wrote: one sentence about the mechanism.
+The engine keeps the sources and their proofs out of the injected text.
 Knowledge has a total budget for the conversation context. Set `knowledge_max_cards` (default
 4), `knowledge_max_tokens` (default 300 estimated tokens) and `knowledge_startup_share`
 (default 0.5, from 0 to 1) via the regular `te config` settings. The startup share applies to
@@ -146,8 +154,10 @@ forgotten, stale-proof or budget-dropped Knowledge never appears. The triggers s
 
 Before each new injection TE hashes the current file and drops only Knowledge whose proof
 no longer matches. Deletion and read errors fail closed; restoring the exact bytes restores
-eligibility subject to the lifecycle. A revised Knowledge retains its identity but must earn
-new confirmations. Earlier context in a conversation cannot be removed retroactively. Knowledge is untrusted data: a matching hash does not establish that
+eligibility subject to the lifecycle. A revised Knowledge keeps its identity, replaces its
+stored claim, injection, detector and contract at once, and needs no new confirmation; a
+contradiction still retires it. Earlier context in a conversation cannot be removed
+retroactively. Knowledge is untrusted data: a matching hash does not establish that
 the explanation is correct.
 
 ## Symbol contracts
@@ -168,20 +178,23 @@ can currently load; supported declaration forms are limited to those recognized 
 Install the package dependencies to enable symbol parsing.
 
 
-A new or revised fact must describe a useful relationship, with a `flow` and `sources`: at
-least two `{source, role, symbol?, source_session}` entries for distinct files. Each source
-session must be cited and may differ from the others. A top-level `source_session` is accepted
-as a common fallback for entries without their own session.
-Two symbols in the same file do not meet this requirement. Each source is proven as a single one is
-(from the cited session's observation, a partial read only for a declaration it crossed), and the
-contract is the list of those proofs: the Knowledge is valid only while every one of them is.
-Inspection lists all its sources. Knowledge that synthesizes other Knowledge is not supported;
-a stored one of that kind has no proof, so it is never injected.
-Admission also rejects explicit workspace-relative file references in the map that resolve to
-existing files outside its sources. This check does not resolve every shorthand or implied
-reference and does not prove the explanation is correct.
-Existing single-source entries remain readable and eligible under their existing gates, but
-cannot be revised without supplying the required distinct sources.
+A new or revised Knowledge carries the four business fields -- `id`, `claim`, `injection`,
+`detector` -- and the `sources` it observed in its proposal: one or more
+`{source, symbol?, source_session?}` entries. The engine resolves each entry against the
+window's observations, refuses one that no observation backs (`source-not-observed`), one the
+window observed in more than one session without an explicit `source_session`
+(`ambiguous-source`), a partial read without a symbol (`partial-needs-symbol`), a symbol the
+read did not cross (`symbol-not-observed`), and a proof that no longer verifies
+(`stale-proof`); two entries that resolve to the same file are one source, not two. The
+stored spec keeps only the business fields, the revision, and the engine's own `proof` list
+and `provenance` -- never the proposal's entries. One complete read, or one symbol a partial
+read crossed, is enough; several sources are allowed when they explain one mechanism, and the
+Knowledge is valid only while every proof is. Inspection lists all its sources. Knowledge that
+synthesizes other Knowledge is not supported; a stored one of that kind has no proof, so it is
+never injected.
+Admission also rejects explicit workspace-relative file references in the claim or the
+injection that resolve to existing files outside its sources. This check does not resolve
+every shorthand or implied reference and does not prove the explanation is correct.
 
 ## Recorded-session evaluation
 
@@ -190,15 +203,15 @@ replays the sanitized Pi complete-read recording five times through the live hoo
 with distinct session IDs, an added simulated successful `pytest` command, and a
 stub proposer returning one grounded file candidate. No lifecycle threshold or
 proposal cadence is overridden. The following counts are `(stored, eligible for
-rendering)` after each fold: `(0, 0), (1, 0), (1, 0), (1, 1), (1, 1)`.
+rendering)` after each fold: `(0, 0), (1, 1), (1, 1), (1, 1), (1, 1)`.
 The test also checks the hook output, forget/unforget, deletion and restoration.
 The separate Copilot recording test exercises a second host. Workflow tests cover
 file and symbol contracts, several sources, revision, warm-cache revalidation,
 workspace isolation, budget, native coexistence and user controls.
 
 This is a deterministic integration scenario, not a representative yield estimate:
-the same read is replayed, confirmations are synthetic and the candidate is supplied
-by a stub rather than a real model. It does not measure real-world proposal quality,
+the same read is replayed, the candidate and its proof are supplied by a stub rather
+than a real model. It does not measure real-world proposal quality,
 latency, token savings or cost. Proof validity does not establish semantic truth.
 Already-injected context cannot be retracted from a conversation.
 
