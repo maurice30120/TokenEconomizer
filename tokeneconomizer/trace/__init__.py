@@ -20,15 +20,15 @@ from .catalog import (CODEX_DEFAULT_TOOL_CATALOG, catalog_sources, parse_catalog
                       parse_tool_catalog_flat, parse_tool_names_copilot)
 from .claude import (claude_calls, claude_deferred_tools, claude_history_logs,
                      claude_log_head, claude_project_folder, claude_projects_dir,
-                     claude_prompt_count, claude_prompt_turns, claude_safe_session_id,
-                     claude_session_usage, claude_subagent_files, claude_tool_usage,
-                     claude_turn_answered, claude_turn_interrupted)
+                     claude_prompt_count, claude_prompt_text, claude_prompt_turns,
+                     claude_safe_session_id, claude_session_usage, claude_subagent_files,
+                     claude_tool_usage, claude_turn_answered, claude_turn_interrupted)
 from .codex import (codex_capability_trace, codex_exec_calls, codex_prompt_count,
                     codex_rollout_to_exec, codex_session_meta, codex_session_usage,
                     rollout_item_to_exec)
 from .copilot import (copilot_event_calls, copilot_mcp_servers, copilot_prompt_count,
-                      copilot_session_meta, copilot_session_usage, copilot_turns,
-                      mcp_server_of)
+                      copilot_prompts, copilot_session_meta, copilot_session_usage,
+                      copilot_turns, mcp_server_of)
 from .antigravity import (antigravity_prompt_count, antigravity_read,
                           antigravity_session_to_claude, antigravity_session_usage)
 from .cursor import cursor_events_to_claude, cursor_prompt_count
@@ -43,8 +43,8 @@ from .hermes import (hermes_export, hermes_find_session, hermes_prompt_count, he
                      hermes_session_to_claude, hermes_session_usage, hermes_tool)
 from .opencode import (opencode_prompt_count, opencode_run_reply, opencode_session_info,
                        opencode_session_to_claude, opencode_session_usage)
-from .pi import (pi_active_branch, pi_json_reply, pi_prompt_count, pi_session_header,
-                 pi_session_to_claude, pi_session_usage)
+from .pi import (pi_active_branch, pi_json_reply, pi_prompt_count, pi_prompts,
+                 pi_session_header, pi_session_to_claude, pi_session_usage)
 
 __all__ = [
     "RTK_PREFIX_RE", "RTK_WORDS", "SHELL_TOOLS", "TOOL_ROLES", "call_cwds", "load_trajectory",
@@ -53,12 +53,14 @@ __all__ = [
     "parse_tool_catalog", "parse_tool_catalog_claude", "parse_tool_catalog_flat",
     "parse_tool_names_copilot",
     "claude_calls", "claude_deferred_tools", "claude_history_logs", "claude_log_head",
-    "claude_project_folder", "claude_projects_dir", "claude_prompt_count", "claude_prompt_turns",
+    "claude_project_folder", "claude_projects_dir", "claude_prompt_count", "claude_prompt_text",
+    "claude_prompt_turns",
     "claude_safe_session_id", "claude_session_usage", "claude_subagent_files",
     "claude_tool_usage", "claude_turn_answered", "claude_turn_interrupted",
     "codex_capability_trace", "codex_exec_calls", "codex_prompt_count", "codex_rollout_to_exec",
     "codex_session_meta", "codex_session_usage", "rollout_item_to_exec",
-    "copilot_event_calls", "copilot_mcp_servers", "copilot_prompt_count", "copilot_session_meta",
+    "copilot_event_calls", "copilot_mcp_servers", "copilot_prompt_count", "copilot_prompts",
+    "copilot_session_meta",
     "copilot_session_usage", "copilot_turns", "mcp_server_of",
     "antigravity_prompt_count", "antigravity_read", "antigravity_session_to_claude",
     "antigravity_session_usage",
@@ -72,6 +74,6 @@ __all__ = [
     "hermes_session_usage", "hermes_tool",
     "opencode_prompt_count", "opencode_run_reply", "opencode_session_info",
     "opencode_session_to_claude", "opencode_session_usage",
-    "pi_active_branch", "pi_json_reply", "pi_prompt_count", "pi_session_header",
+    "pi_active_branch", "pi_json_reply", "pi_prompt_count", "pi_prompts", "pi_session_header",
     "pi_session_to_claude", "pi_session_usage",
 ]

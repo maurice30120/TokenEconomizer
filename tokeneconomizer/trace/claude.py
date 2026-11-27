@@ -14,9 +14,8 @@ import glob
 import json
 import os
 import re
-from datetime import datetime
 
-from .jsonl import lines as _lines
+from .jsonl import epoch, lines as _lines
 
 _CLAUDE_KEYS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
                 "output_tokens")
@@ -95,6 +94,29 @@ def _is_notification(ev):
     return isinstance(origin, dict) and origin.get("kind") == "task-notification"
 
 
+def claude_prompt_text(ev):
+    """What the person typed in one prompt entry: its text blocks joined, or its string."""
+    content = (ev.get("message") or {}).get("content")
+    if isinstance(content, list):
+        return " ".join(b.get("text") or "" for b in content
+                        if isinstance(b, dict) and b.get("type") == "text")
+    return content if isinstance(content, str) else ""
+
+
+def claude_prompts(events):
+    """Every prompt the person gave, in log order, as `(position, emitted_at, text)`: the
+    entries `_is_prompt` accepts, less the background-task notifications. `emitted_at` is the
+    entry's own timestamp in epoch seconds (None when it carries none), and `position` is the
+    entry's index in `events` -- the same index `knowledge.observation.reads` reports, so a
+    read is placed after the prompt it worked for."""
+    out = []
+    for position, event in enumerate(events):
+        if not isinstance(event, dict) or not _is_prompt(event) or _is_notification(event):
+            continue
+        out.append((position, epoch(event.get("timestamp")), claude_prompt_text(event)))
+    return out
+
+
 def claude_prompt_count(transcript_path):
     """How many prompts the person gave a Claude Code session (`_is_prompt`, less the
     background-task notifications)."""
@@ -169,15 +191,6 @@ def claude_history_logs(projects_dir):
     return out
 
 
-def _epoch(ts):
-    if not isinstance(ts, str) or not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts[:-1] + "+00:00" if ts.endswith("Z") else ts).timestamp()
-    except (ValueError, OverflowError, OSError):
-        return None
-
-
 def claude_log_head(path):
     """What the head of a session log says about the session: {"session_id", "cwd", "started"
     (its first timestamp, epoch seconds), "entrypoint"} -- each None (or "") where the first
@@ -211,7 +224,7 @@ def claude_log_head(path):
                 if out["cwd"] is None and isinstance(ev.get("cwd"), str) and ev["cwd"]:
                     out["cwd"] = ev["cwd"]
                 if out["started"] is None:
-                    out["started"] = _epoch(ev.get("timestamp"))
+                    out["started"] = epoch(ev.get("timestamp"))
                 if not out["entrypoint"] and isinstance(ev.get("entrypoint"), str):
                     out["entrypoint"] = ev["entrypoint"].strip()
                 if out["session_id"] and out["cwd"] and out["started"] and out["entrypoint"]:

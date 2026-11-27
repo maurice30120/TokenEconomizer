@@ -18,7 +18,7 @@ import json
 import os
 import re
 
-from .jsonl import records as _copilot_events
+from .jsonl import epoch, records as _copilot_events
 
 _COPILOT_EXIT_RE = re.compile(r"<shellId: [^>]*?completed with exit code (-?\d+)>")
 
@@ -142,6 +142,21 @@ def copilot_prompt_count(path):
     """How many prompts a Copilot session ran: one `user.message` event each."""
     return sum(1 for ev in _copilot_events(path) if ev.get("type") == "user.message")
 
+
+def copilot_prompts(events):
+    """Every prompt the person gave, in log order, as `(position, emitted_at, text)`:
+    `user.message` events, whose `data.content` is the text. `emitted_at` is the event's own
+    timestamp in epoch seconds, and `position` its index in `events` -- the same index
+    `knowledge.observation.reads` reports."""
+    out = []
+    for position, event in enumerate(events):
+        if not isinstance(event, dict) or event.get("type") != "user.message":
+            continue
+        data = event.get("data")
+        text = data.get("content") if isinstance(data, dict) else None
+        out.append((position, epoch(event.get("timestamp")),
+                    text if isinstance(text, str) else ""))
+    return out
 
 
 def copilot_mcp_servers(env=None):
