@@ -448,6 +448,8 @@ def test_a_recorded_pi_request_opens_the_first_sequence(tmp_path):
         ("s0/0", "Read source.txt and finish.", ["s0/0.0"])]
     assert [(e["ref"], e["path"], len(e["version"])) for e in view["excerpts"]] == [
         ("s0/0.0", "source.txt", 12)]
+    # What the agent said after that read is shown next to it.
+    assert [(c["text"], c["refs"]) for c in view["comments"]] == [("Done.", ["s0/0.0"])]
 
 
 def test_pi_injected_and_system_messages_open_no_work_sequence(tmp_path):
