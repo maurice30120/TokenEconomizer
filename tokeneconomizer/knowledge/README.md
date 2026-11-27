@@ -38,14 +38,29 @@ session are two sequences. A message that read nothing still takes its slot; an 
 message (Pi's extension sends its steering that way) and a `system` message open none. A
 sequence keeps its message, bounded, and what each of its reads observed -- the code as the
 read returned it, in read order -- up to 16 000 characters; the first observation that would
-push it past that ends its retention, and every sequence has its own budget. Each read is its
-own observation: a unit proves only the text and the symbols of that read, and an identical
-repeat of one read (same file, version and lines) is the only thing that collapses.
+push it past that ends its retention, and every sequence has its own budget. Reads are
+consolidated before that budget applies: two reads are the same code when the whole-file
+version they observed is the same, so a repeated read is charged and shown once.
 
-The proposer is shown each retained observation with its `ref`, its path, its version and,
-for a partial read, the lines it returned (`observed_lines`) and the declarations they
-crossed; a partial read that crossed no declaration has nothing to prove, so it is neither
-shown nor citable. A Knowledge proposal names what it observed in `sources`, one or more
+The proposer reads a catalogue of that retained code, one entry per path and compatible
+version, in first-appearance order: an entry lists every `ref` that hit it, in read order,
+with the work sequence and session each ref names, and how many reads, sequences and sessions
+it stands for. Ranges of one version merge when they overlap, a complete read subsumes the
+partial reads of that version, and fragments that do not touch stay separate `fragments` of
+the entry, each with its own lines, its crossed declarations and its refs. Another version is
+another entry, even when a line shift leaves a declaration's own fingerprint identical: the
+whole-file version, never the symbol hash, is what says two reads saw the same code. A partial
+entry answers only for the declarations its lines crossed, so no entry becomes citable for
+code it did not keep, and a partial read that crossed no declaration is neither shown nor
+citable.
+
+The prompt also shows the counts of reads, work sequences and sessions, and the pairs of
+paths read in the same work sequence with how many sequences show each pair. Those pairs are
+signals only -- converging explorations worth a look -- never evidence: two files read
+together say nothing about a functional relation, recurrence is not proof, and no code path
+admits a proposal from one.
+
+A Knowledge proposal names what it observed in `sources`, one or more
 `{ref, symbol?}` entries, and the engine resolves each ref against the retained digest and
 computes the proofs itself, so the proposal never carries one. Several refs may support one
 mechanism, but one complete read -- or one symbol a partial read crossed -- is enough. It runs
