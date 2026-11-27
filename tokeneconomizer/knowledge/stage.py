@@ -130,10 +130,19 @@ class Knowledge(Distiller):
 
     def update(self, transcript_path, iid="", resolved=None, edited=None, observed_transcript=None,
                captures=None):
-        # The digest is absorbed first: this fold's own proposer tick reads it.
-        self.digest.absorb(session_sequences(observed_transcript or transcript_path,
-                                             self.workspace, iid, host=self.host,
-                                             captures=captures))
+        """Fold in one finished session and its work sequences.
+
+        The digest is absorbed first, so this fold's own proposer tick can read it. Building it
+        fails open: a recording it cannot parse leaves the digest as it was and the fold
+        completes, because the digest is an observer of the session, never a precondition of the
+        mechanisms the fold exists to update.
+        """
+        try:
+            self.digest.absorb(session_sequences(observed_transcript or transcript_path,
+                                                 self.workspace, iid, host=self.host,
+                                                 captures=captures))
+        except Exception:   # fail open: the digest observes the session, it never gates the fold
+            pass
         return super().update(transcript_path, iid=iid, resolved=resolved, edited=edited)
 
     def _proposal_prompt(self, max_candidates=MAX_CANDS):

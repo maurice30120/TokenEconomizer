@@ -849,3 +849,29 @@ def test_a_comment_about_a_read_that_proves_nothing_is_not_shown(tmp_path):
     assert len(stage.digest.sequences[0]["units"]) == 1     # retained
     assert view["excerpts"] == [] and view["comments"] == []
 
+
+def test_a_malformed_transcript_entry_costs_the_digest_nothing(tmp_path):
+    """Building the digest fails open: a recording the readers cannot walk leaves the digest
+    exactly as it was, and the session is still folded for the mechanisms the fold exists for."""
+    (tmp_path / "source.py").write_bytes(SOURCE)
+    good = tmp_path / "good.jsonl"
+    good.write_text("\n".join(map(json.dumps, pi_session(tmp_path, [
+        ("2026-11-24T10:00:00.000Z",
+         {"role": "user", "content": [{"type": "text", "text": "read source.py"}]}, []),
+        ("2026-11-24T10:00:01.000Z", None,
+         [("r", {"path": "source.py"}, SOURCE.decode(), False)]),
+    ]))))
+    stage = Knowledge("repo")
+    stage.workspace, stage.host = tmp_path, "pi"
+    stage.update(good, iid="s0")
+    before = stage.digest.state()
+    # An entry whose `id` is not a string: the readers index entries by it, and cannot.
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text("\n".join(map(json.dumps, [
+        {"type": "session", "version": 3, "id": "broken", "cwd": str(tmp_path)},
+        {"type": "message", "id": {"not": "an id"}, "parentId": None,
+         "message": {"role": "user",
+                     "content": [{"type": "text", "text": "read source.py"}]}}])))
+    stage.update(malformed, iid="s1")
+    assert stage.digest.state() == before
+    assert stage.now == 2                                  # the fold completed
