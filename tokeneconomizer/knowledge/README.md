@@ -206,6 +206,72 @@ contradiction still retires it. Earlier context in a conversation cannot be remo
 retroactively. Knowledge is untrusted data: a matching hash does not establish that
 the explanation is correct.
 
+## What Copilot lets TokenEconomizer observe and prove
+
+Copilot CLI gives Knowledge less than Pi and Claude Code, and the gap is in what the host
+records, not in a missing parser. The refusing predicates live in
+`knowledge/observation.py::_copilot_observations`; each limit below has a test in
+`tests/test_knowledge_copilot.py`.
+
+- **One session format only.** A tool result is read only when
+  `session.start.context.copilotVersion` is exactly `1.0.105`. Any other version yields no
+  observation at all, so a Copilot upgrade stops Knowledge learning silently instead of
+  degrading it.
+- **Truncation telemetry is mandatory.** The result must carry
+  `toolTelemetry.properties` with `viewType: "file"`, `command: "view"`, no
+  `largeOutputAvoided`, `options` exactly
+  `{"truncateBasedOn":"tokenCount","truncateStyle":"middle"}` and `inputs` exactly
+  `["path", "command"]`, and `metrics.resultLength` and `resultForLlmLength` must both equal
+  the UTF-16 length of the content. Without it TE cannot tell a whole file from a truncated
+  `view`, so a session that does not log it proves nothing.
+- **A 20 KiB ceiling.** A result at or above 20 480 bytes, or one flagged
+  `largeOutputAvoided`, is refused. The agent can still read a 40 KiB file; TE can never prove
+  what it read there.
+- **No partial `view`.** `arguments` must be exactly `{"path"}`: a `view_range` is refused
+  outright, and there is no capture path for Copilot (`knowledge/capture.py` is Pi-only). So
+  Copilot produces no line ranges and no fragments, and **no symbol proof from a partial
+  read**: `partial-needs-symbol` and `symbol-not-observed` are unreachable there, because the
+  partial reading they guard can never be observed.
+- **No agent comments.** No `assistant.message` event is parsed, so a Copilot sequence carries
+  no visible comments and none is invented.
+- **No prompt text and no timestamp in any proof.** The bounded `user.message` text is a
+  sequence's context and `data.turnId` is unread; a read is placed against its sequence by
+  event position, never by comparing times, and no prompt text ever reaches a proof.
+- **One bad line loses the session.** The strict UTF-8/JSON reader fails closed, so a recording
+  with a corrupted tail yields no observation.
+
+Pi and Claude Code are not symmetric with each other either, but they give more: Pi attests a
+partial `read` through the bytes its hook captured (so it does prove a declaration the read
+crossed), and both expose the agent's own `text` blocks, which Copilot does not. What each of the
+two digests costs on real Pi session logs is measured in `rapport-campagne-341.md`, at the root of
+the workspace this repository is checked out in (TokenEconomizer keeps no run outputs in git).
+
+## Measuring the digest on Pi session logs
+
+`scripts/knowledge_digest_measure.py` folds a directory of Pi `*.jsonl` session logs through the
+real Knowledge stage -- `Knowledge.load` then `update`, with the host's own conversion for the
+digest, the raw log for the observations and no captures -- with a stub proposer that records the
+prompt and answers `{"facts": []}`. No model is called, no network is used and no clock is read.
+
+```
+PYTHONPATH=$PWD python scripts/knowledge_digest_measure.py \
+    --traces <dir-of-pi-jsonl> --workspace <the repo those reads happened in>
+```
+
+It measures two arms on the same traces: this tree, and `--baseline-ref` (default `f1a6c18`, the
+integration tip before the work-sequence digest) materialised with `git archive` in a temporary
+directory outside the checkout. Each arm runs in its own subprocess, because both export the same
+module names. Per fold it writes, as JSON and as a table, the prompt's size and its per-block split,
+the sequences, catalogue entries and reads the digest offered, the units its budget dropped, whether
+the proposal tick was due and whether it fired, and what admission answers for a minimal candidate
+built from the first observation offered -- the candidate itself, the same claim twice
+(`duplicate`), and the same candidate after the file changed (`stale-proof`, probed against a copy:
+the real workspace is never touched). `--control <dir>` writes and measures a synthetic witness for
+the cases real logs do not exercise; `--arm current` skips the baseline. The JSON goes to `--out`,
+which defaults to a temporary file outside the checkout. State lives in temporary directories, so
+`~/.tokeneconomizer` is never written. `tests/test_knowledge_digest_measure.py` pins the report's
+shape, the cadence, the two-session window and the determinism.
+
 ## Symbol contracts
 
 The optional `symbol` proposal field names one unqualified declaration the observation
@@ -259,6 +325,13 @@ the same read is replayed, the candidate and its proof are supplied by a stub ra
 than a real model. It does not measure real-world proposal quality,
 latency, token savings or cost. Proof validity does not establish semantic truth.
 Already-injected context cannot be retracted from a conversation.
+
+`rapport-campagne-341.md`, at the root of the workspace this repository is checked out in, is the
+measurement this paragraph is not: it replays real Pi session logs through the work-sequence digest
+and through the `observed_sources` view it replaced, and reports the volume each puts in front of
+the proposer, what the 16 000-character budget dropped, and how often admission was reachable. Its
+harness is `scripts/knowledge_digest_measure.py` (see above); the frozen values it reports on (8
+sequences, 16 000 characters) are the initial calibration, not a tuned result.
 
 ## Upstream maintenance surface
 
