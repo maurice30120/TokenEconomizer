@@ -23,8 +23,7 @@ def test_a_card_reaches_each_host_after_read_and_stops_when_a_proof_changes(
     path = str(Path(repo) / "source.txt")
     out = _read(enabled, repo, "host1", path, host=host, name=name, key=key)
     card = json.dumps(out)
-    assert CLAIM in card and "source and support are related" in card
-    assert "source.txt: source" in card and "support.txt: support" in card
+    assert CLAIM in card
     (Path(repo) / "support.txt").write_text("changed\n")
     assert CLAIM not in json.dumps(_read(enabled, repo, "host2", path, host=host, name=name, key=key))
 
@@ -126,7 +125,7 @@ def test_startup_reserves_budget_and_does_not_repeat_cards(tmp_path, env, repo, 
     dst = LiveContext.build(Pi() if host == "pi" else Copilot(), repo, enabled)
     stage = Knowledge.load(workspace_id(src.repo.label, repo), src.mech_dir)
     for fact in stage.facts.values():
-        fact.life.fire_num = 9 if fact.spec["source"] == "b.txt" else 5
+        fact.life.fire_num = 9 if fact.spec["proof"][0]["path"] == "b.txt" else 5
         fact.life.fire_den = 10
     stage.save(dst.mech_dir)
     dst.store.write("injection.json", {"rendered": "# native\n- native fact\n"})

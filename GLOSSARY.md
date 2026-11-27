@@ -5,11 +5,12 @@ This context describes reusable knowledge derived from sessions in a workspace.
 ## Language
 
 **Knowledge**:
-A durable understanding of how the code works, grounded in one observed file or symbol, or in several observed sources that explain one coherent mechanism. Knowledge is distinct from a native Fact and from a collection of separate file summaries.
+A durable understanding of how the code works, grounded in one observed file or symbol, or in several observed sources that explain one coherent mechanism. The engine proves each source a proposal references, so a Knowledge is admitted and available in the cycle that proposes it; one sufficient observation is enough, with no second session and no confirmation count.
+Knowledge is distinct from a native Fact and from a collection of separate file summaries.
 Several Knowledge entries can cover the same file when they describe different mechanisms.
 
 **Multi-source Knowledge**:
-Knowledge supported by evidence for each of its source files or symbols.
+Knowledge supported by more than one observed source file or symbol, all explaining one mechanism. Each source has its own evidence, and the Knowledge is valid only while every one of them is.
 
 **Knowledge Evidence**:
 An observation supporting Knowledge whose validity establishes that the relevant code still matches the observed version, but does not establish that the finding is correct.
