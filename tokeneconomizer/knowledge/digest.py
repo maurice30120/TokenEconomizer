@@ -8,7 +8,9 @@ nothing still takes its slot.
 
 Each sequence retains the observations its reads produced, in read order, while they fit its own
 `BUDGET` characters: the first unit that would not fit ends retention, so neither it nor anything
-after it can be cited, and a sequence keeps nothing when its first unit is already too large.
+after it can be cited, and a sequence keeps nothing when its first unit is already too large. Only
+the observations are charged: the bounded message stays in the sequence, and in the prompt, as
+context, outside the cap.
 
 Two reads are the same code when the whole-file version they observed is the same, so they share
 one catalogue unit: an identical repeat only adds its ref, an overlapping partial read widens the
@@ -37,7 +39,7 @@ from .observation import reads, records
 from .proof import symbol_proof
 
 SEQUENCES = 8        # work sequences in the digest, newest by message emission time
-BUDGET = 16_000      # characters one sequence may retain, its message context included
+BUDGET = 16_000      # characters of observations one sequence retains; its message is not charged
 MESSAGE_CAP = 2_000  # characters of a user message kept as its sequence's context
 VERSION_CHARS = 12   # how much of a version the proposer is shown
 PAIRS = 32           # pairs of paths read in one sequence, most recurrent first
@@ -80,7 +82,7 @@ def session_sequences(transcript, root, iid, host="claude", captures=None):
             observed[opened].append(payload)
             series.append(len(observed[opened]) - 1)
     for sequence, mine in zip(sequences, observed):
-        sequence["units"] = _retain(sequence, _units(sequence, mine))
+        sequence["units"] = _retain(_units(sequence, mine))
     return sequences
 
 
@@ -230,14 +232,15 @@ def _attach(sequence, found, position, text, ranks):
         {"text": text, "refs": refs, "position": position})
 
 
-def _retain(sequence, units):
+def _retain(units):
     """The units a sequence keeps: the first ones in read order while they fit its budget.
 
     The first unit that would push the sequence past `BUDGET` ends retention, so it is dropped
     and so is every later one, however small. A first unit already too large therefore leaves the
-    sequence with no retained observation, and no sequence borrows from another's budget.
+    sequence with no retained observation, and no sequence borrows from another's budget. The
+    message is context, not an observation: it stays in the sequence and is not charged here.
     """
-    kept, used = [], len(sequence["message"])
+    kept, used = [], 0
     for unit in units:
         size = unit_chars(unit)
         if used + size > BUDGET:

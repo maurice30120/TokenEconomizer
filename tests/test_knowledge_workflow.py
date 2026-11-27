@@ -1020,7 +1020,7 @@ def test_a_sequence_stops_at_the_first_unit_that_does_not_fit(tmp_path):
     """The first unit that would push a sequence past its 16 000 characters ends retention: it is
     dropped, and so is a later, smaller one -- nothing is packed out of order."""
     (tmp_path / "big.txt").write_text("".join(f"line {n}\n" for n in range(1000)))
-    (tmp_path / "huge.txt").write_text("".join(f"line {n}\n" for n in range(800)))
+    (tmp_path / "huge.txt").write_text("".join(f"line {n}\n" for n in range(850)))
     (tmp_path / "small.txt").write_text("small\n")
     stage = Knowledge("repo")
     stage.workspace = tmp_path
@@ -1038,7 +1038,11 @@ def test_a_sequence_stops_at_the_first_unit_that_does_not_fit(tmp_path):
 
 
 def test_a_first_unit_too_large_leaves_the_sequence_with_nothing_to_cite(tmp_path):
+    """A first observation already larger than the whole budget leaves its sequence nothing to
+    cite -- the message is not charged, so the unit's own characters are the whole story."""
+    from tokeneconomizer.knowledge.digest import BUDGET
     (tmp_path / "huge.txt").write_text("".join(f"line {n}\n" for n in range(2000)))
+    assert len((tmp_path / "huge.txt").read_text()) > BUDGET
     stage = Knowledge("repo")
     stage.workspace = tmp_path
     fold_events(stage, tmp_path, "s0", [
@@ -1069,9 +1073,10 @@ def test_each_sequence_keeps_its_own_budget(tmp_path):
         True, "admitted")
 
 
-def test_a_sequences_request_counts_against_its_budget(tmp_path):
-    """The bounded message context is part of what a sequence keeps: the same read fits a short
-    request and not a long one."""
+def test_a_sequences_request_is_kept_out_of_its_budget(tmp_path):
+    """The bounded message context travels with a sequence and in the prompt, but only the
+    observations are charged: the same 14 400-character read is retained under a short request
+    and under one that fills the 2 000-character message cap."""
     (tmp_path / "big.txt").write_text("".join(f"line {n}\n" for n in range(1550)))
     stage = Knowledge("repo")
     stage.workspace = tmp_path
@@ -1082,7 +1087,7 @@ def test_a_sequences_request_counts_against_its_budget(tmp_path):
         *claude_read(tmp_path, "big.txt", 1)])
     view = digest_view(stage)
     assert [len(s["message"]) for s in view["sequences"]] == [12, 2000]   # bounded context
-    assert [s["refs"] for s in view["sequences"]] == [["s0/0.0"], []]
+    assert [s["refs"] for s in view["sequences"]] == [["s0/0.0"], ["s1/0.0"]]
 
 
 def test_a_request_appended_after_a_session_is_folded_stays_out(tmp_path, env, repo, monkeypatch):

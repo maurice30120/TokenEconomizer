@@ -38,9 +38,11 @@ session are two sequences. A message that read nothing still takes its slot; an 
 message (Pi's extension sends its steering that way) and a `system` message open none. A
 sequence keeps its message, bounded, and what each of its reads observed -- the code as the
 read returned it, in read order -- up to 16 000 characters; the first observation that would
-push it past that ends its retention, and every sequence has its own budget. Reads are
-consolidated before that budget applies: two reads are the same code when the whole-file
-version they observed is the same, so a repeated read is charged and shown once.
+push it past that ends its retention, and every sequence has its own budget. Only the
+observations are charged: the message stays in its sequence, and in the prompt, as context,
+outside the cap. Reads are consolidated before that budget applies: two reads are the same code
+when the whole-file version they observed is the same, so a repeated read is charged and shown
+once.
 
 A sequence also keeps what the agent itself wrote: the visible `text` blocks of its assistant
 messages, attached to the reads of the call series they followed. A reply's text joins the

@@ -23,7 +23,7 @@ Only entries with a valid **Knowledge Contract** qualify for semantic search.
 A user message and the work that follows it until the next user message or the end of the session. A message with no work still starts a sequence.
 
 **Knowledge Digest**:
-The view the proposer reads: the newest **Work Sequences** of the folded sessions, ordered by message emission time, each with the refs of the **Knowledge Observations** it retained, plus the **Knowledge Catalogue** of that code, the **Knowledge Comments** about its refs and the **Read Co-occurrence** pairs. A sequence retains observations in read order while they fit its own 16 000 characters, so what one sequence drops can prove nothing.
+The view the proposer reads: the newest **Work Sequences** of the folded sessions, ordered by message emission time, each with the refs of the **Knowledge Observations** it retained, plus the **Knowledge Catalogue** of that code, the **Knowledge Comments** about its refs and the **Read Co-occurrence** pairs. A sequence retains observations in read order while they fit its own 16 000 characters, so what one sequence drops can prove nothing. Its bounded message travels with it as context, outside that cap: only observations are charged.
 _Avoid_: window, session digest
 
 **Knowledge Catalogue**:
